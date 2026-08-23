@@ -140,12 +140,26 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 ./gradlew :app:assembleDebug
 ```
 
-> **No APK has been produced yet.** The session this was developed in has
-> `dl.google.com` blocked by egress policy, and that host serves both the Android
-> SDK and the Android Gradle Plugin (`maven.google.com` redirects to it). Resource
-> and manifest compilation needs `aapt2`, which is only published there, so the
-> packaging step cannot run here. Everything short of packaging has been verified
-> against real toolchains — see below.
+### Getting an APK without a local SDK (including from a phone)
+
+Every push builds a debug APK in CI and uploads it, so a browser is the only
+requirement — no toolchain on the device:
+
+**Actions → latest run → Artifacts → `maxpaint-apk`**
+
+It arrives as a zip; unzip and install the APK (needs "install from unknown
+sources" for whatever app opens it). This is the recommended route on Android.
+
+Building on the device itself with Termux is possible but fiddly: the Android
+Gradle Plugin fetches an x86_64 `aapt2` binary that will not execute on an ARM
+phone, so it needs an ARM-native `aapt2` and an
+`android.aapt2FromMavenOverride=<path>` entry in `gradle.properties`.
+
+> The environment this was developed in has `dl.google.com` blocked by egress
+> policy, and that host serves both the Android SDK and the Android Gradle
+> Plugin (`maven.google.com` redirects to it). Packaging therefore happens in
+> CI rather than locally. The verification harness below exists so that
+> everything short of packaging can still be checked without an SDK.
 
 ## Verification
 
@@ -162,7 +176,7 @@ python3 tools/compare_solvers.py 128
 | GLSL, all 11 shaders | `glslangValidator` against the ES 3.1 spec | passing |
 | Solver behaviour | Executed on a real GLES 3.1 driver (EGL surfaceless + Mesa llvmpipe) | 12/12 checks passing |
 | Kotlin, all 5 sources | `kotlinc` against the real Android 14 framework classes (`org.robolectric:android-all`, from Maven Central) | compiles clean, 23 classes |
-| Resource + manifest packaging | `aapt2` | **blocked** — Google Maven unreachable |
+| Resource + manifest packaging | `aapt2` via Gradle, on CI | passing — APK builds clean |
 
 `tools/verify_solver.py` creates a genuine ES 3.1 context and runs the same pass
 sequence as `FluidSim.kt`, asserting that the physics is right rather than merely
@@ -171,6 +185,10 @@ divergence, more sweeps converge further, dye is transported along the injected
 momentum, nothing goes non-finite, no flow crosses the walls, velocity decays
 under drag (the mechanism M1's bake hangs off), and identical inputs produce
 bit-identical output (PRD FR-20).
+
+The APK compiled on its first CI run with no build errors, which is the payoff
+from checking the Kotlin against the real framework classes rather than trusting
+inspection.
 
 Two bugs were caught this way that inspection had missed:
 
