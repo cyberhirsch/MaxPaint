@@ -1,0 +1,34 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uVelSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uVelDst;
+layout(r32f,    binding = 2) readonly  uniform highp image2D uCurl;
+
+uniform float uStrength;
+uniform float uDt;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uVelDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    ivec2 mx = sz - 1;
+    float l = imageLoad(uCurl, clamp(c + ivec2(-1, 0), ivec2(0), mx)).x;
+    float r = imageLoad(uCurl, clamp(c + ivec2( 1, 0), ivec2(0), mx)).x;
+    float b = imageLoad(uCurl, clamp(c + ivec2( 0,-1), ivec2(0), mx)).x;
+    float t = imageLoad(uCurl, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
+    float w = imageLoad(uCurl, c).x;
+
+    // gradient of |curl|, pointing toward higher vorticity
+    vec2 grad = 0.5 * vec2(abs(r) - abs(l), abs(t) - abs(b));
+    vec2 n = grad / (length(grad) + 1e-5);
+
+    // N x omega, in 2D
+    vec2 force = uStrength * w * vec2(n.y, -n.x);
+
+    vec4 v = imageLoad(uVelSrc, c);
+    v.xy += force * uDt;
+    imageStore(uVelDst, c, v);
+}

@@ -1,0 +1,22 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(r32f, binding = 0) readonly  uniform highp image2D uSrc;
+layout(r32f, binding = 1) writeonly uniform highp image2D uDst;
+layout(r32f, binding = 2) readonly  uniform highp image2D uDiv;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    ivec2 mx = sz - 1;
+    float l = imageLoad(uSrc, clamp(c + ivec2(-1, 0), ivec2(0), mx)).x;
+    float r = imageLoad(uSrc, clamp(c + ivec2( 1, 0), ivec2(0), mx)).x;
+    float b = imageLoad(uSrc, clamp(c + ivec2( 0,-1), ivec2(0), mx)).x;
+    float t = imageLoad(uSrc, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
+    float d = imageLoad(uDiv, c).x;
+
+    imageStore(uDst, c, vec4((l + r + b + t - d) * 0.25, 0.0, 0.0, 0.0));
+}

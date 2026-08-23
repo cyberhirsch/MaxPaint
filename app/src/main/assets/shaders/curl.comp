@@ -1,0 +1,20 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uVel;
+layout(r32f,    binding = 1) writeonly uniform highp image2D uCurl;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uCurl);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    ivec2 mx = sz - 1;
+    float l = imageLoad(uVel, clamp(c + ivec2(-1, 0), ivec2(0), mx)).y;
+    float r = imageLoad(uVel, clamp(c + ivec2( 1, 0), ivec2(0), mx)).y;
+    float b = imageLoad(uVel, clamp(c + ivec2( 0,-1), ivec2(0), mx)).x;
+    float t = imageLoad(uVel, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
+
+    imageStore(uCurl, c, vec4(0.5 * ((r - l) - (t - b)), 0.0, 0.0, 0.0));
+}

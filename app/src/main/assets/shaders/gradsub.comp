@@ -1,0 +1,32 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uVelSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uVelDst;
+layout(r32f,    binding = 2) readonly  uniform highp image2D uPressure;
+
+uniform float uDrag;   // velocity dissipation per second
+uniform float uDt;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uVelDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    ivec2 mx = sz - 1;
+    float l = imageLoad(uPressure, clamp(c + ivec2(-1, 0), ivec2(0), mx)).x;
+    float r = imageLoad(uPressure, clamp(c + ivec2( 1, 0), ivec2(0), mx)).x;
+    float b = imageLoad(uPressure, clamp(c + ivec2( 0,-1), ivec2(0), mx)).x;
+    float t = imageLoad(uPressure, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
+
+    vec4 v = imageLoad(uVelSrc, c);
+    v.xy -= 0.5 * vec2(r - l, t - b);
+    v.xy *= 1.0 / (1.0 + uDrag * uDt);
+
+    // free-slip walls: kill the normal component at the border
+    if (c.x == 0 || c.x == mx.x) v.x = 0.0;
+    if (c.y == 0 || c.y == mx.y) v.y = 0.0;
+
+    imageStore(uVelDst, c, v);
+}

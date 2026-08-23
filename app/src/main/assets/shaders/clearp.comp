@@ -1,0 +1,13 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(r32f, binding = 0) uniform highp image2D uTarget;
+uniform float uValue;   // multiplier; 0.0 clears, ~0.8 warm-starts next frame
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uTarget);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+    imageStore(uTarget, c, imageLoad(uTarget, c) * uValue);
+}
