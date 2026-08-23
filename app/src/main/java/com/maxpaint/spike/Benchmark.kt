@@ -84,7 +84,8 @@ class Benchmark(
     fun report(deviceLine: String): String = buildString {
         appendLine("MaxPaint M0 — resolution headroom sweep")
         appendLine(deviceLine)
-        appendLine("iters=${sim.pressureIterations}  dyeScale=${dyeScale}x  ${measureFrames} frames each")
+        appendLine("solver=${if (sim.useRedBlack) "RB-GS" else "Jacobi"}  iters=${sim.pressureIterations}  " +
+                "dyeScale=${dyeScale}x  ${measureFrames} frames each")
         appendLine()
         appendLine("  sim     dye    median     p95     est.fps   vram    60fps")
         appendLine("  ----------------------------------------------------------")

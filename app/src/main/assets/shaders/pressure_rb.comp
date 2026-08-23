@@ -1,0 +1,36 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Red-black Gauss-Seidel. Updates in place, which ES 3.1 permits for r32f
+// (and only for r32*). Each sweep is two dispatches, red cells then black,
+// so every cell reads neighbours that were already updated this iteration.
+// Converges roughly twice as fast per sweep as Jacobi and needs one texture
+// instead of two.
+layout(r32f, binding = 0) uniform highp image2D uPressure;
+layout(r32f, binding = 2) readonly uniform highp image2D uDiv;
+
+uniform int uParity;   // 0 = red, 1 = black
+
+// Threads map compactly onto one colour class -- dispatched over a half-width
+// grid -- so a sweep launches the same number of threads as one Jacobi
+// iteration rather than twice as many. Without this the convergence win is
+// paid for in wasted invocations.
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uPressure);
+    if (g.y >= sz.y) return;
+
+    int x = 2 * g.x + ((g.y + uParity) & 1);
+    if (x >= sz.x) return;
+    ivec2 c = ivec2(x, g.y);
+
+    ivec2 mx = sz - 1;
+    float l = imageLoad(uPressure, clamp(c + ivec2(-1, 0), ivec2(0), mx)).x;
+    float r = imageLoad(uPressure, clamp(c + ivec2( 1, 0), ivec2(0), mx)).x;
+    float b = imageLoad(uPressure, clamp(c + ivec2( 0,-1), ivec2(0), mx)).x;
+    float t = imageLoad(uPressure, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
+    float d = imageLoad(uDiv, c).x;
+
+    imageStore(uPressure, c, vec4((l + r + b + t - d) * 0.25, 0.0, 0.0, 0.0));
+}

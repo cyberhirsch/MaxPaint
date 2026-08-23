@@ -43,6 +43,67 @@ rather than pipelined wall-clock — slightly pessimistic, which is the right bi
 when sizing a budget. Results are written to the app's external files directory
 as `maxpaint-sweep.txt` and can be dumped to logcat under the tag `MaxPaintSweep`.
 
+### Pressure solver
+
+The pressure projection dominates frame cost, so its convergence rate sets the
+resolution ceiling. The spike ships **red-black Gauss-Seidel** rather than the
+Jacobi solve the PRD assumed, on the strength of a measurement
+(`tools/compare_solvers.py`, 128², cold start, divergence removed):
+
+```
+  sweeps   Jacobi    RB-Gauss-Seidel   advantage
+      5     10.6%            18.4%      +7.7pp
+     20     32.1%            48.3%     +16.2pp
+     30     41.5%            58.4%     +16.9pp
+     60     58.6%            73.9%     +15.2pp
+    100     70.3%            82.5%     +12.2pp
+```
+
+**RB-GS at 30 sweeps matches Jacobi at 60** — half the work for the same result,
+plus one pressure texture instead of two. The comparison is cost-fair: threads
+are mapped compactly onto one colour class per dispatch over a half-width grid,
+so a Gauss-Seidel sweep launches the same number of threads as a Jacobi
+iteration. Toggle between them at runtime with the **RB-GS/Jacobi** button.
+
+#### The resolution ceiling is convergence, not throughput
+
+RB-GS does not remove the PRD's stated risk, it moves it by one resolution step.
+Measuring the sweeps needed to clear 50% of divergence
+(`python3 tools/compare_solvers.py --scaling`):
+
+```
+  grid     sweeps   vs previous   cost for equal quality
+    32²        3            -         -
+    64²        7          2.3x      9.3x
+   128²       22          3.1x     12.6x
+   256²       83          3.8x     15.1x
+```
+
+Sweeps scale with the **square** of grid width, so cost for equal quality
+(cells × sweeps) approaches **16× per doubling**, not the 4× that raw pixel
+count suggests. Confirmed directly: 30 sweeps clears 58.4% at 128², and it takes
+120 sweeps to clear 59.2% at 256².
+
+This is the single most important M0 result, and it reframes the question "how
+high can we go?". Raw framerate is not the binding constraint — *convergence
+per frame* is. A 2048² grid will happily run at 60fps with 30 sweeps and produce
+visibly worse fluid than 512² does, because the pressure solve never propagates
+information across the domain. Three consequences:
+
+1. **The PRD's dye/velocity decoupling is load-bearing, not an optimisation.**
+   Fine dye over a coarse, well-converged velocity field beats a high-resolution
+   velocity field that is under-solved. Prefer 512² velocity + 1024² dye over
+   1024²/1024².
+2. **Multigrid moves from "mitigation" to "required"** for anything above ~1024².
+   Its convergence is resolution-independent, which is exactly the property that
+   iterative sweeps lack. This should be scheduled, not held in reserve.
+3. **The sweep benchmark should report convergence alongside fps.** A PASS on
+   frame time alone is misleading at high resolution.
+
+In practice the frame loop warm-starts pressure from the previous frame
+(decayed 0.8×), so steady-state divergence is better than any single cold solve
+and does not accumulate over a run — which the verification asserts.
+
 ### Architecture
 
 | File | Role |
@@ -51,6 +112,7 @@ as `maxpaint-sweep.txt` and can be dumped to logcat under the tag `MaxPaintSweep
 | `GLUtil.kt` | Shader/program compilation, `Tex` and `DoubleTex` (ping-pong) wrappers |
 | `FluidSim.kt` | Field allocation and the per-frame pass sequence |
 | `Benchmark.kt` | The scripted resolution sweep |
+| `tools/verify.sh` | Shader + solver verification with no Android SDK |
 | `FluidRenderer.kt` | GL thread, input queue, display pass, live stats |
 | `MainActivity.kt` | Touch handling and the control panel |
 
@@ -78,9 +140,46 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 ./gradlew :app:assembleDebug
 ```
 
-> **Not yet compiled.** The session this was written in has `dl.google.com`
-> blocked by egress policy, so neither the Android SDK nor the Android Gradle
-> Plugin could be fetched, and no APK has been produced. The GLSL has been
-> validated — all twelve shaders compile clean against the ES 3.1 spec with
-> `glslangValidator` — but the Kotlin has not been through a compiler. Expect to
-> fix a small number of build errors on first run.
+> **No APK has been produced yet.** The session this was developed in has
+> `dl.google.com` blocked by egress policy, and that host serves both the Android
+> SDK and the Android Gradle Plugin (`maven.google.com` redirects to it). Resource
+> and manifest compilation needs `aapt2`, which is only published there, so the
+> packaging step cannot run here. Everything short of packaging has been verified
+> against real toolchains — see below.
+
+## Verification
+
+Packaging aside, the two things most likely to be wrong — the GLSL and the solver
+logic — are checked against real implementations rather than by inspection.
+
+```
+tools/verify.sh              # shaders + solver, needs glslangValidator + Mesa + PyOpenGL
+python3 tools/compare_solvers.py 128
+```
+
+| Layer | How | Status |
+|---|---|---|
+| GLSL, all 11 shaders | `glslangValidator` against the ES 3.1 spec | passing |
+| Solver behaviour | Executed on a real GLES 3.1 driver (EGL surfaceless + Mesa llvmpipe) | 12/12 checks passing |
+| Kotlin, all 5 sources | `kotlinc` against the real Android 14 framework classes (`org.robolectric:android-all`, from Maven Central) | compiles clean, 23 classes |
+| Resource + manifest packaging | `aapt2` | **blocked** — Google Maven unreachable |
+
+`tools/verify_solver.py` creates a genuine ES 3.1 context and runs the same pass
+sequence as `FluidSim.kt`, asserting that the physics is right rather than merely
+that the code parses: dye lands where it was splatted, projection reduces
+divergence, more sweeps converge further, dye is transported along the injected
+momentum, nothing goes non-finite, no flow crosses the walls, velocity decays
+under drag (the mechanism M1's bake hangs off), and identical inputs produce
+bit-identical output (PRD FR-20).
+
+Two bugs were caught this way that inspection had missed:
+
+1. **Illegal read-write images.** ES 3.1 permits read-write image qualifiers only
+   for `r32f`/`r32i`/`r32ui`. The `rgba16f` velocity and dye fields were doing
+   in-place read-modify-write in the splat, vorticity and gradient-subtract
+   passes. They now ping-pong. This would have failed shader compilation on
+   device with a driver-specific message.
+2. **A slow pressure solve**, quantified rather than suspected — see above.
+
+To reproduce the toolchain on a machine that can reach Google's servers, just use
+Gradle normally; the harness above is only needed where the SDK is unavailable.

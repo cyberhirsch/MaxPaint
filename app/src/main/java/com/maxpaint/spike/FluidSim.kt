@@ -22,6 +22,10 @@ class FluidSim(private val ctx: Context) {
     var simRes = 512; private set
     var dyeScale = 1; private set
     var pressureIterations = 30
+    /** Red-black Gauss-Seidel converges ~2x faster per sweep than Jacobi at the
+     *  same thread count, and needs one pressure texture instead of two.
+     *  See tools/compare_solvers.py for the measurement. */
+    var useRedBlack = true
     var vorticity = 22f
     var velocityDrag = 0.12f      // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
@@ -41,6 +45,7 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pVorticity: ComputeProgram
     private lateinit var pDivergence: ComputeProgram
     private lateinit var pPressure: ComputeProgram
+    private lateinit var pPressureRB: ComputeProgram
     private lateinit var pClear: ComputeProgram
     private lateinit var pGradSub: ComputeProgram
 
@@ -62,6 +67,7 @@ class FluidSim(private val ctx: Context) {
         pVorticity = ComputeProgram(ctx, "shaders/vorticity.comp")
         pDivergence = ComputeProgram(ctx, "shaders/divergence.comp")
         pPressure = ComputeProgram(ctx, "shaders/pressure.comp")
+        pPressureRB = ComputeProgram(ctx, "shaders/pressure_rb.comp")
         pClear = ComputeProgram(ctx, "shaders/clearp.comp")
         pGradSub = ComputeProgram(ctx, "shaders/gradsub.comp")
     }
@@ -148,14 +154,30 @@ class FluidSim(private val ctx: Context) {
         pressure.read.bindImage(0, GLES31.GL_READ_WRITE)
         pClear.dispatch(simRes, simRes)
 
-        // 5. Jacobi pressure solve
-        pPressure.use()
-        divergence.bindImage(2, GLES31.GL_READ_ONLY)
-        for (i in 0 until pressureIterations) {
-            pressure.read.bindImage(0, GLES31.GL_READ_ONLY)
-            pressure.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-            pPressure.dispatch(simRes, simRes)
-            pressure.swap()
+        // 5. pressure solve
+        if (useRedBlack) {
+            // In-place red-black Gauss-Seidel. Legal because pressure is r32f,
+            // the one format ES 3.1 allows read-write images for. Each sweep is
+            // two half-width dispatches, so thread count matches one Jacobi pass.
+            pPressureRB.use()
+            divergence.bindImage(2, GLES31.GL_READ_ONLY)
+            val halfWidth = (simRes + 1) / 2
+            for (i in 0 until pressureIterations) {
+                for (parity in 0..1) {
+                    pressure.read.bindImage(0, GLES31.GL_READ_WRITE)
+                    pPressureRB.set("uParity", parity)
+                    pPressureRB.dispatch(halfWidth, simRes)
+                }
+            }
+        } else {
+            pPressure.use()
+            divergence.bindImage(2, GLES31.GL_READ_ONLY)
+            for (i in 0 until pressureIterations) {
+                pressure.read.bindImage(0, GLES31.GL_READ_ONLY)
+                pressure.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+                pPressure.dispatch(simRes, simRes)
+                pressure.swap()
+            }
         }
 
         // 6. project

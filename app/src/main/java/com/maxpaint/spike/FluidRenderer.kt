@@ -166,8 +166,9 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         val vram = sim.vramBytes() / (1024.0 * 1024.0)
 
         statsLine = String.format(
-            "%d²  dye %d²  iters %d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
-            sim.simRes, sim.dyeRes, sim.pressureIterations,
+            "%d²  dye %d²  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
+            sim.simRes, sim.dyeRes,
+            if (sim.useRedBlack) "RB-GS" else "Jacobi", sim.pressureIterations,
             if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram
         )
     }

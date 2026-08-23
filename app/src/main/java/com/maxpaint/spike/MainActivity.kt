@@ -171,6 +171,10 @@ class MainActivity : AppCompatActivity() {
             renderer.debugView = 1 - renderer.debugView
             b.text = if (renderer.debugView == 1) "Dye" else "Vel"
         })
+        row.addView(button("RB-GS") { b ->
+            renderer.sim.useRedBlack = !renderer.sim.useRedBlack
+            b.text = if (renderer.sim.useRedBlack) "RB-GS" else "Jacobi"
+        })
         row.addView(button("Sweep") {
             Toast.makeText(this, "Running resolution sweep…", Toast.LENGTH_SHORT).show()
             renderer.benchmarkRequested = true

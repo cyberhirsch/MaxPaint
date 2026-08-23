@@ -311,9 +311,13 @@ if schedule allows, since it reuses the bake path.
 | UI + input | 2.0 ms |
 | Headroom | 2.6 ms |
 
-- Pressure solve is the risk. Mitigation: red-black Gauss–Seidel or a 3-level
-  multigrid V-cycle instead of naive Jacobi; drop iteration count adaptively
-  when frame time slips.
+- Pressure solve is the risk. **M0 shipped red-black Gauss–Seidel** (measured at
+  2× Jacobi's convergence per sweep, at equal thread count and half the pressure
+  memory). A 3-level multigrid V-cycle is still needed above ~1024², because
+  iterative sweep counts scale quadratically with grid width while multigrid
+  convergence is resolution-independent. Drop iteration count adaptively when
+  frame time slips — but note that under-solving degrades fluid quality, so
+  adaptive quality should step resolution down before it steps sweeps down.
 - **Adaptive quality**: a controller monitors frame time and steps down
   (iterations → dye resolution → sim resolution) before it drops frames.
   Never let the canvas stutter; degrade silently.
@@ -388,7 +392,7 @@ Total ≈ 26 weeks to public beta.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Pressure solve too slow on mid-range GPUs | High | Multigrid; adaptive iterations; ship with lower default sim res and let power users raise it |
+| Pressure solve too slow on mid-range GPUs | High | Multigrid; adaptive iterations; ship with lower default sim res and let power users raise it. **Measured in M0:** the binding constraint is convergence, not throughput — iterative sweeps scale quadratically with grid width (~16× cost per doubling for equal quality), so multigrid is required above ~1024² rather than optional. Red-black Gauss-Seidel now ships in place of Jacobi, worth ~2× |
 | Bake mechanic confuses users ("my paint disappeared / won't stop moving") | High | Heat overlay (UX-3); high default drag so v1 behaves near-conventionally out of the box; onboarding teaches freeze first |
 | Checkpoint memory blows up on 4K canvases | Med | Checkpoint the background layer at full res but the sim state at sim res; compress; disk-back older checkpoints |
 | Watercolor model is a second full engine, not a brush | Med | Scope it as its own solver with its own budget; it does not need to coexist with N-S in the same frame |
