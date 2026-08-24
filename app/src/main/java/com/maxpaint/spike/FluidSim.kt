@@ -64,6 +64,20 @@ class FluidSim(private val ctx: Context) {
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
 
+    // --- watercolor ---
+    var wcFlow = 6.0f
+    var wcGrain = 0.35f
+    var wcAdsorb = 0.12f
+    var wcDesorb = 0.05f
+    var wcCapacity = 1.2f
+    var wcEvaporate = 0.22f
+    var wcEdge = 6.0f
+    var wcPaperScale = 0.09f
+    /** Below this depth a cell is dry and commits what it holds. */
+    var wcDry = 0.002f
+    var wcLoadWater = 0.55f
+    var wcLoadPigment = 0.30f
+
     // ---- resources ----
     private lateinit var velocity: DoubleTex
     private lateinit var dye: DoubleTex
@@ -86,6 +100,9 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pBake: ComputeProgram
     private lateinit var pStats: ComputeProgram
     private lateinit var pForce: ComputeProgram
+    private lateinit var pWatercolor: ComputeProgram
+    private lateinit var pWet: ComputeProgram
+    private lateinit var water: DoubleTex
     private lateinit var statsPartial: Tex
     private var partialRes = 1
 
@@ -95,11 +112,12 @@ class FluidSim(private val ctx: Context) {
     val dyeRes get() = simRes * dyeScale
     val dyeTexture get() = dye.read
     val backgroundTexture get() = background.read
+    val waterTexture get() = water.read
     val velocityTexture get() = velocity.read
 
     fun vramBytes(): Long =
         if (!allocated) 0
-        else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() +
+        else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() + water.bytes() +
              pressure.bytes() + curl.bytes() + divergence.bytes()
 
     fun initPrograms() {
@@ -116,6 +134,8 @@ class FluidSim(private val ctx: Context) {
         pBake = ComputeProgram(ctx, "shaders/bake.comp")
         pStats = ComputeProgram(ctx, "shaders/stats.comp")
         pForce = ComputeProgram(ctx, "shaders/force.comp")
+        pWatercolor = ComputeProgram(ctx, "shaders/watercolor.comp")
+        pWet = ComputeProgram(ctx, "shaders/wet.comp")
     }
 
     fun setAspect(a: Float) { aspect = a }
@@ -133,6 +153,10 @@ class FluidSim(private val ctx: Context) {
         background = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         age = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_NEAREST)
 
+// RGBA32F: watercolor fluxes are small relative to the depth they modify,
+        // and fp16 rounds them away outright
+        water = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
+
         partialRes = (dyeRes + STATS_TILE - 1) / STATS_TILE
         statsPartial = Tex(partialRes, partialRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
         pressure = DoubleTex(simRes, simRes, GLES31.GL_R32F, GLES31.GL_NEAREST)
@@ -145,7 +169,7 @@ class FluidSim(private val ctx: Context) {
 
     fun clear() {
         if (!allocated) return
-        velocity.clear(); dye.clear(); background.clear(); age.clear()
+        velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
         pressure.clear(); curl.clear(); divergence.clear()
     }
 
@@ -157,12 +181,52 @@ class FluidSim(private val ctx: Context) {
         if (!allocated) return
 
         when (brush) {
-            Brush.GAS, Brush.FLIP, Brush.WATERCOLOR -> splat(u, v, du, dv, r, g, b)
+            Brush.GAS, Brush.FLIP -> splat(u, v, du, dv, r, g, b)
+            Brush.WATERCOLOR -> wet(u, v)
             Brush.VORTEX -> force(u, v, du, dv, forceMode.code, forceStrength)
             Brush.SOLVENT -> solvent(u, v)
             Brush.FREEZE -> transfer(1f / 60f, force = true, thaw = false, maskAt = u to v)
             Brush.THAW -> transfer(1f / 60f, force = false, thaw = true, maskAt = u to v)
         }
+    }
+
+    /** Loads the paper with water and pigment; the watercolor solver takes it from there. */
+    fun wet(u: Float, v: Float) {
+        if (!allocated) return
+        pWet.use()
+        pWet.set("uPoint", u, v)
+        pWet.set("uRadius", splatRadius)
+        pWet.set("uAspect", aspect)
+        pWet.set("uWater", wcLoadWater)
+        pWet.set("uPigment", wcLoadPigment)
+        water.read.bindImage(0, GLES31.GL_READ_ONLY)
+        water.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pWet.dispatch(dyeRes, dyeRes)
+        water.swap()
+    }
+
+    /** One watercolor step: flow, transport, adsorb, evaporate, commit. */
+    fun stepWatercolor(dt: Float) {
+        if (!allocated) return
+        pWatercolor.use()
+        pWatercolor.set("uDt", dt)
+        pWatercolor.set("uFlow", wcFlow)
+        pWatercolor.set("uGrain", wcGrain)
+        pWatercolor.set("uAdsorb", wcAdsorb)
+        pWatercolor.set("uDesorb", wcDesorb)
+        pWatercolor.set("uCapacity", wcCapacity)
+        pWatercolor.set("uEvaporate", wcEvaporate)
+        pWatercolor.set("uEdge", wcEdge)
+        pWatercolor.set("uPaperScale", wcPaperScale)
+        pWatercolor.set("uDry", wcDry)
+        pWatercolor.set("uWaterSrc", 0)
+        pWatercolor.set("uBgSrc", 1)
+        water.read.bindSampler(0)
+        background.read.bindSampler(1)
+        water.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+        background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pWatercolor.dispatch(dyeRes, dyeRes)
+        water.swap(); background.swap()
     }
 
     /** Momentum with no pigment: stir, shove, pinch or comb what is already there. */
@@ -249,6 +313,9 @@ class FluidSim(private val ctx: Context) {
     /** Lift the most recent baked paint back into the simulation. */
     fun thaw() { thawRequested = true }
 
+    /** Keeps the paper drying after the artist switches away from watercolor. */
+    var waterActive = true
+
     /** True when there is no live fluid left to simulate. */
     fun isIdle(): Boolean = false
 
@@ -310,6 +377,9 @@ class FluidSim(private val ctx: Context) {
 
         // 10. bake: settled fluid moves out of the sim and into the background
         bake(dt)
+
+        // 11. watercolor runs its own solver, on its own fields
+        if (brush == Brush.WATERCOLOR || waterActive) stepWatercolor(dt)
     }
 
     private fun computeDivergence() {
@@ -472,13 +542,15 @@ class FluidSim(private val ctx: Context) {
             pBake.set("uMaskRadius", -1f)
         }
 
-        dye.read.bindImage(0, GLES31.GL_READ_ONLY)
-        dye.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        background.read.bindImage(2, GLES31.GL_READ_ONLY)
-        background.write.bindImage(3, GLES31.GL_WRITE_ONLY)
-        age.read.bindImage(4, GLES31.GL_READ_ONLY)
-        age.write.bindImage(5, GLES31.GL_WRITE_ONLY)
+        // reads via samplers, writes via images: ES 3.1 guarantees only four
+        // compute image units
         velocity.read.bindSampler(0)
+        dye.read.bindSampler(1)
+        background.read.bindSampler(2)
+        age.read.bindSampler(3)
+        dye.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+        background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        age.write.bindImage(2, GLES31.GL_WRITE_ONLY)
 
         pBake.dispatch(dyeRes, dyeRes)
         dye.swap(); background.swap(); age.swap()
@@ -486,6 +558,7 @@ class FluidSim(private val ctx: Context) {
 
     private fun releaseTextures() {
         velocity.release(); dye.release(); background.release(); age.release()
+        water.release()
         pressure.release(); curl.release(); divergence.release()
         statsPartial.release()
         allocated = false

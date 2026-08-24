@@ -10,14 +10,16 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // Drag is what slows the fluid, so drag is what causes baking -- one dial the
 // artist can reason about: more drag, paint sets sooner.
 
-layout(rgba16f, binding = 0) readonly  uniform highp image2D uDyeSrc;
-layout(rgba16f, binding = 1) writeonly uniform highp image2D uDyeDst;
-layout(rgba16f, binding = 2) readonly  uniform highp image2D uBgSrc;
-layout(rgba16f, binding = 3) writeonly uniform highp image2D uBgDst;
-layout(rgba16f, binding = 4) readonly  uniform highp image2D uAgeSrc;   // .x = seconds live
-layout(rgba16f, binding = 5) writeonly uniform highp image2D uAgeDst;
-
+// Reads go through samplers rather than images: ES 3.1 only guarantees four
+// compute image units, and this pass needs three writes of its own.
 layout(binding = 0) uniform highp sampler2D uVel;
+layout(binding = 1) uniform highp sampler2D uDyeSrc;
+layout(binding = 2) uniform highp sampler2D uBgSrc;
+layout(binding = 3) uniform highp sampler2D uAgeSrc;    // .x = seconds live
+
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDyeDst;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uBgDst;
+layout(rgba16f, binding = 2) writeonly uniform highp image2D uAgeDst;
 
 uniform float uDt;
 uniform float uSettleSpeed;   // speed at/below which settling begins
@@ -34,9 +36,9 @@ void main() {
     ivec2 sz = imageSize(uDyeDst);
     if (c.x >= sz.x || c.y >= sz.y) return;
 
-    vec4 dye = imageLoad(uDyeSrc, c);
-    vec4 bg  = imageLoad(uBgSrc, c);
-    float age = imageLoad(uAgeSrc, c).x + uDt;
+    vec4 dye = texelFetch(uDyeSrc, c, 0);
+    vec4 bg  = texelFetch(uBgSrc, c, 0);
+    float age = texelFetch(uAgeSrc, c, 0).x + uDt;
 
     // A local freeze or thaw brush limits the transfer to what it touches,
     // so a good vortex can be locked while the rest keeps moving.
