@@ -1,0 +1,34 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uVel;
+layout(r32f,    binding = 1) writeonly uniform highp image2D uDiv;
+
+// FORWARD differences, paired with the BACKWARD gradient in gradsub.comp.
+//
+// Used by the PARTICLE solver only.
+//
+// The gas brush uses centred differences, which measure better there and are
+// the conventional collocated scheme. They fail for a free surface: centred
+// differences span two cells, so a liquid region only a few cells thick is
+// effectively decoupled from its own pressure and the solve converges
+// immediately to something that is not divergence-free. Forward divergence with
+// a backward gradient composes to exactly the compact five-point Laplacian the
+// pressure solve inverts, which a thin region needs.
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDiv);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+    ivec2 mx = sz - 1;
+
+    vec2 here = imageLoad(uVel, c).xy;
+
+    // solid walls: no flow through the boundary
+    float right = c.x < mx.x ? imageLoad(uVel, c + ivec2(1, 0)).x : 0.0;
+    float up    = c.y < mx.y ? imageLoad(uVel, c + ivec2(0, 1)).y : 0.0;
+    float hx    = c.x < mx.x ? here.x : 0.0;
+    float hy    = c.y < mx.y ? here.y : 0.0;
+
+    imageStore(uDiv, c, vec4((right - hx) + (up - hy), 0.0, 0.0, 0.0));
+}

@@ -200,12 +200,52 @@ as soft additive points rather than scattered by hand. And ES 3.1 guarantees
 bound two ways — as an SSBO for the compute passes, and as a vertex buffer for
 the draws.
 
-There is **no gravity**, and the tests assert it: paint thrown sideways must
-travel sideways and show no vertical drift (measured: −0.0024 over 40 frames).
+This is now a real FLIP step, not passive particles. The first version was
+neither, and it showed:
 
-It is **one-way coupled**: particles read the grid but do not write back to it.
-Full FLIP scatters particle momentum onto the grid, which needs the fixed-point
-atomic workaround; that belongs with M2 rather than the spike.
+- **No particle-to-grid transfer.** Particles read the grid but never wrote to
+  it, so they never saw each other. No incompressibility, and the medium was a
+  spray of independent points rather than liquid.
+- **The blend was wrong.** It mixed toward the *absolute* grid velocity, which
+  discards the particle's history every step — PIC with inertia, not FLIP. Real
+  FLIP adds the grid's *change*: `v + (gridNew − gridOld)`.
+
+The pipeline is now scatter → project → gather. Momentum accumulates as
+fixed-point integers, since ES 3.1 has no float atomics but `atomicAdd` on `int`
+is core. Cells holding no particles are air and are pinned to zero pressure,
+which is what gives the liquid a free surface instead of sealing it in a box.
+
+Two things had to be right together, and getting one without the other was
+worse than neither:
+
+- **The grid is staggered (MAC).** The x component lives on a cell's left face,
+  y on its bottom face. Forward divergence paired with a backward gradient
+  composes to exactly the compact five-point Laplacian the pressure solve
+  inverts. The gas brush keeps centred differences, which measure better there;
+  they fail for a free surface because they span two cells, so a liquid region a
+  few cells thick is decoupled from its own pressure and the solve converges
+  immediately to something that is not divergence-free.
+- **The transfers must be staggered to match.** With MAC operators but
+  cell-centred scatter and gather, the half-cell mismatch made the entire field
+  drift: paint slid steadily downward with no gravity anywhere in the code
+  (−0.18 over 40 frames). Sampling each component at its own point fixed it
+  (−0.0016).
+
+Measured: interior divergence 99% removed (0.044 → 0.00034), and colliding
+streams now push each other aside instead of passing through — cross-axis spread
+0.0149 without the solve, 0.0837 with.
+
+There is **no gravity**, and the tests assert it: paint thrown sideways travels
+sideways and shows no vertical drift.
+
+### How many particles fit
+
+Hardware-specific, and not something to reason out from a desk: the cost is
+dominated by the atomic scatter in particle-to-grid and by fill rate in the
+draw, and both vary by an order of magnitude across mobile GPUs. The FLIP tool
+panel has a **How many particles fit?** button that ramps the count and reports
+the largest that holds 60fps on the device in hand. The pool is 400,000; unused
+capacity costs nothing, since only the filled span of the ring buffer is walked.
 
 ## M0 — resolution headroom spike
 

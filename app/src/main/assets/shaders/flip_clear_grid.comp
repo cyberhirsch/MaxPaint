@@ -1,0 +1,15 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 1) buffer GridAccum { int acc[]; };
+uniform int uCells;
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCells) return;
+    acc[i * 4]     = 0;
+    acc[i * 4 + 1] = 0;
+    acc[i * 4 + 2] = 0;
+    acc[i * 4 + 3] = 0;
+}

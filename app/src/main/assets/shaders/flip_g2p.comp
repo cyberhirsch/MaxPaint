@@ -1,0 +1,75 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 64) in;
+
+// Grid to particle, with the blend FLIP actually specifies.
+//
+// The previous version blended toward the ABSOLUTE grid velocity, which throws
+// away the particle's history every step and behaves like PIC with inertia.
+// Real FLIP adds the grid's CHANGE to the particle's own velocity, so detail
+// the grid cannot represent survives:
+//
+//   v_pic  = v_grid_new
+//   v_flip = v_particle + (v_grid_new - v_grid_old)
+//   v      = mix(v_pic, v_flip, ratio)
+
+layout(std430, binding = 0) buffer Particles { vec4 data[]; };
+
+layout(binding = 0) uniform highp sampler2D uVelNew;   // after projection
+layout(binding = 1) uniform highp sampler2D uVelOld;   // before projection
+
+uniform float uDt;
+uniform int   uCapacity;
+uniform float uFlipRatio;
+uniform float uDrag;
+uniform float uAspect;
+uniform float uSettleSpeed;
+uniform float uSettleMinAge;
+uniform vec2  uTexel;      // 1 / grid, for the staggered sample offsets
+
+// The grid is staggered: x lives on left faces, y on bottom faces. Each
+// component must therefore be sampled at its own point, half a cell apart --
+// sampling both at the cell centre leaves the field biased.
+vec2 sampleStaggered(sampler2D tex, vec2 uv) {
+    float vx = texture(tex, uv + vec2(0.5 * uTexel.x, 0.0)).x;
+    float vy = texture(tex, uv + vec2(0.0, 0.5 * uTexel.y)).y;
+    return vec2(vx, vy);
+}
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCapacity) return;
+
+    vec4 meta = data[i * 2 + 1];
+    float state = meta.z;
+
+    if (state > 1.5) { data[i * 2 + 1] = vec4(0.0); return; }   // retire
+    if (state < 0.5) return;
+
+    vec4 pv = data[i * 2];
+    vec2 pos = pv.xy;
+    vec2 vel = pv.zw;
+
+    vec2 gNew = sampleStaggered(uVelNew, pos);
+    vec2 gOld = sampleStaggered(uVelOld, pos);
+
+    vec2 pic  = gNew;
+    vec2 flip = vel + (gNew - gOld);
+    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
+
+    vel *= 1.0 / (1.0 + uDrag * uDt);
+
+    pos += vec2(vel.x / uAspect, vel.y) * uDt;
+
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x = abs(vel.x) * 0.2; }
+    if (pos.x > 1.0) { pos.x = 1.0; vel.x = -abs(vel.x) * 0.2; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y = abs(vel.y) * 0.2; }
+    if (pos.y > 1.0) { pos.y = 1.0; vel.y = -abs(vel.y) * 0.2; }
+
+    float age = meta.y + uDt;
+    if (length(vel) < uSettleSpeed && age > uSettleMinAge) state = 2.0;
+
+    data[i * 2]     = vec4(pos, vel);
+    data[i * 2 + 1] = vec4(meta.x, age, state, meta.w);
+}
