@@ -21,15 +21,25 @@ import android.opengl.GLES31
 class FluidSim(private val ctx: Context) {
 
     // ---- tunables (driven by the UI) ----
-    var simRes = 512; private set
+    /** The resolution the artist picks: a cell budget, not a side length. */
+    var simRes = 768; private set
     var dyeScale = 1; private set
+
+    /**
+     * The grid matches the canvas aspect rather than being square, so a circle
+     * stays a circle. Sides are chosen as N*sqrt(aspect) x N/sqrt(aspect), which
+     * keeps cells square in world space AND keeps the cell count near N^2, so a
+     * given resolution costs about what it always did.
+     */
+    var simW = 768; private set
+    var simH = 768; private set
     var pressureIterations = 30
     /** Red-black Gauss-Seidel converges ~2x faster per sweep than Jacobi at the
      *  same thread count, and needs one pressure texture instead of two.
      *  See tools/compare_solvers.py for the measurement. */
     var useRedBlack = true
-    var vorticity = 22f
-    var velocityDrag = 0.12f      // "drag" from the PRD; higher = paint sets sooner
+    var vorticity = 22f      // Smoke, the default preset
+    var velocityDrag = 3.0f      // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
     var splatRadius = 0.02f
     /** Coverage deposited per stroke sample, before pressure scales it. */
@@ -51,9 +61,9 @@ class FluidSim(private val ctx: Context) {
     /** Speed at or below which paint begins to set. */
     var settleSpeed = 0.35f
     /** How fast settled dye transfers to the background, per second. */
-    var bakeRate = 2.5f
+    var bakeRate = 0f
     /** "Hold": seconds paint must stay live before it may bake at all. */
-    var settleMinAge = 0.35f
+    var settleMinAge = 5.0f
     /** Set by Freeze Now; consumed on the next step. */
     @Volatile var freezeRequested = false
     /** Set by global Thaw; consumed on the next step. */
@@ -67,6 +77,16 @@ class FluidSim(private val ctx: Context) {
     var combFrequency = 14f
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
+
+    // --- nib ---
+    var nibRadius = 0.006f
+    var nibHardness = 0.9f
+    var nibInk = 1.0f
+    var nibSoak = 0.9f
+    var nibDry = 0.7f
+    var nibGrain = 0.6f
+    var nibPaperScale = 0.25f
+    var nibThreshold = 0.02f
 
     // --- watercolor ---
     var wcFlow = 6.0f
@@ -106,15 +126,23 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pForce: ComputeProgram
     private lateinit var pWatercolor: ComputeProgram
     private lateinit var pWet: ComputeProgram
+    private lateinit var pNib: ComputeProgram
+    private lateinit var pSoak: ComputeProgram
+    private lateinit var nibInkField: DoubleTex
+    private var lastNib: Pair<Float, Float>? = null
     private lateinit var water: DoubleTex
     private lateinit var flipInk: Tex
     val flip = FlipSystem(ctx)
     private lateinit var statsPartial: Tex
-    private var partialRes = 1
+    private var partialW = 1
+    private var partialH = 1
 
     private var aspect = 1f
     private var allocated = false
 
+    val dyeW get() = simW * dyeScale
+    val dyeH get() = simH * dyeScale
+    /** Kept for reporting: the nominal budget, not a side length. */
     val dyeRes get() = simRes * dyeScale
     val dyeTexture get() = dye.read
     val backgroundTexture get() = background.read
@@ -124,7 +152,7 @@ class FluidSim(private val ctx: Context) {
     fun vramBytes(): Long =
         if (!allocated) 0
         else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() + water.bytes() +
-             flipInk.bytes() + flip.bytes() +
+             flipInk.bytes() + flip.bytes() + nibInkField.bytes() +
              pressure.bytes() + curl.bytes() + divergence.bytes()
 
     fun initPrograms() {
@@ -143,10 +171,18 @@ class FluidSim(private val ctx: Context) {
         pForce = ComputeProgram(ctx, "shaders/force.comp")
         pWatercolor = ComputeProgram(ctx, "shaders/watercolor.comp")
         pWet = ComputeProgram(ctx, "shaders/wet.comp")
+        pNib = ComputeProgram(ctx, "shaders/nib.comp")
+        pSoak = ComputeProgram(ctx, "shaders/soak.comp")
         flip.init()
     }
 
-    fun setAspect(a: Float) { aspect = a }
+    fun setAspect(a: Float) {
+        if (kotlin.math.abs(a - aspect) < 1e-4f) return
+        aspect = a
+        if (allocated) allocate(simRes, dyeScale)   // re-shape to the new canvas
+    }
+
+    private fun even(v: Float) = (v.toInt() / 2 * 2).coerceAtLeast(8)
 
     /** (Re)allocate all fields. Safe to call at runtime when the user picks a new resolution. */
     fun allocate(newSimRes: Int, newDyeScale: Int) {
@@ -154,33 +190,39 @@ class FluidSim(private val ctx: Context) {
         simRes = newSimRes
         dyeScale = newDyeScale
 
-        velocity = DoubleTex(simRes, simRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
-        dye = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        val root = kotlin.math.sqrt(aspect.coerceIn(0.2f, 5f))
+        simW = even(simRes * root)
+        simH = even(simRes / root)
+
+        velocity = DoubleTex(simW, simH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        dye = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         // Baked paint lives at dye resolution for the spike. The PRD wants it at
         // full canvas resolution (7.2); that arrives with the document model in M3.
-        background = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
-        age = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_NEAREST)
+        background = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        age = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_NEAREST)
 
 // RGBA32F: watercolor fluxes are small relative to the depth they modify,
         // and fp16 rounds them away outright
-        water = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
+        water = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
         // live particles are drawn here each frame, then composited
-        flipInk = Tex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        flipInk = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        nibInkField = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
 
-        partialRes = (dyeRes + STATS_TILE - 1) / STATS_TILE
-        statsPartial = Tex(partialRes, partialRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
-        pressure = DoubleTex(simRes, simRes, GLES31.GL_R32F, GLES31.GL_NEAREST)
-        curl = Tex(simRes, simRes, GLES31.GL_R32F, GLES31.GL_NEAREST)
-        divergence = Tex(simRes, simRes, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        partialW = (dyeW + STATS_TILE - 1) / STATS_TILE
+        partialH = (dyeH + STATS_TILE - 1) / STATS_TILE
+        statsPartial = Tex(partialW, partialH, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
+        pressure = DoubleTex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        curl = Tex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        divergence = Tex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
 
         allocated = true
-        GLUtil.checkError("allocate($simRes, dye=$dyeRes)")
+        GLUtil.checkError("allocate(${simW}x${simH}, dye=${dyeW}x${dyeH})")
     }
 
     fun clear() {
         if (!allocated) return
         velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
-        flipInk.clear(); flip.clear()
+        flipInk.clear(); flip.clear(); nibInkField.clear(); lastNib = null
         pressure.clear(); curl.clear(); divergence.clear()
     }
 
@@ -211,6 +253,7 @@ class FluidSim(private val ctx: Context) {
     private fun strokeInner(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {
         when (brush) {
             Brush.GAS -> splat(u, v, du, dv, r, g, b)
+            Brush.NIB -> nib(u, v)
             Brush.FLIP -> {
                 // a little momentum into the grid too, so the pour interacts
                 // with fluid already on the canvas
@@ -225,6 +268,54 @@ class FluidSim(private val ctx: Context) {
         }
     }
 
+    /**
+     * A nib mark. Drawn as a capsule from the previous sample so a fast stroke
+     * stays unbroken rather than dotting, and written to its own field so the
+     * fluid cannot smear it.
+     */
+    fun nib(u: Float, v: Float) {
+        if (!allocated) return
+        val prev = lastNib ?: (u to v)
+
+        pNib.use()
+        pNib.set("uPoint", u, v)
+        pNib.set("uPrev", prev.first, prev.second)
+        pNib.set("uRadius", nibRadius * inkPerStroke.coerceAtLeast(0.25f))
+        pNib.set("uAspect", aspect)
+        pNib.set("uInk", nibInk * inkPerStroke)
+        pNib.set("uHardness", nibHardness)
+        nibInkField.read.bindImage(0, GLES31.GL_READ_ONLY)
+        nibInkField.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pNib.dispatch(dyeW, dyeH)
+        nibInkField.swap()
+
+        lastNib = u to v
+    }
+
+    /** Called when the finger or stylus lifts, so the next mark does not join to it. */
+    fun endStroke() { lastNib = null }
+
+    /** Capillary soak plus drying into the background. */
+    private fun stepNib(dt: Float) {
+        pSoak.use()
+        pSoak.set("uDt", dt)
+        pSoak.set("uSoak", nibSoak)
+        pSoak.set("uDry", nibDry)
+        pSoak.set("uGrain", nibGrain)
+        pSoak.set("uPaperScale", nibPaperScale)
+        pSoak.set("uThreshold", nibThreshold)
+        pSoak.set("uInkSrc", 0)
+        pSoak.set("uBgSrc", 1)
+        nibInkField.read.bindSampler(0)
+        background.read.bindSampler(1)
+        nibInkField.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+        background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pSoak.dispatch(dyeW, dyeH)
+        nibInkField.swap(); background.swap()
+    }
+
+    val nibTexture get() = nibInkField.read
+
     /** Loads the paper with water and pigment; the watercolor solver takes it from there. */
     fun wet(u: Float, v: Float) {
         if (!allocated) return
@@ -236,7 +327,7 @@ class FluidSim(private val ctx: Context) {
         pWet.set("uPigment", wcLoadPigment * inkPerStroke)
         water.read.bindImage(0, GLES31.GL_READ_ONLY)
         water.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pWet.dispatch(dyeRes, dyeRes)
+        pWet.dispatch(dyeW, dyeH)
         water.swap()
     }
 
@@ -260,7 +351,7 @@ class FluidSim(private val ctx: Context) {
         background.read.bindSampler(1)
         water.write.bindImage(0, GLES31.GL_WRITE_ONLY)
         background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pWatercolor.dispatch(dyeRes, dyeRes)
+        pWatercolor.dispatch(dyeW, dyeH)
         water.swap(); background.swap()
     }
 
@@ -270,7 +361,7 @@ class FluidSim(private val ctx: Context) {
      * books — before being retired.
      */
     private fun stepFlip(dt: Float) {
-        flip.step(dt, velocity.read)
+        flip.step(dt, velocity.read, aspect)
 
         // freshly dried particles land in the background layer, permanently
         flip.draw(state = 2f, target = background.read)
@@ -287,7 +378,7 @@ class FluidSim(private val ctx: Context) {
         if (!allocated) return
         pForce.use()
         pForce.set("uPoint", u, v)
-        pForce.set("uDir", du, dv)
+        pForce.set("uDir", du * aspect, dv)
         pForce.set("uRadius", splatRadius * 1.5f)
         pForce.set("uAspect", aspect)
         pForce.set("uStrength", strength)
@@ -296,7 +387,7 @@ class FluidSim(private val ctx: Context) {
         pForce.set("uDt", 1f / 60f)
         velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
         velocity.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pForce.dispatch(simRes, simRes)
+        pForce.dispatch(simW, simH)
         velocity.swap()
     }
 
@@ -315,7 +406,7 @@ class FluidSim(private val ctx: Context) {
         pSplat.set("uValue", solventBite, 0f, 0f, 0f)
         dye.read.bindImage(0, GLES31.GL_READ_ONLY)
         dye.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pSplat.dispatch(dyeRes, dyeRes)
+        pSplat.dispatch(dyeW, dyeH)
         dye.swap()
         pSplat.set("uMode", 0)
 
@@ -334,10 +425,11 @@ class FluidSim(private val ctx: Context) {
 
         // velocity
         pSplat.set("uRadius", splatRadius)
-        pSplat.set("uValue", du * velocityGain, dv * velocityGain, 0f, 0f)
+        // touch delta arrives in UV; velocity is stored in world units
+        pSplat.set("uValue", du * velocityGain * aspect, dv * velocityGain, 0f, 0f)
         velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
         velocity.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pSplat.dispatch(simRes, simRes)
+        pSplat.dispatch(simW, simH)
         velocity.swap()
 
         // dye - a slightly tighter splat reads as a crisper mark.
@@ -346,7 +438,7 @@ class FluidSim(private val ctx: Context) {
         pSplat.set("uValue", r * inkPerStroke, g * inkPerStroke, b * inkPerStroke, inkPerStroke)
         dye.read.bindImage(0, GLES31.GL_READ_ONLY)
         dye.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pSplat.dispatch(dyeRes, dyeRes)
+        pSplat.dispatch(dyeW, dyeH)
         dye.swap()
 
         // Freshly injected paint is new, so its age restarts. Lerp rather than
@@ -355,7 +447,7 @@ class FluidSim(private val ctx: Context) {
         pSplat.set("uValue", 0f, 0f, 0f, 0f)
         age.read.bindImage(0, GLES31.GL_READ_ONLY)
         age.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pSplat.dispatch(dyeRes, dyeRes)
+        pSplat.dispatch(dyeW, dyeH)
         age.swap()
         pSplat.set("uMode", 0)
     }
@@ -379,7 +471,7 @@ class FluidSim(private val ctx: Context) {
         pCurl.use()
         velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
         curl.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pCurl.dispatch(simRes, simRes)
+        pCurl.dispatch(simW, simH)
 
         // 2. vorticity confinement
         if (vorticity > 0f) {
@@ -389,7 +481,7 @@ class FluidSim(private val ctx: Context) {
             velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
             velocity.write.bindImage(1, GLES31.GL_WRITE_ONLY)
             curl.bindImage(2, GLES31.GL_READ_ONLY)
-            pVorticity.dispatch(simRes, simRes)
+            pVorticity.dispatch(simW, simH)
             velocity.swap()
         }
 
@@ -403,21 +495,22 @@ class FluidSim(private val ctx: Context) {
         val pAdv = if (useMacCormack) pAdvectMc else pAdvect
         pAdv.use()
         pAdv.set("uDt", dt)
-        pAdv.set("uDstTexel", 1f / simRes, 1f / simRes)
+        pAdv.set("uAspect", aspect)
+        pAdv.set("uDstTexel", 1f / simW, 1f / simH)
         pAdv.set("uDissipation", 0f)
         velocity.read.bindSampler(0)
         velocity.read.bindSampler(1)
         velocity.write.bindImage(0, GLES31.GL_WRITE_ONLY)
-        pAdv.dispatch(simRes, simRes)
+        pAdv.dispatch(simW, simH)
         velocity.swap()
 
         // 8. advect dye
-        pAdv.set("uDstTexel", 1f / dyeRes, 1f / dyeRes)
+        pAdv.set("uDstTexel", 1f / dyeW, 1f / dyeH)
         pAdv.set("uDissipation", dyeDissipation)
         dye.read.bindSampler(0)
         velocity.read.bindSampler(1)
         dye.write.bindImage(0, GLES31.GL_WRITE_ONLY)
-        pAdv.dispatch(dyeRes, dyeRes)
+        pAdv.dispatch(dyeW, dyeH)
         dye.swap()
 
         // 9. advect age along with the dye it belongs to
@@ -425,7 +518,7 @@ class FluidSim(private val ctx: Context) {
         age.read.bindSampler(0)
         velocity.read.bindSampler(1)
         age.write.bindImage(0, GLES31.GL_WRITE_ONLY)
-        pAdv.dispatch(dyeRes, dyeRes)
+        pAdv.dispatch(dyeW, dyeH)
         age.swap()
 
         // 10. bake: settled fluid moves out of the sim and into the background
@@ -436,20 +529,23 @@ class FluidSim(private val ctx: Context) {
 
         // 12. particles: advance, dry the ones that have stopped, redraw
         stepFlip(dt)
+
+        // 13. nib ink creeps into the paper and dries
+        stepNib(dt)
     }
 
     private fun computeDivergence() {
         pDivergence.use()
         velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
         divergence.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pDivergence.dispatch(simRes, simRes)
+        pDivergence.dispatch(simW, simH)
     }
 
     private fun decayPressure(factor: Float) {
         pClear.use()
         pClear.set("uValue", factor)
         pressure.read.bindImage(0, GLES31.GL_READ_WRITE)
-        pClear.dispatch(simRes, simRes)
+        pClear.dispatch(simW, simH)
     }
 
     private fun solvePressure() {
@@ -459,12 +555,12 @@ class FluidSim(private val ctx: Context) {
             // two half-width dispatches, so thread count matches one Jacobi pass.
             pPressureRB.use()
             divergence.bindImage(2, GLES31.GL_READ_ONLY)
-            val halfWidth = (simRes + 1) / 2
+            val halfWidth = (simW + 1) / 2
             for (i in 0 until pressureIterations) {
                 for (parity in 0..1) {
                     pressure.read.bindImage(0, GLES31.GL_READ_WRITE)
                     pPressureRB.set("uParity", parity)
-                    pPressureRB.dispatch(halfWidth, simRes)
+                    pPressureRB.dispatch(halfWidth, simH)
                 }
             }
         } else {
@@ -473,7 +569,7 @@ class FluidSim(private val ctx: Context) {
             for (i in 0 until pressureIterations) {
                 pressure.read.bindImage(0, GLES31.GL_READ_ONLY)
                 pressure.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-                pPressure.dispatch(simRes, simRes)
+                pPressure.dispatch(simW, simH)
                 pressure.swap()
             }
         }
@@ -487,7 +583,7 @@ class FluidSim(private val ctx: Context) {
         velocity.read.bindImage(0, GLES31.GL_READ_ONLY)
         velocity.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         pressure.read.bindImage(2, GLES31.GL_READ_ONLY)
-        pGradSub.dispatch(simRes, simRes)
+        pGradSub.dispatch(simW, simH)
         velocity.swap()
     }
 
@@ -509,10 +605,10 @@ class FluidSim(private val ctx: Context) {
         dye.read.bindImage(0, GLES31.GL_READ_ONLY)
         divergence.bindImage(1, GLES31.GL_READ_ONLY)
         statsPartial.bindImage(2, GLES31.GL_WRITE_ONLY)
-        pStats.dispatch(partialRes, partialRes)
+        pStats.dispatch(partialW, partialH)
         GLES31.glMemoryBarrier(GLES31.GL_TEXTURE_FETCH_BARRIER_BIT or GLES31.GL_BUFFER_UPDATE_BARRIER_BIT)
 
-        val n = partialRes * partialRes * 4
+        val n = partialW * partialH * 4
         val buf = java.nio.ByteBuffer.allocateDirect(n * 4)
             .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
 
@@ -524,7 +620,7 @@ class FluidSim(private val ctx: Context) {
             GLES31.GL_TEXTURE_2D, statsPartial.id, 0
         )
         GLES31.glReadPixels(
-            0, 0, partialRes, partialRes,
+            0, 0, partialW, partialH,
             GLES31.GL_RGBA, GLES31.GL_FLOAT, buf
         )
         GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, 0)
@@ -532,11 +628,11 @@ class FluidSim(private val ctx: Context) {
 
         var ink = 0.0
         var div2 = 0.0
-        for (i in 0 until partialRes * partialRes) {
+        for (i in 0 until partialW * partialH) {
             ink += buf.get(i * 4)
             div2 += buf.get(i * 4 + 1)
         }
-        val cells = (simRes.toDouble() * simRes.toDouble()).coerceAtLeast(1.0)
+        val cells = (simW.toDouble() * simH.toDouble()).coerceAtLeast(1.0)
         return Stats(ink.toFloat(), Math.sqrt(div2 / cells).toFloat())
     }
 
@@ -608,13 +704,13 @@ class FluidSim(private val ctx: Context) {
         background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         age.write.bindImage(2, GLES31.GL_WRITE_ONLY)
 
-        pBake.dispatch(dyeRes, dyeRes)
+        pBake.dispatch(dyeW, dyeH)
         dye.swap(); background.swap(); age.swap()
     }
 
     private fun releaseTextures() {
         velocity.release(); dye.release(); background.release(); age.release()
-        water.release(); flipInk.release()
+        water.release(); flipInk.release(); nibInkField.release()
         pressure.release(); curl.release(); divergence.release()
         statsPartial.release()
         allocated = false

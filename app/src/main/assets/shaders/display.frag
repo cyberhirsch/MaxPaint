@@ -9,6 +9,7 @@ layout(binding = 1) uniform highp sampler2D uVel;
 layout(binding = 2) uniform highp sampler2D uBackground;  // baked paint
 layout(binding = 3) uniform highp sampler2D uWater;       // watercolor: depth, suspended, adsorbed
 layout(binding = 4) uniform highp sampler2D uFlip;        // live particle ink
+layout(binding = 5) uniform highp sampler2D uNib;         // wet nib ink
 
 uniform int   uDebugView;    // 0 = paint, 1 = velocity
 uniform int   uHeat;         // 1 = tint live fluid by how close it is to setting
@@ -55,6 +56,10 @@ void main() {
 
     vec4 drops = texture(uFlip, vUv);
     col = col * (1.0 - clamp(drops.a, 0.0, 1.0)) + drops.rgb;
+
+    // wet nib ink sits on top of everything, black and opaque at full strength
+    float nib = clamp(texture(uNib, vUv).x, 0.0, 1.0);
+    col *= (1.0 - nib);
 
     fragColor = vec4(col, 1.0);
 }

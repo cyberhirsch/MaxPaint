@@ -18,7 +18,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var viewH = 1
 
     /** Set from the UI thread; applied on the GL thread at the top of the next frame. */
-    @Volatile var pendingSimRes: Int = 512
+    @Volatile var pendingSimRes: Int = 768
     @Volatile var pendingDyeScale: Int = 1
     @Volatile var debugView = 0
     @Volatile var heatOverlay = false
@@ -27,6 +27,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var clearRequested = false
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
+    @Volatile var endStrokeRequested = false
 
     @Volatile var statsLine: String = ""
     @Volatile var benchmarkReport: String? = null
@@ -140,6 +141,12 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure, tiltSpread)
         }
 
+        // a lifted pen must not join its next mark to the last one
+        if (endStrokeRequested) {
+            endStrokeRequested = false
+            sim.endStroke()
+        }
+
         if (!paused) sim.step(dt)
 
         render()
@@ -161,6 +168,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.backgroundTexture.bindSampler(2)
         sim.waterTexture.bindSampler(3)
         sim.flipTexture.bindSampler(4)
+        sim.nibTexture.bindSampler(5)
         GLES31.glUniform1i(
             GLES31.glGetUniformLocation(displayProgram, "uShowWater"),
             if (sim.waterActive) 1 else 0
@@ -193,8 +201,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         val vram = sim.vramBytes() / (1024.0 * 1024.0)
 
         statsLine = String.format(
-            "%s · %d²  dye %d²  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
-            sim.brush.label, sim.simRes, sim.dyeRes,
+            "%s · %dx%d  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
+            sim.brush.label, sim.simW, sim.simH,
             if (sim.useRedBlack) "RB-GS" else "Jacobi", sim.pressureIterations,
             if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram
         )

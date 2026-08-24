@@ -67,6 +67,26 @@ milestone M3, the app around the paint, is not built:
 Determinism is *verified* (identical inputs give bit-identical output) but the
 replay log that would exploit it is not written yet.
 
+## The canvas grid is not square
+
+The simulation grid takes the shape of the canvas. Picking a resolution N sets a
+*cell budget*, not a side length:
+
+```
+simW = N·√aspect      simH = N/√aspect
+```
+
+which keeps cells square in world space (`dx == dy`, so the pressure stencil
+stays isotropic) while holding the cell count near N², so a given resolution
+costs about what it always did. At 2.2:1 a budget of 128 becomes a 188×86 grid —
+16168 cells against 16384 nominal.
+
+This required velocity to be stored in **world** units rather than UV, where the
+canvas spans x ∈ [0, aspect] and y ∈ [0, 1]. In UV units a diagonal stroke on a
+stretched grid curves, because a UV step means a different distance on each axis.
+The verification asserts isotropy directly: equal world velocity components must
+produce equal world displacement, and they now agree to within 0.2%.
+
 ## Brushes
 
 A brush is a *medium* — which solver it drives and how it deposits paint — plus
@@ -77,6 +97,7 @@ rather than an accident.
 | Brush | Deposits | What it does |
 |---|---|---|
 | **Gas** | ink + momentum | The hero brush. Ink-in-water bloom and curl. |
+| **Nib** | hard-edged ink | A pen. Writes to its own field so the fluid never smears it, and creeps into the paper by capillary action — hold still and the mark blooms. |
 | **Flip** | particles | Paint that pours, drips and runs down the canvas, then dries where it pools. One slider goes splashy to viscous. Device tilt can steer gravity. |
 | **Water** | water + pigment | Shallow-water pigment on paper: bleeds, blooms, darkens at the edges, granulates on the paper grain. |
 | **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. |

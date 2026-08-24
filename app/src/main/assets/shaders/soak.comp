@@ -1,0 +1,73 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Capillary soak. Wet ink creeps into the paper around the mark and dries into
+// the background as it goes, so a nib held in place slowly blooms while a quick
+// stroke stays crisp.
+//
+// Spread is conductance-limited by the paper grain, taken as the minimum of the
+// two cells' grain so the flux between any pair is symmetric -- that is what
+// keeps the soak conservative rather than quietly generating or eating ink.
+
+layout(binding = 0) uniform highp sampler2D uInkSrc;
+layout(binding = 1) uniform highp sampler2D uBgSrc;
+
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uInkDst;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uBgDst;
+
+uniform float uDt;
+uniform float uSoak;        // capillary rate
+uniform float uDry;         // fraction drying into the paper per second
+uniform float uGrain;       // how much the paper fibre steers the bleed
+uniform float uPaperScale;
+uniform float uThreshold;   // ink below this is too thin to creep further
+
+float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+float paper(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(hash(i), hash(i + vec2(1, 0)), f.x),
+               mix(hash(i + vec2(0, 1)), hash(i + vec2(1, 1)), f.x), f.y);
+}
+
+float grainAt(ivec2 c) {
+    return mix(1.0, paper(vec2(c) * uPaperScale), clamp(uGrain, 0.0, 1.0));
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uInkDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+    ivec2 mx = sz - 1;
+
+    vec4 ink = texelFetch(uInkSrc, c, 0);
+    vec4 bg = texelFetch(uBgSrc, c, 0);
+
+    float wet = ink.x;
+    float g0 = grainAt(c);
+
+    ivec2 offs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+    float net = 0.0;
+    for (int i = 0; i < 4; ++i) {
+        ivec2 n = clamp(c + offs[i], ivec2(0), mx);
+        float wn = texelFetch(uInkSrc, n, 0).x;
+
+        // symmetric conductance, so what leaves one cell arrives in the other
+        float k = uSoak * uDt * min(g0, grainAt(n));
+        float hi = max(wet, wn);
+        if (hi < uThreshold) continue;      // too thin to wick
+
+        net += k * (wn - wet);
+    }
+    wet = max(wet + net, 0.0);
+
+    // drying: ink still on the surface commits to the paper underneath
+    float dried = wet * clamp(uDry * uDt, 0.0, 1.0);
+    wet -= dried;
+
+    imageStore(uInkDst, c, vec4(wet, ink.y * 0.995, 0.0, 0.0));
+    imageStore(uBgDst, c, vec4(bg.rgb, bg.a + dried));
+}

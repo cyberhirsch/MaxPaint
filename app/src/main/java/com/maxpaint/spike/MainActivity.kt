@@ -2,6 +2,10 @@ package com.maxpaint.spike
 
 import android.app.AlertDialog
 import android.graphics.Color
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
@@ -13,28 +17,39 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.*
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 
+/**
+ * Canvas first. Tools live in a narrow rail; the settings panel stays shut until
+ * you tap the tool you already have selected. Nothing else covers the paint.
+ */
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FluidRenderer
     private lateinit var hud: TextView
+    private lateinit var rail: LinearLayout
+    private lateinit var panel: LinearLayout
+    private lateinit var panelBody: LinearLayout
+    private lateinit var panelTitle: TextView
 
     private val ui = Handler(Looper.getMainLooper())
-    private var twoFingerDownAt = 0L
-    private var tiltGravity = false
     private var versionLabel = ""
+    private var tiltGravity = false
     private var sensors: SensorManager? = null
 
-    // last touch position per pointer, for momentum
+    private var selected: Brush = Brush.GAS
+    private var panelOpen = false
+    private var showingGlobal = false
+
+    private val toolButtons = HashMap<Brush, Button>()
+
     private val lastX = HashMap<Int, Float>()
     private val lastY = HashMap<Int, Float>()
+    private var twoFingerDownAt = 0L
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,7 +67,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         val root = FrameLayout(this)
         root.addView(glView, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         root.addView(buildHud())
-        root.addView(buildControls())
+        root.addView(buildPanel())
+        root.addView(buildRail())
         setContentView(root)
 
         versionLabel = runCatching {
@@ -60,18 +76,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }.getOrDefault("")
 
         sensors = getSystemService(SENSOR_SERVICE) as? SensorManager
+        selectTool(Brush.GAS, fromUser = false)
         pollRenderer()
     }
-
-    // PRD FR-8: the device's own tilt can drive where the paint runs.
-    override fun onSensorChanged(event: SensorEvent) {
-        if (!tiltGravity || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
-        val g = 0.06f
-        renderer.sim.flip.gravityX = -event.values[0] * g
-        renderer.sim.flip.gravityY = -event.values[1] * g
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     // ---------------- input ----------------
 
@@ -99,25 +106,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     // UV space, y flipped: GL textures put v=0 at the bottom
                     val u = x / w
                     val v = 1f - y / h
-                    // momentum: gesture velocity in UV units, scaled to something
-                    // that reads as a strong push at 60Hz
                     val du = (x - px) / w * 12f
                     val dv = -(y - py) / h * 12f
 
-                    // Black ink on white paper. Colour is premultiplied by
-                    // coverage, so the rgb stays 0 and the alpha carries how
-                    // much ink landed. Stylus pressure drives that alpha, and
-                    // tilt widens the mark (PRD FR-6). A finger reports a
-                    // pressure of about 1.0, so this is a no-op for touch.
-                    val pressure = event.getPressure(i).let {
-                        if (it <= 0f) 1f else it
-                    }.coerceIn(0.15f, 1.6f)
-
-                    val tilt = try {
+                    // Pressure scales how much ink lands; tilt widens the mark.
+                    // A finger reports about 1.0, so touch is unaffected.
+                    val pressure = event.getPressure(i)
+                        .let { if (it <= 0f) 1f else it }
+                        .coerceIn(0.15f, 1.6f)
+                    val tilt = runCatching {
                         event.getAxisValue(MotionEvent.AXIS_TILT, i)
-                    } catch (_: IllegalArgumentException) {
-                        0f
-                    }
+                    }.getOrDefault(0f)
                     renderer.tiltSpread = 1f + tilt.coerceIn(0f, 1.4f) * 0.8f
 
                     renderer.queueSplat(u, v, du, dv, 0f, 0f, 0f, pressure)
@@ -128,216 +127,311 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
 
             MotionEvent.ACTION_POINTER_UP -> {
-                // Two-finger tap commits the painting: quick, and without
-                // travelling far enough to count as a stroke.
                 val held = System.currentTimeMillis() - twoFingerDownAt
                 if (event.pointerCount == 2 && twoFingerDownAt > 0L && held < 250) {
                     renderer.freezeRequested = true
-                    Toast.makeText(this, "Frozen", Toast.LENGTH_SHORT).show()
+                    toast("Frozen")
                 }
                 twoFingerDownAt = 0L
-                val id = event.getPointerId(event.actionIndex)
-                lastX.remove(id)
-                lastY.remove(id)
+                releasePointer(event)
             }
 
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 twoFingerDownAt = 0L
-                val id = event.getPointerId(event.actionIndex)
-                lastX.remove(id)
-                lastY.remove(id)
+                releasePointer(event)
+                renderer.endStrokeRequested = true
             }
         }
         return true
     }
 
-    // ---------------- UI ----------------
-
-    private fun buildHud(): TextView {
-        hud = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setShadowLayer(4f, 0f, 0f, Color.BLACK)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            typeface = android.graphics.Typeface.MONOSPACE
-            setPadding(24, 24, 24, 24)
-        }
-        val lp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        lp.gravity = Gravity.TOP or Gravity.START
-        hud.layoutParams = lp
-        return hud
+    private fun releasePointer(event: MotionEvent) {
+        val id = event.getPointerId(event.actionIndex)
+        lastX.remove(id)
+        lastY.remove(id)
     }
 
-    private fun buildControls(): View {
-        val panel = LinearLayout(this).apply {
+    // ---------------- the rail ----------------
+
+    private fun buildRail(): View {
+        rail = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.argb(150, 0, 0, 0))
-            setPadding(20, 12, 20, 12)
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            setPadding(dp(2), dp(2), dp(2), dp(2))
         }
 
-        // --- brush ---
-        // Declared before the picker that toggles them.
-        val modeRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            visibility = View.GONE
-        }
-        val flipRow = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            visibility = View.GONE
-        }
-        val presetSpinner = Spinner(this)
-        val presetRow = labeled("Preset", presetSpinner)
-
-        val flipLabel = TextView(this).apply {
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            text = "Splashy 0.92  (\u2190 viscous)"
-        }
-        flipRow.addView(flipLabel)
-        flipRow.addView(SeekBar(this).apply {
-            max = 100
-            progress = 92
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    renderer.sim.flip.flipRatio = p / 100f
-                    flipLabel.text = String.format("Splashy %.2f  (\u2190 viscous)", p / 100f)
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        })
-        panel.addView(labeled("Brush", spinner(Brush.labels, 0) { idx ->
-            val b = Brush.entries[idx]
-            renderer.sim.brush = b
-            modeRow.visibility = if (b == Brush.VORTEX) View.VISIBLE else View.GONE
-            flipRow.visibility = if (b == Brush.FLIP) View.VISIBLE else View.GONE
-            bindPresets(presetSpinner, b)
-        }))
-
-        modeRow.addView(TextView(this).apply {
-            text = "Mode"
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setPadding(0, 0, 16, 0)
-        })
-        modeRow.addView(spinner(ForceMode.labels, 0) { idx ->
-            renderer.sim.forceMode = ForceMode.entries[idx]
-        })
-        panel.addView(presetRow)
-        panel.addView(modeRow)
-        panel.addView(flipRow)
-        bindPresets(presetSpinner, Brush.GAS)
-
-
-        // --- resolution ---
-        val resLabels = FluidSim.RESOLUTIONS.map { "$it²" }
-        panel.addView(labeled("Sim resolution", spinner(resLabels, 3) { idx ->
-            renderer.pendingSimRes = FluidSim.RESOLUTIONS[idx]
-        }))
-
-        // --- dye scale ---
-        panel.addView(labeled("Dye scale", spinner(listOf("1x", "2x"), 0) { idx ->
-            renderer.pendingDyeScale = idx + 1
-        }))
-
-        // --- pressure iterations ---
-        val iterLabel = TextView(this).apply {
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            text = "Pressure iters: 30"
-        }
-        val iterBar = SeekBar(this).apply {
-            max = 75
-            progress = 25   // 5 + 25 = 30
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    val iters = p + 5
-                    renderer.sim.pressureIterations = iters
-                    iterLabel.text = "Pressure iters: $iters"
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        panel.addView(iterLabel)
-        panel.addView(iterBar)
-
-        // --- drag: the single dial that decides how fast paint sets ---
-        val dragLabel = TextView(this).apply {
-            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            text = "Drag: 0.12  (paint sets sooner →)"
-        }
-        val dragBar = SeekBar(this).apply {
-            max = 100
-            progress = 12
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
-                    val d = p / 100f * 3f
-                    renderer.sim.velocityDrag = d
-                    dragLabel.text = String.format("Drag: %.2f  (paint sets sooner \u2192)", d)
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        panel.addView(dragLabel)
-        panel.addView(dragBar)
-
-        panel.addView(slider("Set speed", 25, 100) { p, label ->
-            val v = p / 100f * 10f
-            renderer.sim.bakeRate = v
-            label.text = String.format("Set speed: %.1f", v)
-        })
-        panel.addView(slider("Hold", 7, 100) { p, label ->
-            val v = p / 100f * 5f
-            renderer.sim.settleMinAge = v
-            label.text = String.format("Hold: %.2f s", v)
-        })
-
-        // --- buttons ---
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row.addView(button("Clear") { renderer.clearRequested = true })
-        row.addView(button("Pause") { b ->
-            renderer.paused = !renderer.paused
-            b.text = if (renderer.paused) "Play" else "Pause"
-        })
-        row.addView(button("Freeze") {
-            renderer.freezeRequested = true
-        })
-        row.addView(button("Tilt") { b ->
-            tiltGravity = !tiltGravity
-            if (!tiltGravity) {
-                renderer.sim.flip.gravityX = 0f
-                renderer.sim.flip.gravityY = -0.55f
+        Brush.entries.forEach { b ->
+            val btn = toolButton(b.short) {
+                if (selected == b && !showingGlobal) togglePanel() else selectTool(b, true)
             }
-            b.text = if (tiltGravity) "Tilt on" else "Tilt"
-        })
-        row.addView(button("Thaw") {
-            renderer.thawRequested = true
-        })
-        row.addView(button("Heat") { b ->
-            renderer.heatOverlay = !renderer.heatOverlay
-            b.text = if (renderer.heatOverlay) "Paint" else "Heat"
-        })
-        row.addView(button("Vel") { b ->
-            renderer.debugView = 1 - renderer.debugView
-            b.text = if (renderer.debugView == 1) "Dye" else "Vel"
-        })
-        row.addView(button("RB-GS") { b ->
-            renderer.sim.useRedBlack = !renderer.sim.useRedBlack
-            b.text = if (renderer.sim.useRedBlack) "RB-GS" else "Jacobi"
-        })
-        row.addView(button("Sweep") {
-            Toast.makeText(this, "Running resolution sweep…", Toast.LENGTH_SHORT).show()
-            renderer.benchmarkRequested = true
-        })
-        panel.addView(row)
+            toolButtons[b] = btn
+            rail.addView(btn)
+        }
 
+        rail.addView(divider())
+        rail.addView(toolButton("set") {
+            if (showingGlobal && panelOpen) togglePanel() else showGlobal()
+        })
+        rail.addView(toolButton("clr") { renderer.clearRequested = true })
+        rail.addView(toolButton("frz") { renderer.freezeRequested = true; toast("Frozen") })
+
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(rail)
+        }
         val lp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
-        lp.gravity = Gravity.BOTTOM or Gravity.END
+        lp.gravity = Gravity.START or Gravity.CENTER_VERTICAL
+        scroll.layoutParams = lp
+        return scroll
+    }
+
+    private fun divider() = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, dp(1)).also {
+            it.topMargin = dp(3); it.bottomMargin = dp(3)
+        }
+        setBackgroundColor(Color.argb(90, 255, 255, 255))
+    }
+
+    /** Deliberately small: the canvas matters more than the chrome. */
+    private fun toolButton(label: String, onClick: () -> Unit): Button =
+        Button(this).apply {
+            text = label
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setPadding(0, 0, 0, 0)
+            minWidth = 0
+            minHeight = 0
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(34)).also {
+                it.bottomMargin = dp(2)
+            }
+            setOnClickListener { onClick() }
+        }
+
+    private fun selectTool(b: Brush, fromUser: Boolean) {
+        selected = b
+        showingGlobal = false
+        renderer.sim.brush = b
+        toolButtons.forEach { (brush, btn) ->
+            btn.alpha = if (brush == b) 1f else 0.55f
+        }
+        if (panelOpen) showToolSettings()
+        if (fromUser) toast(b.label)
+    }
+
+    // ---------------- the settings panel ----------------
+
+    private fun buildPanel(): View {
+        panelTitle = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(0, 0, 0, dp(6))
+        }
+        panelBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            addView(panelTitle)
+            addView(panelBody)
+        }
+
+        panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(205, 16, 16, 20))
+            visibility = View.GONE
+            addView(ScrollView(this@MainActivity).apply { addView(inner) })
+        }
+
+        val lp = FrameLayout.LayoutParams(dp(260), MATCH_PARENT)
+        lp.gravity = Gravity.START
+        lp.leftMargin = dp(46)
         panel.layoutParams = lp
         return panel
     }
 
-    /** A labelled slider whose label updates as it moves. */
+    private fun togglePanel() {
+        panelOpen = !panelOpen
+        panel.visibility = if (panelOpen) View.VISIBLE else View.GONE
+        if (panelOpen) showToolSettings()
+    }
+
+    private fun openPanel() {
+        panelOpen = true
+        panel.visibility = View.VISIBLE
+    }
+
+    private fun showToolSettings() {
+        showingGlobal = false
+        panelTitle.text = "${selected.label} — tap the tool again to close"
+        panelBody.removeAllViews()
+
+        val presets = Presets.forBrush(selected)
+        if (presets.size > 1) {
+            panelBody.addView(labeled("Preset", spinner(presets.map { it.label }, 0) { i ->
+                presets[i].apply(renderer.sim)
+            }))
+        }
+
+        when (selected) {
+            Brush.GAS -> {
+                panelBody.addView(slider("Swirl", 22, 60) { p, l ->
+                    renderer.sim.vorticity = p.toFloat()
+                    l.text = "Swirl: $p"
+                })
+                panelBody.addView(slider("Brush size", 20, 100) { p, l ->
+                    renderer.sim.splatRadius = p / 1000f
+                    l.text = String.format("Brush size: %.3f", p / 1000f)
+                })
+            }
+
+            Brush.NIB -> {
+                panelBody.addView(slider("Nib size", 6, 40) { p, l ->
+                    renderer.sim.nibRadius = p / 1000f
+                    l.text = String.format("Nib size: %.3f", p / 1000f)
+                })
+                panelBody.addView(slider("Sharpness", 90, 100) { p, l ->
+                    renderer.sim.nibHardness = p / 100f
+                    l.text = String.format("Sharpness: %.2f", p / 100f)
+                })
+                panelBody.addView(slider("Soak", 18, 100) { p, l ->
+                    renderer.sim.nibSoak = p / 100f * 5f
+                    l.text = String.format("Soak: %.2f", p / 100f * 5f)
+                })
+                panelBody.addView(slider("Dry", 23, 100) { p, l ->
+                    renderer.sim.nibDry = p / 100f * 3f
+                    l.text = String.format("Dry: %.2f", p / 100f * 3f)
+                })
+                panelBody.addView(slider("Paper grain", 60, 100) { p, l ->
+                    renderer.sim.nibGrain = p / 100f
+                    l.text = String.format("Paper grain: %.2f", p / 100f)
+                })
+            }
+
+            Brush.FLIP -> {
+                panelBody.addView(slider("Splashy", 92, 100) { p, l ->
+                    renderer.sim.flip.flipRatio = p / 100f
+                    l.text = String.format("Splashy: %.2f  (← viscous)", p / 100f)
+                })
+                panelBody.addView(button("Tilt gravity: off") { b ->
+                    tiltGravity = !tiltGravity
+                    if (!tiltGravity) {
+                        renderer.sim.flip.gravityX = 0f
+                        renderer.sim.flip.gravityY = -0.55f
+                    }
+                    b.text = if (tiltGravity) "Tilt gravity: on" else "Tilt gravity: off"
+                })
+            }
+
+            Brush.WATERCOLOR -> {
+                panelBody.addView(slider("Wetness", 55, 150) { p, l ->
+                    renderer.sim.wcLoadWater = p / 100f
+                    l.text = String.format("Wetness: %.2f", p / 100f)
+                })
+                panelBody.addView(slider("Pigment", 30, 100) { p, l ->
+                    renderer.sim.wcLoadPigment = p / 100f
+                    l.text = String.format("Pigment: %.2f", p / 100f)
+                })
+                panelBody.addView(slider("Dry rate", 22, 100) { p, l ->
+                    renderer.sim.wcEvaporate = p / 100f
+                    l.text = String.format("Dry rate: %.2f", p / 100f)
+                })
+            }
+
+            Brush.VORTEX -> {
+                panelBody.addView(labeled("Mode", spinner(ForceMode.labels, 0) { i ->
+                    renderer.sim.forceMode = ForceMode.entries[i]
+                }))
+                panelBody.addView(slider("Strength", 10, 40) { p, l ->
+                    renderer.sim.forceStrength = p / 10f
+                    l.text = String.format("Strength: %.1f", p / 10f)
+                })
+            }
+
+            Brush.SOLVENT -> {
+                panelBody.addView(slider("Bite", 45, 100) { p, l ->
+                    renderer.sim.solventBite = p / 100f
+                    l.text = String.format("Bite: %.2f  (lower bites harder)", p / 100f)
+                })
+            }
+
+            Brush.FREEZE, Brush.THAW -> {
+                panelBody.addView(hint("Paint over the canvas to " +
+                    (if (selected == Brush.FREEZE) "set" else "lift") + " just that area."))
+            }
+        }
+
+        panelBody.addView(divider())
+        panelBody.addView(hint("Two-finger tap freezes the whole canvas."))
+    }
+
+    private fun showGlobal() {
+        openPanel()
+        showingGlobal = true
+        panelTitle.text = "Settings — tap ‘set’ again to close"
+        panelBody.removeAllViews()
+
+        val resLabels = FluidSim.RESOLUTIONS.map { "$it" }
+        panelBody.addView(labeled("Detail", spinner(resLabels, 4) { i ->
+            renderer.pendingSimRes = FluidSim.RESOLUTIONS[i]
+        }))
+        panelBody.addView(labeled("Ink detail", spinner(listOf("1x", "2x"), 0) { i ->
+            renderer.pendingDyeScale = i + 1
+        }))
+        panelBody.addView(slider("Solver sweeps", 25, 75) { p, l ->
+            renderer.sim.pressureIterations = p + 5
+            l.text = "Solver sweeps: ${p + 5}"
+        })
+
+        panelBody.addView(divider())
+        panelBody.addView(hint("How paint sets"))
+        panelBody.addView(slider("Drag", 100, 100) { p, l ->
+            renderer.sim.velocityDrag = p / 100f * 3f
+            l.text = String.format("Drag: %.2f  (paint sets sooner →)", p / 100f * 3f)
+        })
+        panelBody.addView(slider("Set speed", 0, 100) { p, l ->
+            renderer.sim.bakeRate = p / 100f * 10f
+            l.text = String.format("Set speed: %.1f%s", p / 100f * 10f,
+                if (p == 0) "  (never sets)" else "")
+        })
+        panelBody.addView(slider("Hold", 100, 100) { p, l ->
+            renderer.sim.settleMinAge = p / 100f * 5f
+            l.text = String.format("Hold: %.2f s", p / 100f * 5f)
+        })
+
+        panelBody.addView(divider())
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(button("Pause") { b ->
+            renderer.paused = !renderer.paused
+            b.text = if (renderer.paused) "Play" else "Pause"
+        })
+        row.addView(button("Thaw") { renderer.thawRequested = true })
+        row.addView(button("Heat") { b ->
+            renderer.heatOverlay = !renderer.heatOverlay
+            b.text = if (renderer.heatOverlay) "Paint" else "Heat"
+        })
+        panelBody.addView(row)
+
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row2.addView(button("Velocity") { b ->
+            renderer.debugView = 1 - renderer.debugView
+            b.text = if (renderer.debugView == 1) "Paint" else "Velocity"
+        })
+        row2.addView(button("Sweep") {
+            toast("Running resolution sweep…")
+            renderer.benchmarkRequested = true
+        })
+        panelBody.addView(row2)
+    }
+
+    // ---------------- small widgets ----------------
+
+    private fun hint(text: String) = TextView(this).apply {
+        this.text = text
+        setTextColor(Color.argb(170, 255, 255, 255))
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+        setPadding(0, dp(2), 0, dp(4))
+    }
+
     private fun slider(name: String, initial: Int, max: Int, onChange: (Int, TextView) -> Unit): View {
         val label = TextView(this).apply {
             setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -362,30 +456,18 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun labeled(label: String, v: View): View {
-        val ll = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val ll = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         ll.addView(TextView(this).apply {
             text = label
             setTextColor(Color.WHITE)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-            setPadding(0, 0, 16, 0)
+            setPadding(0, 0, dp(8), 0)
         })
         ll.addView(v)
         return ll
-    }
-
-    /** Repoints the preset picker at whichever medium is now selected. */
-    private fun bindPresets(sp: Spinner, brush: Brush) {
-        val presets = Presets.forBrush(brush)
-        sp.adapter = ArrayAdapter(
-            this, android.R.layout.simple_spinner_dropdown_item, presets.map { it.label }
-        )
-        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                presets.getOrNull(pos)?.apply?.invoke(renderer.sim)
-            }
-            override fun onNothingSelected(p: AdapterView<*>?) {}
-        }
-        sp.setSelection(0)
     }
 
     private fun spinner(items: List<String>, initial: Int, onPick: (Int) -> Unit): Spinner =
@@ -395,7 +477,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             )
             setSelection(initial)
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) = onPick(pos)
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
+                    onPick(pos)
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
         }
@@ -403,17 +486,45 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun button(label: String, onClick: (Button) -> Unit): Button =
         Button(this).apply {
             text = label
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            isAllCaps = false
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             setOnClickListener { onClick(this) }
         }
 
-    // ---------------- polling ----------------
+    private fun buildHud(): TextView {
+        hud = TextView(this).apply {
+            setTextColor(Color.argb(150, 0, 0, 0))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 9f)
+            typeface = android.graphics.Typeface.MONOSPACE
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+        }
+        val lp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        lp.gravity = Gravity.TOP or Gravity.END
+        hud.layoutParams = lp
+        return hud
+    }
+
+    private fun toast(text: String) =
+        Toast.makeText(this, text, Toast.LENGTH_SHORT).show()
+
+    // ---------------- lifecycle ----------------
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (!tiltGravity || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        val g = 0.06f
+        renderer.sim.flip.gravityX = -event.values[0] * g
+        renderer.sim.flip.gravityY = -event.values[1] * g
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     private fun pollRenderer() {
         ui.postDelayed(object : Runnable {
             override fun run() {
-                hud.text = if (versionLabel.isEmpty()) renderer.statsLine
-                           else "MaxPaint ${'$'}versionLabel\n${'$'}{renderer.statsLine}"
+                hud.text = buildString {
+                    if (versionLabel.isNotEmpty()) append(versionLabel).append('\n')
+                    append(renderer.statsLine)
+                }
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null
                     showReport(it)
@@ -431,7 +542,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             text = report
             typeface = android.graphics.Typeface.MONOSPACE
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
-            setPadding(32, 32, 32, 32)
+            setPadding(dp(16), dp(16), dp(16), dp(16))
         }
         AlertDialog.Builder(this)
             .setTitle("Resolution headroom")
@@ -439,7 +550,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             .setPositiveButton("OK", null)
             .setNeutralButton("Log") { _, _ ->
                 android.util.Log.i("MaxPaintSweep", "\n$report")
-                Toast.makeText(this, "Written to ${file.absolutePath}", Toast.LENGTH_LONG).show()
+                toast("Written to ${file.absolutePath}")
             }
             .show()
     }
