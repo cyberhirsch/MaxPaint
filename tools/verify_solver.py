@@ -186,11 +186,15 @@ class Sim:
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
                    "advect_mc", "pressure", "pressure_rb", "clearp", "gradsub",
-                   "bake", "force")}
+                   "bake", "force", "watercolor", "wet")}
 
         self.vel = Double(res, res, GL_RGBA16F, GL_LINEAR)
         self.dye = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
         self.bg = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
+        self.water = Double(self.dye_res, self.dye_res, GL_RGBA32F, GL_NEAREST)
+        self.wc = dict(flow=6.0, grain=0.35, adsorb=0.12, desorb=0.05,
+                       capacity=1.2, evaporate=0.22, edge=6.0, paper=0.09,
+                       dry=0.002)
         self.age = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_NEAREST)
         self.pres = Double(res, res, GL_R32F, GL_NEAREST)
         self.curl = Tex(res, res, GL_R32F, GL_NEAREST)
@@ -261,6 +265,38 @@ class Sim:
         self.dye.swap()
         glUniform1i(uni(p, "uMode"), 0)
 
+    def wet(self, u, v, water=0.55, pigment=0.30, radius=0.05):
+        p = self.p["wet"]
+        glUseProgram(p)
+        glUniform2f(uni(p, "uPoint"), u, v)
+        glUniform1f(uni(p, "uRadius"), radius)
+        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uWater"), water)
+        glUniform1f(uni(p, "uPigment"), pigment)
+        self.water.read_t.image(0, GL_READ_ONLY)
+        self.water.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.water.swap()
+
+    def step_watercolor(self, dt):
+        p = self.p["watercolor"]
+        glUseProgram(p)
+        glUniform1f(uni(p, "uDt"), dt)
+        for name, key in (("uFlow", "flow"), ("uGrain", "grain"),
+                          ("uAdsorb", "adsorb"), ("uDesorb", "desorb"),
+                          ("uCapacity", "capacity"), ("uEvaporate", "evaporate"),
+                          ("uEdge", "edge"), ("uPaperScale", "paper"),
+                          ("uDry", "dry")):
+            glUniform1f(uni(p, name), self.wc[key])
+        glUniform1i(uni(p, "uWaterSrc"), 0)
+        glUniform1i(uni(p, "uBgSrc"), 1)
+        self.water.read_t.sampler(0)
+        self.bg.read_t.sampler(1)
+        self.water.write_t.image(0, GL_WRITE_ONLY)
+        self.bg.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.water.swap(); self.bg.swap()
+
     def bake(self, dt):
         """Mirrors FluidSim.bake(): settled fluid moves into the background."""
         p = self.p["bake"]
@@ -282,13 +318,16 @@ class Sim:
         glUniform1i(uni(p, "uVel"), 0)
         self.force_freeze = False
 
-        self.dye.read_t.image(0, GL_READ_ONLY)
-        self.dye.write_t.image(1, GL_WRITE_ONLY)
-        self.bg.read_t.image(2, GL_READ_ONLY)
-        self.bg.write_t.image(3, GL_WRITE_ONLY)
-        self.age.read_t.image(4, GL_READ_ONLY)
-        self.age.write_t.image(5, GL_WRITE_ONLY)
+        glUniform1i(uni(p, "uDyeSrc"), 1)
+        glUniform1i(uni(p, "uBgSrc"), 2)
+        glUniform1i(uni(p, "uAgeSrc"), 3)
         self.vel.read_t.sampler(0)
+        self.dye.read_t.sampler(1)
+        self.bg.read_t.sampler(2)
+        self.age.read_t.sampler(3)
+        self.dye.write_t.image(0, GL_WRITE_ONLY)
+        self.bg.write_t.image(1, GL_WRITE_ONLY)
+        self.age.write_t.image(2, GL_WRITE_ONLY)
         self.dispatch(self.dye_res, self.dye_res)
         self.dye.swap(); self.bg.swap(); self.age.swap()
 
@@ -719,6 +758,85 @@ def main():
     check("thaw returns baked paint to the simulation",
           baked_after < baked_before * 0.5 and live_after > 0,
           f"baked {baked_before:.1f} -> {baked_after:.1f}, live 0.0 -> {live_after:.1f}")
+    print()
+
+    # ---- watercolor ----
+    print("Watercolor:")
+    import numpy as _np
+
+    wc = Sim(args.res)
+    wc.wet(0.5, 0.5)
+    w0 = wc.water.read_t.read()
+    pig0 = float(w0[:, :, 1].sum() + w0[:, :, 2].sum())
+    wat0 = float(w0[:, :, 0].sum())
+    check("loading the brush wets the paper and deposits pigment",
+          wat0 > 0 and pig0 > 0, f"water {wat0:.1f}, pigment {pig0:.1f}")
+
+    for _ in range(400):
+        wc.step_watercolor(dt)
+
+    w1 = wc.water.read_t.read()
+    committed = float(wc.bg.read_t.read()[:, :, 3].sum())
+    check("the paper dries", float(w1[:, :, 0].sum()) < wat0 * 0.05,
+          f"water {wat0:.1f} -> {float(w1[:, :, 0].sum()):.3f}")
+    check("drying commits pigment to the background (evaporation is the bake)",
+          committed > pig0 * 0.9,
+          f"pigment {pig0:.1f} -> committed {committed:.1f}")
+
+    # Edge darkening is the cue that makes watercolor read as watercolor. It
+    # must emerge from the wet-mask boundary, not be painted on. The test is
+    # that the radial profile PEAKS AWAY FROM THE CENTRE -- a ring -- rather
+    # than comparing a rim average, which the faint outer fringe would drag down.
+    img = wc.bg.read_t.read()[:, :, 3]
+    h, w_ = img.shape
+    ys, xs = _np.mgrid[0:h, 0:w_]
+    r = _np.sqrt(((xs + .5) / w_ - .5) ** 2 + ((ys + .5) / h - .5) ** 2)
+    profile = []
+    for lo in _np.arange(0.0, 0.12, 0.02):
+        m = (r >= lo) & (r < lo + 0.02)
+        profile.append(float(img[m].mean()) if m.sum() else 0.0)
+    peak = int(_np.argmax(profile))
+    check("edge darkening: pigment rings rather than pooling in the centre",
+          peak > 0 and profile[peak] > profile[0] * 1.05,
+          "radial profile " + " ".join(f"{v:.4f}" for v in profile) +
+          f" (peak at band {peak})")
+
+    # Wet-on-wet must bleed further than wet-on-dry. This is the medium's
+    # central expressive mechanic.
+    def spread(preload):
+        s6 = Sim(args.res)
+        if preload:
+            s6.wet(0.5, 0.5, water=0.8, pigment=0.0, radius=0.12)
+            for _ in range(20):
+                s6.step_watercolor(dt)
+        s6.wet(0.5, 0.5, water=0.2, pigment=0.4, radius=0.03)
+        for _ in range(120):
+            s6.step_watercolor(dt)
+        a = s6.bg.read_t.read()[:, :, 3] + s6.water.read_t.read()[:, :, 1]
+        tot = a.sum()
+        if tot <= 0:
+            return 0.0
+        return float((a * r).sum() / tot)     # mean radius of the pigment
+
+    dry_spread, wet_spread = spread(False), spread(True)
+    check("wet-on-wet bleeds further than wet-on-dry",
+          wet_spread > dry_spread * 1.05,
+          f"mean radius dry {dry_spread:.4f} vs wet {wet_spread:.4f}")
+
+    # Water must be conserved by the flow itself (evaporation aside)
+    cons = Sim(args.res)
+    cons.wc["evaporate"] = 0.0
+    cons.wc["adsorb"] = 0.0
+    cons.wc["desorb"] = 0.0
+    cons.wc["dry"] = 0.0        # the drying sink is a separate behaviour
+    cons.wet(0.35, 0.5, water=0.6, pigment=0.5)
+    before = float(cons.water.read_t.read()[:, :, 0].sum())
+    for _ in range(120):
+        cons.step_watercolor(dt)
+    after = float(cons.water.read_t.read()[:, :, 0].sum())
+    check("water flow conserves water", abs(after - before) / max(before, 1e-6) < 0.01,
+          f"{before:.3f} -> {after:.3f} "
+          f"({100 * (after - before) / max(before, 1e-6):+.3f}%)")
     print()
 
     # ---- determinism ----

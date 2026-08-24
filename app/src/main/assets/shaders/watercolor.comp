@@ -1,0 +1,129 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Watercolor: a shallow-water pigment model, not Navier-Stokes.
+// After Curtis et al., Computer-Generated Watercolor (SIGGRAPH '97), reduced to
+// what one pass can carry.
+//
+// Channels of uWater:
+//   .x  water depth
+//   .y  pigment suspended in the water
+//   .z  pigment adsorbed onto the paper
+//   .w  unused
+//
+// Water moves down the gradient of (depth + paper grain), so the paper's own
+// texture steers the flow -- that is where granulation comes from. Pigment
+// rides the same fluxes with upwind concentration, so it is transported rather
+// than diffused. Evaporation IS the bake: as depth reaches zero, adsorbed
+// pigment is committed to the background layer and the cell goes dry.
+
+layout(binding = 0) uniform highp sampler2D uWaterSrc;
+layout(binding = 1) uniform highp sampler2D uBgSrc;
+
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uWaterDst;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uBgDst;
+
+uniform float uDt;
+uniform float uFlow;         // how freely water runs
+uniform float uGrain;        // how strongly paper texture steers it
+uniform float uAdsorb;       // pigment sticking to paper, per second
+uniform float uDesorb;       // and lifting back off
+uniform float uCapacity;     // how much pigment the paper can hold
+uniform float uEvaporate;    // per second
+uniform float uEdge;         // how much faster the wet rim evaporates
+uniform float uPaperScale;
+uniform float uDry;          // below this a cell counts as dry and commits
+
+// Guards divisions only. The dry threshold is a separate, explicit parameter
+// so that flow conservation can be tested without the drying sink in the way.
+const float EPS = 1e-6;
+
+// Deterministic paper grain. Procedural rather than a texture so the whole
+// simulation stays reproducible from the replay log (PRD FR-20).
+float hash(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+float paper(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash(i), b = hash(i + vec2(1, 0));
+    float c = hash(i + vec2(0, 1)), d = hash(i + vec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float head(ivec2 c, ivec2 mx) {
+    ivec2 q = clamp(c, ivec2(0), mx);
+    float depth = texelFetch(uWaterSrc, q, 0).x;
+    return depth + uGrain * paper(vec2(q) * uPaperScale);
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uWaterDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+    ivec2 mx = sz - 1;
+
+    vec4 w = texelFetch(uWaterSrc, c, 0);
+    float depth = w.x, susp = w.y, dep = w.z;
+    vec4 bg = texelFetch(uBgSrc, c, 0);
+
+    // --- flow ---
+    // Flux between a pair of cells is antisymmetric, so water is conserved
+    // exactly no matter how the gradient is shaped.
+    float h0 = head(c, mx);
+    ivec2 offs[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
+
+    float netWater = 0.0;
+    float netPigment = 0.0;
+    float conc = depth > EPS ? susp / depth : 0.0;
+    float wetNeighbours = 0.0;
+
+    for (int i = 0; i < 4; ++i) {
+        ivec2 n = clamp(c + offs[i], ivec2(0), mx);
+        vec4 wn = texelFetch(uWaterSrc, n, 0);
+        float f = uFlow * uDt * (h0 - head(c + offs[i], mx));
+
+        // never move more than is actually there
+        f = clamp(f, -wn.x * 0.25, depth * 0.25);
+
+        netWater -= f;
+        // upwind: leaving cells carry their own concentration, arriving water
+        // carries the neighbour's
+        float cn = wn.x > EPS ? wn.y / wn.x : 0.0;
+        netPigment -= f > 0.0 ? f * conc : f * cn;
+
+        if (wn.x > uDry) wetNeighbours += 1.0;
+    }
+
+    depth += netWater;
+    susp += netPigment;
+
+    // --- adsorption / desorption ---
+    // Kept slow on purpose. If pigment sticks as fast as it arrives it never
+    // travels, and both edge darkening and wet-on-wet bleed disappear.
+    float room = max(uCapacity - dep, 0.0);
+    float grab = min(susp, susp * uAdsorb * uDt) * min(room / max(uCapacity, 1e-5), 1.0);
+    float give = dep * uDesorb * uDt * (depth > uDry ? 1.0 : 0.0);
+    susp += give - grab;
+    dep  += grab - give;
+
+    // --- evaporation, which is this brush's bake ---
+    // The rim of a wet region has fewer wet neighbours and dries fastest, so
+    // water is drawn outward to replace it and carries pigment to the edge.
+    // Edge darkening is that coffee-ring effect, not a painted-on outline.
+    float edge = depth > uDry ? (4.0 - wetNeighbours) * 0.25 : 0.0;
+    depth = max(depth - uEvaporate * (1.0 + uEdge * edge) * uDt, 0.0);
+
+    if (depth <= uDry) {
+        // dry: everything still held commits to the background, permanently
+        float commit = dep + susp;
+        bg = vec4(bg.rgb, bg.a + commit);
+        depth = 0.0; susp = 0.0; dep = 0.0;
+    }
+
+    imageStore(uWaterDst, c, vec4(depth, susp, dep, 0.0));
+    imageStore(uBgDst, c, bg);
+}

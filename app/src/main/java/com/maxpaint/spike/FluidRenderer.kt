@@ -153,6 +153,11 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.dyeTexture.bindSampler(0)
         sim.velocityTexture.bindSampler(1)
         sim.backgroundTexture.bindSampler(2)
+        sim.waterTexture.bindSampler(3)
+        GLES31.glUniform1i(
+            GLES31.glGetUniformLocation(displayProgram, "uShowWater"),
+            if (sim.waterActive) 1 else 0
+        )
 
         GLES31.glBindVertexArray(vao)
         GLES31.glDrawArrays(GLES31.GL_TRIANGLES, 0, 3)
