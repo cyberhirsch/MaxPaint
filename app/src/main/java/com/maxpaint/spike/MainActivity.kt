@@ -29,6 +29,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private val ui = Handler(Looper.getMainLooper())
     private var twoFingerDownAt = 0L
     private var tiltGravity = false
+    private var versionLabel = ""
     private var sensors: SensorManager? = null
 
     // last touch position per pointer, for momentum
@@ -53,6 +54,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         root.addView(buildHud())
         root.addView(buildControls())
         setContentView(root)
+
+        versionLabel = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        }.getOrDefault("")
 
         sensors = getSystemService(SENSOR_SERVICE) as? SensorManager
         pollRenderer()
@@ -407,7 +412,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun pollRenderer() {
         ui.postDelayed(object : Runnable {
             override fun run() {
-                hud.text = renderer.statsLine
+                hud.text = if (versionLabel.isEmpty()) renderer.statsLine
+                           else "MaxPaint ${'$'}versionLabel\n${'$'}{renderer.statsLine}"
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null
                     showReport(it)
