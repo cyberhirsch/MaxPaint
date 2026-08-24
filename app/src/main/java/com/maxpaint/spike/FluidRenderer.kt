@@ -24,6 +24,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var heatOverlay = false
     @Volatile var paused = false
     @Volatile var benchmarkRequested = false
+    @Volatile var particleBenchmarkRequested = false
     @Volatile var clearRequested = false
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
@@ -120,6 +121,15 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         if (benchmarkRequested) {
             benchmarkRequested = false
             runBenchmark()
+            return
+        }
+
+        if (particleBenchmarkRequested) {
+            particleBenchmarkRequested = false
+            val pb = ParticleBenchmark(sim)
+            pb.run()
+            benchmarkReport = pb.report(deviceInfo)
+            lastFrameNs = System.nanoTime()
             return
         }
 

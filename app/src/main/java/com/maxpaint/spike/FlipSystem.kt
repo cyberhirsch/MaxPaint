@@ -17,7 +17,7 @@ import android.opengl.GLES31
  * There is no gravity: a canvas has no up. Paint travels on the momentum of the
  * stroke and stops where drag stops it.
  */
-class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
+class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
     var flipRatio = 0.92f       // 1 = splashy and particle-driven, 0 = viscous
     var particleDrag = 0.25f
@@ -33,8 +33,15 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
     private var seed = 1f
 
     private lateinit var pEmit: ComputeProgram
-    private lateinit var pUpdate: ComputeProgram
+    private lateinit var pClearGrid: ComputeProgram
+    private lateinit var pP2G: ComputeProgram
+    private lateinit var pNormalize: ComputeProgram
+    private lateinit var pG2P: ComputeProgram
     private var drawProgram = 0
+
+    /** Fixed-point momentum and mass accumulator, one triple per grid cell. */
+    private var gridBuffer = 0
+    private var gridCells = 0
 
     /** Particles emitted since the last reset; useful for the HUD. */
     var emitted = 0L; private set
@@ -52,7 +59,10 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
 
     fun init() {
         pEmit = ComputeProgram(ctx, "shaders/flip_emit.comp")
-        pUpdate = ComputeProgram(ctx, "shaders/flip_update.comp")
+        pClearGrid = ComputeProgram(ctx, "shaders/flip_clear_grid.comp")
+        pP2G = ComputeProgram(ctx, "shaders/flip_p2g.comp")
+        pNormalize = ComputeProgram(ctx, "shaders/flip_normalize.comp")
+        pG2P = ComputeProgram(ctx, "shaders/flip_g2p.comp")
         drawProgram = GLUtil.link(
             GLUtil.compile(GLES31.GL_VERTEX_SHADER, GLUtil.readAsset(ctx, "shaders/particle.vert"), "particle.vert"),
             GLUtil.compile(GLES31.GL_FRAGMENT_SHADER, GLUtil.readAsset(ctx, "shaders/particle.frag"), "particle.frag")
@@ -117,23 +127,82 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         seed = (seed + 13.37f) % 1000f
     }
 
-    fun step(dt: Float, velocityTexture: Tex, aspect: Float) {
-        if (buffer == 0) return
-        pUpdate.use()
-        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
-        pUpdate.set("uDt", dt)
-        pUpdate.set("uCapacity", capacity)
-        pUpdate.set("uFlipRatio", flipRatio)
-        pUpdate.set("uSettleSpeed", settleSpeed)
-        pUpdate.set("uSettleMinAge", settleMinAge)
-        pUpdate.set("uDrag", particleDrag)
-        pUpdate.set("uAspect", aspect)
-        pUpdate.set("uVel", 0)
-        velocityTexture.bindSampler(0)
-        GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
-        GLES31.glMemoryBarrier(
-            GLES31.GL_SHADER_STORAGE_BARRIER_BIT or GLES31.GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT
+    /** Sizes the accumulator to the grid; called when the canvas is allocated. */
+    fun resizeGrid(w: Int, h: Int) {
+        val cells = w * h
+        if (cells == gridCells && gridBuffer != 0) return
+        if (gridBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(gridBuffer), 0)
+        val ids = IntArray(1)
+        GLES31.glGenBuffers(1, ids, 0)
+        gridBuffer = ids[0]
+        GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, gridBuffer)
+        GLES31.glBufferData(
+            // four ints per cell: momentum and weight for each component,
+            // since a staggered grid samples them at different points
+            GLES31.GL_SHADER_STORAGE_BUFFER, cells * 4 * 4, null, GLES31.GL_DYNAMIC_COPY
         )
+        GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, 0)
+        gridCells = cells
+    }
+
+    private fun barrier() = GLES31.glMemoryBarrier(
+        GLES31.GL_SHADER_STORAGE_BARRIER_BIT or
+        GLES31.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT or
+        GLES31.GL_TEXTURE_FETCH_BARRIER_BIT or
+        GLES31.GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT
+    )
+
+    /** Scatters particle momentum onto the grid and resolves it into a field. */
+    fun particlesToGrid(velTarget: Tex, massTarget: Tex, w: Int, h: Int) {
+        if (buffer == 0 || gridBuffer == 0) return
+
+        pClearGrid.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, gridBuffer)
+        pClearGrid.set("uCells", gridCells)
+        GLES31.glDispatchCompute((gridCells + 63) / 64, 1, 1)
+        barrier()
+
+        pP2G.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, gridBuffer)
+        pP2G.set("uCapacity", liveSpan())
+        GLES31.glUniform2i(
+            GLES31.glGetUniformLocation(pP2G.id, "uGrid"), w, h
+        )
+        GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
+        barrier()
+
+        pNormalize.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, gridBuffer)
+        GLES31.glUniform2i(
+            GLES31.glGetUniformLocation(pNormalize.id, "uGrid"), w, h
+        )
+        velTarget.bindImage(0, GLES31.GL_WRITE_ONLY)
+        massTarget.bindImage(1, GLES31.GL_WRITE_ONLY)
+        GLES31.glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1)
+        barrier()
+    }
+
+    /** Gathers the projected field back onto the particles and moves them. */
+    fun gridToParticles(dt: Float, velNew: Tex, velOld: Tex, aspect: Float,
+                        gridW: Int, gridH: Int) {
+        if (buffer == 0) return
+        pG2P.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+        pG2P.set("uDt", dt)
+        pG2P.set("uCapacity", liveSpan())
+        pG2P.set("uFlipRatio", flipRatio)
+        pG2P.set("uDrag", particleDrag)
+        pG2P.set("uAspect", aspect)
+        pG2P.set("uSettleSpeed", settleSpeed)
+        pG2P.set("uSettleMinAge", settleMinAge)
+        pG2P.set("uTexel", 1f / gridW, 1f / gridH)
+        pG2P.set("uVelNew", 0)
+        pG2P.set("uVelOld", 1)
+        velNew.bindSampler(0)
+        velOld.bindSampler(1)
+        GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
+        barrier()
     }
 
     /**
@@ -163,13 +232,15 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
     }
 
     fun release() {
+        if (gridBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(gridBuffer), 0)
+        gridBuffer = 0
         if (buffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(buffer), 0)
         if (vao != 0) GLES31.glDeleteVertexArrays(1, intArrayOf(vao), 0)
         if (drawProgram != 0) GLES31.glDeleteProgram(drawProgram)
         buffer = 0
     }
 
-    fun bytes(): Long = capacity.toLong() * STRIDE
+    fun bytes(): Long = capacity.toLong() * STRIDE + gridCells.toLong() * 16
 
     companion object {
         /** Two vec4 per particle: pos+vel, then ink/age/state/seed. */

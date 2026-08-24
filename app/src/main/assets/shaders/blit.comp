@@ -1,0 +1,17 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Straight copy. FLIP transfers the change in the grid between the scatter and
+// the projection, so the pre-projection field has to be kept.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+    imageStore(uDst, c, texelFetch(uSrc, c, 0));
+}

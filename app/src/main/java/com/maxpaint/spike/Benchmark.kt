@@ -147,3 +147,104 @@ class Benchmark(
 
     private fun Double.format() = String.format("%.2f", this)
 }
+
+/**
+ * How many particles this device can carry at 60fps.
+ *
+ * The answer is hardware-specific and cannot be reasoned out from a desk: the
+ * cost is dominated by the atomic scatter in the particle-to-grid pass and by
+ * fill rate in the draw, and both vary by an order of magnitude across mobile
+ * GPUs. So measure it.
+ */
+class ParticleBenchmark(
+    private val sim: FluidSim,
+    private val counts: IntArray = intArrayOf(25_000, 50_000, 100_000, 200_000, 400_000),
+    private val warmupFrames: Int = 15,
+    private val measureFrames: Int = 45
+) {
+    data class Row(val count: Int, val medianMs: Double, val p95Ms: Double) {
+        val fps get() = if (medianMs > 0) 1000.0 / medianMs else 0.0
+        val holds60 get() = medianMs <= 16.6 && p95Ms <= 20.0
+    }
+
+    var rows: List<Row> = emptyList(); private set
+
+    /** Blocking; call on the GL thread. */
+    fun run(): List<Row> {
+        val out = ArrayList<Row>()
+        val dt = 1f / 60f
+        val previousBrush = sim.brush
+        sim.brush = Brush.FLIP
+
+        for (target in counts) {
+            if (target > sim.flip.capacity) continue
+
+            sim.clear()
+            // fill the pool in one burst, spread over the canvas
+            var placed = 0
+            var i = 0
+            while (placed < target) {
+                val t = i * 0.013f
+                val u = 0.5f + 0.35f * kotlin.math.sin(t * 2.3f)
+                val v = 0.5f + 0.35f * kotlin.math.sin(t * 1.7f)
+                sim.flip.emit(u, v, 0.4f, 0.2f, sim.splatRadius, 1f)
+                placed += sim.flip.emitPerSample
+                i++
+            }
+
+            repeat(warmupFrames) { sim.step(dt) }
+            GLES31.glFinish()
+
+            val samples = DoubleArray(measureFrames)
+            for (f in 0 until measureFrames) {
+                val t0 = System.nanoTime()
+                sim.step(dt)
+                GLES31.glFinish()
+                samples[f] = (System.nanoTime() - t0) / 1_000_000.0
+            }
+            samples.sort()
+            out.add(
+                Row(
+                    count = placed,
+                    medianMs = samples[samples.size / 2],
+                    p95Ms = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)]
+                )
+            )
+        }
+
+        sim.brush = previousBrush
+        sim.clear()
+        rows = out
+        return out
+    }
+
+    fun report(deviceLine: String): String = buildString {
+        appendLine("MaxPaint — how many particles fit")
+        appendLine(deviceLine)
+        appendLine("grid ${sim.simW}x${sim.simH}, ${measureFrames} frames each")
+        appendLine()
+        appendLine("  particles    median      p95     fps    60fps")
+        appendLine("  ------------------------------------------------")
+        rows.forEach { r ->
+            appendLine(
+                String.format(
+                    "  %9d %8.2fms %8.2fms %6.1f    %s",
+                    r.count, r.medianMs, r.p95Ms, r.fps,
+                    if (r.holds60) "yes" else "no"
+                )
+            )
+        }
+        appendLine()
+        val best = rows.lastOrNull { it.holds60 }
+        appendLine(
+            if (best != null)
+                "Most particles holding 60fps: ${best.count} " +
+                "(${String.format("%.2f", best.medianMs)}ms median)"
+            else
+                "No tested count holds 60fps on this device."
+        )
+        appendLine()
+        appendLine("Cost is dominated by the atomic scatter in particle-to-grid")
+        appendLine("and by fill rate in the draw, so smaller particles help.")
+    }
+}

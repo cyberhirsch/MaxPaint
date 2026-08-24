@@ -1,0 +1,30 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Each component is divided by its own accumulated weight, because on a
+// staggered grid the two components are sampled at different points.
+
+layout(std430, binding = 1) buffer GridAccum { int acc[]; };
+
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uVel;
+layout(r32f,    binding = 1) writeonly uniform highp image2D uMass;
+
+uniform ivec2 uGrid;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= uGrid.x || c.y >= uGrid.y) return;
+
+    int i = (c.y * uGrid.x + c.x) * 4;
+    float vx = float(acc[i]);
+    float wx = float(acc[i + 1]);
+    float vy = float(acc[i + 2]);
+    float wy = float(acc[i + 3]);
+
+    vec2 v = vec2(wx > 0.5 ? vx / wx : 0.0,
+                  wy > 0.5 ? vy / wy : 0.0);
+
+    imageStore(uVel, c, vec4(v, 0.0, 0.0));
+    imageStore(uMass, c, vec4((wx + wy) * 0.5 / 4096.0, 0.0, 0.0, 0.0));
+}

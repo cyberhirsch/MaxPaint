@@ -45,6 +45,11 @@ class FluidSim(private val ctx: Context) {
     /** Coverage deposited per stroke sample, before pressure scales it. */
     var inkPerStroke = 1.0f
     var velocityGain = 1.0f
+    /** Sweeps for the particle grid's own projection. */
+    var flipIterations = 20
+    /** Below this accumulated mass a cell counts as air, not liquid. */
+    var flipMinMass = 0.08f
+
     /** CFL guard, in UV per second. Keeps a held brush from blowing up the field. */
     var maxSpeed = 4.0f
     /**
@@ -128,6 +133,15 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pWet: ComputeProgram
     private lateinit var pNib: ComputeProgram
     private lateinit var pSoak: ComputeProgram
+    private lateinit var pPressureFlip: ComputeProgram
+    private lateinit var pBlit: ComputeProgram
+    private lateinit var pDivergenceFlip: ComputeProgram
+    private lateinit var pGradSubFlip: ComputeProgram
+    private lateinit var flipVel: DoubleTex
+    private lateinit var flipVelOld: Tex
+    private lateinit var flipMass: Tex
+    private lateinit var flipPressure: DoubleTex
+    private lateinit var flipDivergence: Tex
     private lateinit var nibInkField: DoubleTex
 
     private lateinit var water: DoubleTex
@@ -153,6 +167,8 @@ class FluidSim(private val ctx: Context) {
         if (!allocated) 0
         else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() + water.bytes() +
              flipInk.bytes() + flip.bytes() + nibInkField.bytes() +
+             flipVel.bytes() + flipVelOld.bytes() + flipMass.bytes() +
+             flipPressure.bytes() + flipDivergence.bytes() +
              pressure.bytes() + curl.bytes() + divergence.bytes()
 
     fun initPrograms() {
@@ -174,6 +190,10 @@ class FluidSim(private val ctx: Context) {
         queryMaxTexture()
         pNib = ComputeProgram(ctx, "shaders/nib.comp")
         pSoak = ComputeProgram(ctx, "shaders/soak.comp")
+        pPressureFlip = ComputeProgram(ctx, "shaders/pressure_flip.comp")
+        pBlit = ComputeProgram(ctx, "shaders/blit.comp")
+        pDivergenceFlip = ComputeProgram(ctx, "shaders/divergence_flip.comp")
+        pGradSubFlip = ComputeProgram(ctx, "shaders/gradsub_flip.comp")
         flip.init()
     }
 
@@ -249,6 +269,15 @@ class FluidSim(private val ctx: Context) {
         flipInk = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         nibInkField = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
 
+        // FLIP keeps its own grid: sharing the gas brush's pressure field would
+        // destroy its warm start every frame
+        flipVel = DoubleTex(simW, simH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        flipVelOld = Tex(simW, simH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        flipMass = Tex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        flipPressure = DoubleTex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        flipDivergence = Tex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
+        flip.resizeGrid(simW, simH)
+
         partialW = (dyeW + STATS_TILE - 1) / STATS_TILE
         partialH = (dyeH + STATS_TILE - 1) / STATS_TILE
         statsPartial = Tex(partialW, partialH, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
@@ -264,6 +293,8 @@ class FluidSim(private val ctx: Context) {
         if (!allocated) return
         velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
         flipInk.clear(); flip.clear(); nibInkField.clear()
+        flipVel.clear(); flipVelOld.clear(); flipMass.clear()
+        flipPressure.clear(); flipDivergence.clear()
         waterActive = false; nibActive = false
         pressure.clear(); curl.clear(); divergence.clear()
     }
@@ -402,7 +433,20 @@ class FluidSim(private val ctx: Context) {
      * books — before being retired.
      */
     private fun stepFlip(dt: Float) {
-        flip.step(dt, velocity.read, aspect)
+        // A real FLIP step. Particles scatter their momentum onto their own
+        // grid, that grid is made incompressible, and the CHANGE is gathered
+        // back -- which is what makes the paint behave as one body of liquid
+        // instead of a spray of independent points.
+        flip.particlesToGrid(flipVel.read, flipMass, simW, simH)
+
+        // FLIP transfers the delta, so the pre-projection field must be kept
+        blit(flipVel.read, flipVelOld)
+
+        // empty cells are held at zero pressure, giving a free surface rather
+        // than liquid sealed in a box
+        projectFlipGrid(dt)
+
+        flip.gridToParticles(dt, flipVel.read, flipVelOld, aspect, simW, simH)
 
         // freshly dried particles land in the background layer, permanently
         flip.draw(state = 2f, target = background.read)
@@ -413,6 +457,51 @@ class FluidSim(private val ctx: Context) {
     }
 
     val flipTexture get() = flipInk
+
+    /** Copies one field into another; FLIP needs the pre-projection velocity. */
+    private fun blit(src: Tex, dst: Tex) {
+        pBlit.use()
+        src.bindSampler(0)
+        pBlit.set("uSrc", 0)
+        dst.bindImage(0, GLES31.GL_WRITE_ONLY)
+        pBlit.dispatch(dst.width, dst.height)
+    }
+
+    private fun projectFlipGrid(dt: Float) {
+        // consistent operators here: a thin free surface needs them
+        pDivergenceFlip.use()
+        flipVel.read.bindImage(0, GLES31.GL_READ_ONLY)
+        flipDivergence.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pDivergenceFlip.dispatch(simW, simH)
+
+        pClear.use()
+        pClear.set("uValue", 0.6f)
+        flipPressure.read.bindImage(0, GLES31.GL_READ_WRITE)
+        pClear.dispatch(simW, simH)
+
+        pPressureFlip.use()
+        pPressureFlip.set("uMinMass", flipMinMass)
+        flipDivergence.bindImage(2, GLES31.GL_READ_ONLY)
+        flipMass.bindImage(3, GLES31.GL_READ_ONLY)
+        val half = (simW + 1) / 2
+        for (i in 0 until flipIterations) {
+            for (parity in 0..1) {
+                flipPressure.read.bindImage(0, GLES31.GL_READ_WRITE)
+                pPressureFlip.set("uParity", parity)
+                pPressureFlip.dispatch(half, simH)
+            }
+        }
+
+        pGradSubFlip.use()
+        pGradSubFlip.set("uDrag", 0f)
+        pGradSubFlip.set("uDt", dt)
+        pGradSubFlip.set("uMaxSpeed", maxSpeed)
+        flipVel.read.bindImage(0, GLES31.GL_READ_ONLY)
+        flipVel.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        flipPressure.read.bindImage(2, GLES31.GL_READ_ONLY)
+        pGradSubFlip.dispatch(simW, simH)
+        flipVel.swap()
+    }
 
     /** Momentum with no pigment: stir, shove, pinch or comb what is already there. */
     fun force(u: Float, v: Float, du: Float, dv: Float, mode: Int, strength: Float) {
@@ -754,6 +843,8 @@ class FluidSim(private val ctx: Context) {
     private fun releaseTextures() {
         velocity.release(); dye.release(); background.release(); age.release()
         water.release(); flipInk.release(); nibInkField.release()
+        flipVel.release(); flipVelOld.release(); flipMass.release()
+        flipPressure.release(); flipDivergence.release()
         pressure.release(); curl.release(); divergence.release()
         statsPartial.release()
         allocated = false

@@ -310,6 +310,18 @@ class MainActivity : AppCompatActivity() {
                 })
                 panelBody.addView(hint("Paint travels on the momentum of the " +
                     "stroke. There is no gravity — a canvas has no up."))
+                panelBody.addView(button("How many particles fit?") {
+                    AlertDialog.Builder(this)
+                        .setTitle("Measure particle headroom?")
+                        .setMessage("Fills the canvas with particles at several " +
+                            "counts and times them. Clears the canvas.")
+                        .setPositiveButton("Run") { _, _ ->
+                            toast("Measuring…")
+                            renderer.particleBenchmarkRequested = true
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
+                })
             }
 
             Brush.WATERCOLOR -> {
