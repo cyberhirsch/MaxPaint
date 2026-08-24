@@ -55,6 +55,10 @@ pigment-diffusion) so that "fluid" is a family of media rather than one effect.
 - Cloud sync or accounts. Files are local; export is the sharing mechanism.
 - Physically accurate pigment spectral rendering (Kubelka–Munk is a v1.x
   stretch, see §6.3).
+- **Multiple layers.** Dropped after review: one canvas with one background
+  layer that paint bakes into. The bake already gives the artist control over
+  what is permanent, which is most of what layers were there to provide, and
+  every layer would otherwise multiply checkpoint memory (§7.3).
 
 ---
 
@@ -217,13 +221,11 @@ if schedule allows, since it reuses the bake path.
 ### 6.1 Canvas & document
 - FR-1 Canvas sizes: 1K, 2K, 4K square + common aspect ratios. Simulation grid
   resolution is decoupled from canvas resolution (see §7.2).
-- FR-2 Layers: background/baked layer per paint layer; minimum 8 layers;
-  standard blend modes (normal, multiply, screen, add, overlay); opacity;
-  reorder; merge; lock.
-- FR-3 Exactly one layer is "live" at a time — the layer the simulation bakes
-  into. Switching layers force-bakes pending fluid (with a warning toggle).
-- FR-4 Export: PNG (with/without alpha), JPEG, and layered `.maxpaint` document.
-  Optional: PSD export (v1.1).
+- ~~FR-2 Layers~~ — dropped, see Non-Goals. One canvas, one background layer.
+- ~~FR-3 One live layer at a time~~ — moot without layers; the single background
+  layer is always the one the simulation bakes into.
+- FR-4 Export: PNG (with/without alpha), JPEG, and a `.maxpaint` document
+  carrying the replay log.
 - FR-5 Time-lapse export: MP4 of the session, driven by the replay log (§6.6).
 
 ### 6.2 Input

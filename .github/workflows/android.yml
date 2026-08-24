@@ -11,6 +11,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # versionCode is the commit count; a shallow clone would report 1
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -24,16 +27,20 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --stacktrace
 
-      - name: Name the APK after the commit
+      - name: Collect the APK
+        id: apk
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             "out/maxpaint-${GITHUB_SHA::7}.apk"
+          cp app/build/outputs/apk/debug/maxpaint-*-debug.apk out/
+          NAME=$(basename out/maxpaint-*-debug.apk .apk)
+          echo "name=${NAME%-debug}" >> "$GITHUB_OUTPUT"
+          ls -la out/
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: maxpaint-apk
+          # unique per build, so downloads are distinguishable in the UI
+          name: ${{ steps.apk.outputs.name }}
           path: out/*.apk
           if-no-files-found: error
 

@@ -26,17 +26,35 @@ the background. Compositing "over" there would saturate, and repeatedly laying
 down a tenth of a stroke would converge on full coverage instead of the stroke's
 real density — quietly destroying ink.
 
+## Versioning
+
+Versions come from git, so every APK is identifiable and `versionCode` only ever
+increases:
+
+```
+versionCode   commit count
+versionName   0.<minor>.<count>-<sha>[-dirty]     e.g. 0.3.14-92a0a5d
+```
+
+The APK is named for its version (`maxpaint-0.3.14-92a0a5d-debug.apk`) and the CI
+artifact takes the same name, so downloaded builds neither collide in your
+downloads folder nor look identical in the Actions UI. The running version is
+shown in the on-screen HUD.
+
+CI checks out with `fetch-depth: 0` — a shallow clone reports one commit, and
+every build would claim `versionCode` 1.
+
 ## What is and is not built
 
 Built: the gas/FLIP/watercolor/vortex/solvent/freeze/thaw media, presets over
 each, the bake and its four dials, the resolution sweep with quality columns,
 stylus pressure and tilt, and tilt-driven gravity.
 
-Not built — essentially all of milestone M3, the app around the paint:
+Layers are deliberately out — one canvas, one background layer. The rest of
+milestone M3, the app around the paint, is not built:
 
 | Missing | PRD |
 |---|---|
-| Layers | FR-2, FR-3 |
 | Undo / redo | FR-17, FR-18 |
 | Export (PNG, JPEG, `.maxpaint`) | FR-4 |
 | Time-lapse export | FR-5 |
