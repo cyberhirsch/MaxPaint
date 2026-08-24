@@ -10,6 +10,7 @@ uniform vec2  uPoint;    // UV
 uniform vec4  uValue;    // amount to add at the centre
 uniform float uRadius;   // in UV units
 uniform float uAspect;   // width / height
+uniform int   uMode;     // 0 = add (paint), 1 = lerp toward uValue (reset age)
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
@@ -23,5 +24,8 @@ void main() {
     d.x *= uAspect;
 
     float falloff = exp(-dot(d, d) / max(uRadius * uRadius, 1e-8));
-    imageStore(uDst, c, prev + uValue * falloff);
+
+    vec4 result = uMode == 1 ? mix(prev, uValue, falloff)
+                             : prev + uValue * falloff;
+    imageStore(uDst, c, result);
 }

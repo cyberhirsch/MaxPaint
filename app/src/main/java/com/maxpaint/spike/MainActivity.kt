@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var hud: TextView
 
     private val ui = Handler(Looper.getMainLooper())
-    private var hue = 0f
+    private var twoFingerDownAt = 0L
 
     // last touch position per pointer, for momentum
     private val lastX = HashMap<Int, Float>()
@@ -63,7 +63,7 @@ class MainActivity : AppCompatActivity() {
                 val i = event.actionIndex
                 lastX[event.getPointerId(i)] = event.getX(i)
                 lastY[event.getPointerId(i)] = event.getY(i)
-                hue = (hue + 0.13f) % 1f
+                if (event.pointerCount == 2) twoFingerDownAt = System.currentTimeMillis()
             }
 
             MotionEvent.ACTION_MOVE -> {
@@ -82,27 +82,39 @@ class MainActivity : AppCompatActivity() {
                     val du = (x - px) / w * 12f
                     val dv = -(y - py) / h * 12f
 
-                    val pressure = event.getPressure(i).coerceIn(0.05f, 1.5f)
-                    val c = hsv(hue, 0.85f, 0.9f * pressure)
-                    renderer.queueSplat(u, v, du, dv, c[0], c[1], c[2])
+                    // Black ink on white paper. Colour is premultiplied by
+                    // coverage, so black paint is rgb 0 with the alpha carrying
+                    // how much ink landed -- pressure drives that.
+                    val ink = 0f
+                    renderer.queueSplat(u, v, du, dv, ink, ink, ink)
 
                     lastX[id] = x
                     lastY[id] = y
                 }
             }
 
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+            MotionEvent.ACTION_POINTER_UP -> {
+                // Two-finger tap commits the painting: quick, and without
+                // travelling far enough to count as a stroke.
+                val held = System.currentTimeMillis() - twoFingerDownAt
+                if (event.pointerCount == 2 && twoFingerDownAt > 0L && held < 250) {
+                    renderer.freezeRequested = true
+                    Toast.makeText(this, "Frozen", Toast.LENGTH_SHORT).show()
+                }
+                twoFingerDownAt = 0L
+                val id = event.getPointerId(event.actionIndex)
+                lastX.remove(id)
+                lastY.remove(id)
+            }
+
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                twoFingerDownAt = 0L
                 val id = event.getPointerId(event.actionIndex)
                 lastX.remove(id)
                 lastY.remove(id)
             }
         }
         return true
-    }
-
-    private fun hsv(h: Float, s: Float, v: Float): FloatArray {
-        val c = Color.HSVToColor(floatArrayOf(h * 360f, s, v))
-        return floatArrayOf(Color.red(c) / 255f, Color.green(c) / 255f, Color.blue(c) / 255f)
     }
 
     // ---------------- UI ----------------
@@ -160,12 +172,40 @@ class MainActivity : AppCompatActivity() {
         panel.addView(iterLabel)
         panel.addView(iterBar)
 
+        // --- drag: the single dial that decides how fast paint sets ---
+        val dragLabel = TextView(this).apply {
+            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            text = "Drag: 0.12  (paint sets sooner →)"
+        }
+        val dragBar = SeekBar(this).apply {
+            max = 100
+            progress = 12
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    val d = p / 100f * 3f
+                    renderer.sim.velocityDrag = d
+                    dragLabel.text = String.format("Drag: %.2f  (paint sets sooner \u2192)", d)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        panel.addView(dragLabel)
+        panel.addView(dragBar)
+
         // --- buttons ---
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(button("Clear") { renderer.clearRequested = true })
         row.addView(button("Pause") { b ->
             renderer.paused = !renderer.paused
             b.text = if (renderer.paused) "Play" else "Pause"
+        })
+        row.addView(button("Freeze") {
+            renderer.freezeRequested = true
+        })
+        row.addView(button("Heat") { b ->
+            renderer.heatOverlay = !renderer.heatOverlay
+            b.text = if (renderer.heatOverlay) "Paint" else "Heat"
         })
         row.addView(button("Vel") { b ->
             renderer.debugView = 1 - renderer.debugView

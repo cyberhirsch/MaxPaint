@@ -2,6 +2,30 @@
 
 Fluid-simulation painting for Android. See [docs/PRD.md](docs/PRD.md) for the product spec.
 
+## Where it is
+
+**M0** — gaseous 2D Navier–Stokes in ES 3.1 compute, selectable resolutions, sweep benchmark. Done.
+**M1** — the bake: black ink on white paper, background layer, settle/transfer, Freeze Now, drag. Done.
+
+## M1 — the bake
+
+Paint is black ink on white paper. A stroke injects dye and momentum; drag slows
+it; once it falls below the settle speed it transfers out of the simulation and
+into the background layer, where it is permanent and costs nothing to keep.
+
+| Control | What it does |
+|---|---|
+| **Drag** | The one dial that matters. More drag, paint sets sooner. Measured: at 0.05 a stroke is 80% set after 2s, at 2.0 it is 98% set. |
+| **Freeze** button, or a two-finger tap | Commits the whole canvas immediately. |
+| **Heat** | Tints live fluid by how close it is to setting, so you can see what is about to freeze (PRD UX-3). |
+
+Ink is premultiplied by coverage, so compositing paper → baked → live is a plain
+"over". The bake accumulates additively rather than compositing over, which is
+what makes it exactly conservative: what leaves the dye field is what arrives in
+the background. Compositing "over" there would saturate, and repeatedly laying
+down a tenth of a stroke would converge on full coverage instead of the stroke's
+real density — quietly destroying ink.
+
 ## M0 — resolution headroom spike
 
 This milestone is the de-risking spike from the PRD: a gaseous 2D Navier–Stokes
@@ -99,6 +123,25 @@ information across the domain. Three consequences:
    iterative sweeps lack. This should be scheduled, not held in reserve.
 3. **The sweep benchmark should report convergence alongside fps.** A PASS on
    frame time alone is misleading at high resolution.
+
+#### Under-solving manufactures ink
+
+M1 turned up a third consequence, and for a paint app it is the most visible
+one. Semi-Lagrangian advection is not mass-conservative, and an under-solved
+velocity field has convergent regions that concentrate dye — so total ink
+*grows*. Measured at 128², dye mass drift over 240 frames:
+
+```
+   5 sweeps   +151.8%          60 sweeps    +14.4%
+  15 sweeps    +49.7%         120 sweeps     +4.0%
+  30 sweeps    +36.0%
+```
+
+At the default 30 sweeps a stroke gains a third of its ink in four seconds: it
+blooms and darkens on its own. This is not a bake bug — the bake is exactly
+conservative, and the verification asserts that separately — it is the pressure
+solve showing up in the artwork. It is the strongest argument yet for multigrid,
+and it means adaptive quality must protect sweep count, not spend it.
 
 In practice the frame loop warm-starts pressure from the previous frame
 (decayed 0.8×), so steady-state divergence is better than any single cold solve

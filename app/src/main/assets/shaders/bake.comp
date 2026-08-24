@@ -1,0 +1,61 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The mechanic the whole product hangs on: fluid that has slowed below a
+// threshold is progressively transferred out of the simulation and composited
+// into the background layer, where it is permanent and costs nothing.
+//
+// Drag is what slows the fluid, so drag is what causes baking -- one dial the
+// artist can reason about: more drag, paint sets sooner.
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uDyeSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uDyeDst;
+layout(rgba16f, binding = 2) readonly  uniform highp image2D uBgSrc;
+layout(rgba16f, binding = 3) writeonly uniform highp image2D uBgDst;
+layout(rgba16f, binding = 4) readonly  uniform highp image2D uAgeSrc;   // .x = seconds live
+layout(rgba16f, binding = 5) writeonly uniform highp image2D uAgeDst;
+
+layout(binding = 0) uniform highp sampler2D uVel;
+
+uniform float uDt;
+uniform float uSettleSpeed;   // speed at/below which settling begins
+uniform float uBakeRate;      // how fast settled dye transfers, per second
+uniform float uSettleMinAge;  // "Hold": seconds paint must stay live first
+uniform int   uForce;         // 1 = Freeze Now: bake everything, immediately
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDyeDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 dye = imageLoad(uDyeSrc, c);
+    vec4 bg  = imageLoad(uBgSrc, c);
+    float age = imageLoad(uAgeSrc, c).x + uDt;
+
+    float amount;
+    if (uForce == 1) {
+        amount = 1.0;
+    } else {
+        vec2 uv = (vec2(c) + 0.5) / vec2(sz);
+        float speed = length(texture(uVel, uv).xy);
+
+        float slowness = clamp((uSettleSpeed - speed) / max(uSettleSpeed, 1e-5), 0.0, 1.0);
+        float held     = uSettleMinAge <= 0.0 ? 1.0 : clamp(age / uSettleMinAge, 0.0, 1.0);
+
+        amount = clamp(slowness * held * uBakeRate * uDt, 0.0, 1.0);
+    }
+
+    // Accumulate additively rather than compositing "over". Over-compositing
+    // saturates: repeatedly laying down a tenth of a stroke would converge on
+    // full coverage instead of the stroke's actual density, quietly destroying
+    // ink and breaking PRD 7.6. Additive accumulation makes the bake exactly
+    // conservative -- what leaves the dye field is what arrives in the
+    // background -- and coverage is clamped once, at display time.
+    vec4 moved = dye * amount;
+
+    imageStore(uDyeDst, c, dye - moved);
+    imageStore(uBgDst, c, bg + moved);
+    imageStore(uAgeDst, c, vec4(age, 0.0, 0.0, 0.0));
+}
