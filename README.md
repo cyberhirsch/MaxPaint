@@ -26,6 +26,29 @@ the background. Compositing "over" there would saturate, and repeatedly laying
 down a tenth of a stroke would converge on full coverage instead of the stroke's
 real density — quietly destroying ink.
 
+## What is and is not built
+
+Built: the gas/FLIP/watercolor/vortex/solvent/freeze/thaw media, presets over
+each, the bake and its four dials, the resolution sweep with quality columns,
+stylus pressure and tilt, and tilt-driven gravity.
+
+Not built — essentially all of milestone M3, the app around the paint:
+
+| Missing | PRD |
+|---|---|
+| Layers | FR-2, FR-3 |
+| Undo / redo | FR-17, FR-18 |
+| Export (PNG, JPEG, `.maxpaint`) | FR-4 |
+| Time-lapse export | FR-5 |
+| Replay log, and the hi-res re-render it enables | FR-19 – FR-21 |
+| Canvas pan / zoom / rotate, 3-finger undo | FR-7 |
+| Colour: palettes, eyedropper, pigment mixing | FR-10 – FR-12 |
+| Boundary conditions, including wrap for tiling | FR-13, FR-15 |
+| Tap-to-hide UI, onboarding, accessibility | UX-1, UX-4, UX-5 |
+
+Determinism is *verified* (identical inputs give bit-identical output) but the
+replay log that would exploit it is not written yet.
+
 ## Brushes
 
 A brush is a *medium* — which solver it drives and how it deposits paint — plus

@@ -32,6 +32,8 @@ class FluidSim(private val ctx: Context) {
     var velocityDrag = 0.12f      // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
     var splatRadius = 0.02f
+    /** Coverage deposited per stroke sample, before pressure scales it. */
+    var inkPerStroke = 1.0f
     var velocityGain = 1.0f
     /** CFL guard, in UV per second. Keeps a held brush from blowing up the field. */
     var maxSpeed = 4.0f
@@ -186,15 +188,33 @@ class FluidSim(private val ctx: Context) {
      * A stroke sample. Coordinates and delta are in UV space; the brush decides
      * what that means — pigment, pure force, or a local freeze.
      */
-    fun stroke(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {
+    fun stroke(
+        u: Float, v: Float, du: Float, dv: Float,
+        r: Float, g: Float, b: Float,
+        pressure: Float = 1f, tiltSpread: Float = 1f
+    ) {
         if (!allocated) return
 
+        // FR-6: pressure sets how much ink lands, tilt widens the footprint.
+        val baseRadius = splatRadius
+        val baseInk = inkPerStroke
+        splatRadius = baseRadius * tiltSpread
+        inkPerStroke = baseInk * pressure
+        try {
+            strokeInner(u, v, du, dv, r, g, b)
+        } finally {
+            splatRadius = baseRadius
+            inkPerStroke = baseInk
+        }
+    }
+
+    private fun strokeInner(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {
         when (brush) {
             Brush.GAS -> splat(u, v, du, dv, r, g, b)
             Brush.FLIP -> {
                 // a little momentum into the grid too, so the pour interacts
                 // with fluid already on the canvas
-                flip.emit(u, v, du, dv, splatRadius * 0.5f)
+                flip.emit(u, v, du, dv, splatRadius * 0.5f, inkPerStroke)
                 force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
             }
             Brush.WATERCOLOR -> wet(u, v)
@@ -212,8 +232,8 @@ class FluidSim(private val ctx: Context) {
         pWet.set("uPoint", u, v)
         pWet.set("uRadius", splatRadius)
         pWet.set("uAspect", aspect)
-        pWet.set("uWater", wcLoadWater)
-        pWet.set("uPigment", wcLoadPigment)
+        pWet.set("uWater", wcLoadWater * inkPerStroke)
+        pWet.set("uPigment", wcLoadPigment * inkPerStroke)
         water.read.bindImage(0, GLES31.GL_READ_ONLY)
         water.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         pWet.dispatch(dyeRes, dyeRes)
@@ -323,7 +343,7 @@ class FluidSim(private val ctx: Context) {
         // dye - a slightly tighter splat reads as a crisper mark.
         // Colour is premultiplied by coverage so compositing is a plain "over".
         pSplat.set("uRadius", splatRadius * 0.6f)
-        pSplat.set("uValue", r, g, b, 1f)
+        pSplat.set("uValue", r * inkPerStroke, g * inkPerStroke, b * inkPerStroke, inkPerStroke)
         dye.read.bindImage(0, GLES31.GL_READ_ONLY)
         dye.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         pSplat.dispatch(dyeRes, dyeRes)
