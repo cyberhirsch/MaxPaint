@@ -57,29 +57,30 @@ object Presets {
     private val flip = listOf(
         Preset("Wet Paint") { s ->
             s.flip.flipRatio = 0.92f; s.flip.particleDrag = 0.25f
-            s.flip.settleSpeed = 0.06f
-            s.flip.pointSize = 5f; s.flip.emitPerSample = 12
+            s.flip.settleSpeed = 0.06f; s.flip.cohesion = 12f
+            s.flip.pointSize = 4f; s.flip.emitPerSample = 32
         },
         Preset("Splatter") { s ->
             s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
-            s.flip.settleSpeed = 0.12f
-            s.flip.pointSize = 3f; s.flip.emitPerSample = 28
+            s.flip.settleSpeed = 0.12f; s.flip.cohesion = 4f
+            s.flip.pointSize = 3f; s.flip.emitPerSample = 40
         },
         Preset("Fling") { s ->
             // travels a long way before it stops
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.05f
-            s.flip.settleSpeed = 0.03f
-            s.flip.pointSize = 4f; s.flip.emitPerSample = 8
+            s.flip.settleSpeed = 0.03f; s.flip.cohesion = 8f
+            s.flip.pointSize = 4f; s.flip.emitPerSample = 24
         },
         Preset("Honey") { s ->
             s.flip.flipRatio = 0.45f; s.flip.particleDrag = 1.6f
-            s.flip.settleSpeed = 0.02f
-            s.flip.pointSize = 8f; s.flip.emitPerSample = 10
+            s.flip.settleSpeed = 0.02f; s.flip.cohesion = 26f
+            s.flip.pointSize = 6f; s.flip.emitPerSample = 40
         },
         Preset("Mercury") { s ->
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.04f
-            s.flip.settleSpeed = 0.015f
-            s.flip.pointSize = 7f; s.flip.emitPerSample = 14
+            // very high tension: beads up hard and stays whole
+            s.flip.settleSpeed = 0.015f; s.flip.cohesion = 38f
+            s.flip.pointSize = 5f; s.flip.emitPerSample = 48
         }
     )
 

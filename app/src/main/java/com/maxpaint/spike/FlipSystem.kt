@@ -21,11 +21,16 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
     var flipRatio = 0.92f       // 1 = splashy and particle-driven, 0 = viscous
     var particleDrag = 0.25f
+    /** CFL guard for particles, matching the grid's. */
+    var maxSpeed = 4f
+    /** Surface tension. With no gravity, this is what gathers paint into
+     *  droplets rather than letting it disperse. */
+    var cohesion = 12f
     var settleSpeed = 0.06f
     var settleMinAge = 0.25f
     var pointSize = 5f
     var inkPerParticle = 0.14f
-    var emitPerSample = 12
+    var emitPerSample = 32
 
     private var buffer = 0
     private var vao = 0
@@ -196,6 +201,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pG2P.set("uAspect", aspect)
         pG2P.set("uSettleSpeed", settleSpeed)
         pG2P.set("uSettleMinAge", settleMinAge)
+        pG2P.set("uCohesion", cohesion)
+        pG2P.set("uMaxSpeed", maxSpeed)
         pG2P.set("uTexel", 1f / gridW, 1f / gridH)
         pG2P.set("uVelNew", 0)
         pG2P.set("uVelOld", 1)

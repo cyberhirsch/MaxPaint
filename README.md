@@ -235,8 +235,37 @@ Measured: interior divergence 99% removed (0.044 → 0.00034), and colliding
 streams now push each other aside instead of passing through — cross-axis spread
 0.0149 without the solve, 0.0837 with.
 
-There is **no gravity**, and the tests assert it: paint thrown sideways travels
-sideways and shows no vertical drift.
+### Cohesion is what makes it clump
+
+Removing gravity left nothing to gather the paint. A liquid clumps because
+something pulls it together, and with no "down" that has to be surface tension —
+so each particle is pulled up the density gradient. Neighbouring paint attracts,
+droplets form, and the pressure solve stops them collapsing.
+
+Measured: the same paint occupies **434 cells → 98**, peak density **58 → 169**,
+without collapsing to a point or running away.
+
+Two bugs surfaced getting there:
+
+- **The force scaled with particle count.** Mass is an accumulated weight, so a
+  raw gradient meant the same cohesion setting behaved completely differently at
+  either end of the particle slider — and at high counts it flung paint apart
+  instead of gathering it. It is normalised by local density now, and particles
+  carry the same CFL clamp as the grid.
+- **The density field was skewed diagonally.** Cell mass was averaged from the
+  two staggered weights, one sampled half a cell down and the other half a cell
+  left, so its gradient carried a constant diagonal bias. Cohesion followed that
+  bias and walked the entire liquid into the top-right corner. Reconstructing a
+  properly cell-centred mass from each face pair fixed it.
+
+A third came out of the same hunt: `divergence_flip` applied the wall condition
+to the wrong face. On a staggered grid the x component of cell *c* sits on its
+**left** face, so the wall belongs at `c.x == 0`; it was being zeroed at the far
+edge instead, which both missed the left wall and clobbered an interior face.
+
+There is **no gravity**, and the tests assert it in the form that is actually
+true: undisturbed paint does not drift at all (0.00000 over 60 frames), and a
+throw stays on its axis.
 
 ### How many particles fit
 

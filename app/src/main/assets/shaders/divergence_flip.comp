@@ -24,11 +24,15 @@ void main() {
 
     vec2 here = imageLoad(uVel, c).xy;
 
-    // solid walls: no flow through the boundary
+    // Solid walls, applied to the correct face. On a staggered grid the x
+    // component of cell c sits on its LEFT face, so the wall condition belongs
+    // at c.x == 0 -- zeroing it at the far edge instead both misses the left
+    // wall and clobbers an interior face, which makes the boundary asymmetric
+    // and drifts the whole field along that axis.
     float right = c.x < mx.x ? imageLoad(uVel, c + ivec2(1, 0)).x : 0.0;
     float up    = c.y < mx.y ? imageLoad(uVel, c + ivec2(0, 1)).y : 0.0;
-    float hx    = c.x < mx.x ? here.x : 0.0;
-    float hy    = c.y < mx.y ? here.y : 0.0;
+    float hx    = c.x > 0    ? here.x : 0.0;
+    float hy    = c.y > 0    ? here.y : 0.0;
 
     imageStore(uDiv, c, vec4((right - hx) + (up - hy), 0.0, 0.0, 0.0));
 }
