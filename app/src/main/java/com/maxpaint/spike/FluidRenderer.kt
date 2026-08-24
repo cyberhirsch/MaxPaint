@@ -154,6 +154,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.velocityTexture.bindSampler(1)
         sim.backgroundTexture.bindSampler(2)
         sim.waterTexture.bindSampler(3)
+        sim.flipTexture.bindSampler(4)
         GLES31.glUniform1i(
             GLES31.glGetUniformLocation(displayProgram, "uShowWater"),
             if (sim.waterActive) 1 else 0

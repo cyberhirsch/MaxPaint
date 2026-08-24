@@ -1,0 +1,72 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 64) in;
+
+// PIC/FLIP-style update. Particles carry their own velocity and blend it toward
+// the grid's each step: uFlipRatio near 1 keeps particle momentum and reads
+// splashy, near 0 follows the grid and reads viscous.
+//
+// This is one-way coupled -- particles read the grid but do not write back to
+// it. Full FLIP scatters particle momentum onto the grid, which needs float
+// atomics that ES 3.1 does not have; the fixed-point workaround belongs with
+// the M2 work rather than the spike.
+
+layout(std430, binding = 0) buffer Particles {
+    vec4 data[];
+};
+
+layout(binding = 0) uniform highp sampler2D uVel;
+
+uniform float uDt;
+uniform int   uCapacity;
+uniform float uFlipRatio;
+uniform vec2  uGravity;
+uniform float uSettleSpeed;
+uniform float uSettleMinAge;
+uniform float uDrag;
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCapacity) return;
+
+    vec4 pv = data[i * 2];
+    vec4 meta = data[i * 2 + 1];
+
+    float state = meta.z;
+
+    // state 2 was drawn into the background last frame; retire it now
+    if (state > 1.5) {
+        data[i * 2 + 1] = vec4(0.0);
+        return;
+    }
+    if (state < 0.5) return;
+
+    vec2 pos = pv.xy;
+    vec2 vel = pv.zw;
+
+    vec2 gridVel = texture(uVel, pos).xy;
+    vel = mix(gridVel, vel, uFlipRatio);
+    vel += uGravity * uDt;
+    vel *= 1.0 / (1.0 + uDrag * uDt);
+
+    pos += vel * uDt;
+
+    // walls: paint runs down them and pools rather than vanishing
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x = abs(vel.x) * 0.2; }
+    if (pos.x > 1.0) { pos.x = 1.0; vel.x = -abs(vel.x) * 0.2; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y = abs(vel.y) * 0.2; }
+    if (pos.y > 1.0) { pos.y = 1.0; vel.y = -abs(vel.y) * 0.2; }
+
+    float age = meta.y + uDt;
+
+    // A particle that has slowed and lived long enough dries where it lies.
+    // Per-particle settling is what gives dried-droplet edges rather than the
+    // uniform fade a grid bake produces.
+    if (length(vel) < uSettleSpeed && age > uSettleMinAge) {
+        state = 2.0;        // draw into the background, then retire
+    }
+
+    data[i * 2]     = vec4(pos, vel);
+    data[i * 2 + 1] = vec4(meta.x, age, state, meta.w);
+}

@@ -36,6 +36,8 @@ rather than an accident.
 | Brush | Deposits | What it does |
 |---|---|---|
 | **Gas** | ink + momentum | The hero brush. Ink-in-water bloom and curl. |
+| **Flip** | particles | Paint that pours, drips and runs down the canvas, then dries where it pools. One slider goes splashy to viscous. Device tilt can steer gravity. |
+| **Water** | water + pigment | Shallow-water pigment on paper: bleeds, blooms, darkens at the edges, granulates on the paper grain. |
 | **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. |
 | **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. |
 | **Freeze** | — | Local Freeze Now: bakes only what it touches, so one good vortex can be locked while the rest keeps moving. |
@@ -70,6 +72,49 @@ inflates total ink (~1.5× for 30 frames of swirl at the default strength). It i
 *not* the pressure solve — it plateaus at ~3.2× even at 240 sweeps, and pure
 advection with no forcing conserves exactly. The fix is a conservative or
 mass-renormalised advection step, which belongs with the M4 quality work.
+
+### Watercolor
+
+A second solver, not Navier–Stokes, after Curtis et al. (SIGGRAPH '97). Water
+runs down the gradient of depth plus paper grain — so the paper's own texture
+steers it, which is where granulation comes from — and pigment rides the same
+fluxes with upwind concentration. **Evaporation is this brush's bake:** as a cell
+dries, what it holds commits to the background permanently. Paper grain is
+procedural rather than a texture, so the medium stays reproducible from the
+replay log (FR-20).
+
+Four things the tests caught, all real:
+
+- **Water was being destroyed.** A dry cell returned early before computing
+  flow, so water arriving on dry paper vanished, and the dry threshold was a
+  hidden sink. It is now an explicit parameter; with it off, flow conserves
+  water exactly (±0.000%).
+- **fp16 was not enough.** Watercolor fluxes are small against the depth they
+  modify and half floats round them away outright. The water field is RGBA32F.
+- **Adsorption was far too fast.** At 3/s pigment stuck before it could travel,
+  which destroyed both edge darkening and wet-on-wet bleed.
+- **Edge darkening came from the wrong term.** Boosting deposition at the rim
+  does not produce it. Faster *evaporation* at the rim does, by drawing water
+  and pigment outward — the coffee-ring effect. The radial profile now peaks
+  off-centre instead of pooling in the middle.
+
+### FLIP
+
+Particles carry their own velocity and blend it toward the grid's each step:
+near 1 keeps particle momentum and reads splashy, near 0 follows the grid and
+reads viscous. Particles that slow and age out dry where they lie and are drawn
+once into the background, which is what gives dried-droplet edges rather than
+the uniform fade a grid bake produces.
+
+Two constraints shaped it. ES 3.1 has no float atomics, so particles are drawn
+as soft additive points rather than scattered by hand. And ES 3.1 guarantees
+*zero* storage blocks in vertex shaders, so the particle pool is one buffer
+bound two ways — as an SSBO for the compute passes, and as a vertex buffer for
+the draws.
+
+It is **one-way coupled**: particles read the grid but do not write back to it.
+Full FLIP scatters particle momentum onto the grid, which needs the fixed-point
+atomic workaround; that belongs with M2 rather than the spike.
 
 ## M0 — resolution headroom spike
 

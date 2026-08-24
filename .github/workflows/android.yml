@@ -52,3 +52,6 @@ jobs:
 
       - name: Validate shaders and run the solver checks
         run: tools/verify.sh --res 128
+
+      - name: Run the FLIP particle checks
+        run: EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 python3 tools/verify_flip.py
