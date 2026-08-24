@@ -177,13 +177,19 @@ class Sim:
         self.res, self.dye_res, self.iters = res, res * dye_scale, iters
         self.use_rb = use_rb
         self.vorticity, self.drag, self.dye_diss = 22.0, 0.12, 0.05
+        # M1 bake parameters, matching FluidSim.kt
+        self.settle_speed, self.bake_rate, self.settle_min_age = 0.35, 2.5, 0.35
+        self.bake_enabled = False   # opt in, so solver tests stay isolated
+        self.force_freeze = False
 
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
-                   "pressure", "pressure_rb", "clearp", "gradsub")}
+                   "pressure", "pressure_rb", "clearp", "gradsub", "bake")}
 
         self.vel = Double(res, res, GL_RGBA16F, GL_LINEAR)
         self.dye = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
+        self.bg = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
+        self.age = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_NEAREST)
         self.pres = Double(res, res, GL_R32F, GL_NEAREST)
         self.curl = Tex(res, res, GL_R32F, GL_NEAREST)
         self.div = Tex(res, res, GL_R32F, GL_NEAREST)
@@ -197,6 +203,7 @@ class Sim:
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
         glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1i(uni(p, "uMode"), 0)
 
         glUniform1f(uni(p, "uRadius"), radius)
         glUniform4f(uni(p, "uValue"), du, dv, 0.0, 0.0)
@@ -211,6 +218,37 @@ class Sim:
         self.dye.write_t.image(1, GL_WRITE_ONLY)
         self.dispatch(self.dye_res, self.dye_res)
         self.dye.swap()
+
+        # freshly injected paint is new, so its age restarts
+        glUniform1i(uni(p, "uMode"), 1)
+        glUniform4f(uni(p, "uValue"), 0.0, 0.0, 0.0, 0.0)
+        self.age.read_t.image(0, GL_READ_ONLY)
+        self.age.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.age.swap()
+        glUniform1i(uni(p, "uMode"), 0)
+
+    def bake(self, dt):
+        """Mirrors FluidSim.bake(): settled fluid moves into the background."""
+        p = self.p["bake"]
+        glUseProgram(p)
+        glUniform1f(uni(p, "uDt"), dt)
+        glUniform1f(uni(p, "uSettleSpeed"), self.settle_speed)
+        glUniform1f(uni(p, "uBakeRate"), self.bake_rate)
+        glUniform1f(uni(p, "uSettleMinAge"), self.settle_min_age)
+        glUniform1i(uni(p, "uForce"), 1 if self.force_freeze else 0)
+        glUniform1i(uni(p, "uVel"), 0)
+        self.force_freeze = False
+
+        self.dye.read_t.image(0, GL_READ_ONLY)
+        self.dye.write_t.image(1, GL_WRITE_ONLY)
+        self.bg.read_t.image(2, GL_READ_ONLY)
+        self.bg.write_t.image(3, GL_WRITE_ONLY)
+        self.age.read_t.image(4, GL_READ_ONLY)
+        self.age.write_t.image(5, GL_WRITE_ONLY)
+        self.vel.read_t.sampler(0)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.dye.swap(); self.bg.swap(); self.age.swap()
 
     def compute_divergence(self):
         p = self.p["divergence"]
@@ -322,6 +360,17 @@ class Sim:
         self.dye.write_t.image(0, GL_WRITE_ONLY)
         self.dispatch(self.dye_res, self.dye_res)
         self.dye.swap()
+
+        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.dye_res, 1.0 / self.dye_res)
+        glUniform1f(uni(p, "uDissipation"), 0.0)
+        self.age.read_t.sampler(0)
+        self.vel.read_t.sampler(1)
+        self.age.write_t.image(0, GL_WRITE_ONLY)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.age.swap()
+
+        if self.bake_enabled:
+            self.bake(dt)
 
 
 def rms(a):
@@ -455,6 +504,82 @@ def main():
     e2 = rms(sim.vel.read_t.read()[:, :, :2])
     check("velocity decays under drag (M1 bake depends on this)", e2 < e1,
           f"rms {e1:.5f} -> {e2:.5f}")
+    print()
+
+    # ---- M1: the bake ----
+    print("Bake (M1):")
+
+    # The bake operator on its own, with no advection in the way. This is the
+    # invariant PRD 7.6 actually states: what leaves the dye field arrives in
+    # the background, exactly.
+    b = Sim(args.res)
+    b.splat(0.5, 0.5, 1.2, 0.0, (0.0, 0.0, 0.0))   # black ink, premultiplied
+    ink0 = float(b.dye.read_t.read()[:, :, 3].sum())
+    b.settle_min_age = 0.0                          # skip Hold for this test
+    for _ in range(200):
+        b.bake(dt)
+    live = float(b.dye.read_t.read()[:, :, 3].sum())
+    baked = float(b.bg.read_t.read()[:, :, 3].sum())
+    err = abs((live + baked) - ink0) / max(ink0, 1e-6)
+    check("paint transfers from the simulation to the background",
+          baked > 0 and live < ink0,
+          f"live {ink0:.1f} -> {live:.1f}, baked 0.0 -> {baked:.1f}")
+    check("the bake conserves ink exactly (PRD 7.6)", err < 0.005,
+          f"{ink0:.1f} in, {live + baked:.1f} out ({100 * err:.3f}% error)")
+
+    # Drag is the dial the artist reasons about: more drag, paint sets sooner.
+    # Compare FRACTION baked, not absolute -- advection drifts total mass
+    # (below), which would otherwise swamp the comparison.
+    def fraction_baked(drag, frames=120):
+        s4 = Sim(args.res)
+        s4.bake_enabled = True
+        s4.dye_diss = 0.0
+        s4.drag = drag
+        s4.splat(0.5, 0.5, 1.2, 0.0, (0.0, 0.0, 0.0))
+        for _ in range(frames):
+            s4.step(dt)
+        lv = float(s4.dye.read_t.read()[:, :, 3].sum())
+        bk = float(s4.bg.read_t.read()[:, :, 3].sum())
+        return bk / max(lv + bk, 1e-6)
+
+    lo, hi = fraction_baked(0.05), fraction_baked(2.0)
+    check("more drag bakes sooner", hi > lo,
+          f"drag 0.05 -> {100 * lo:.1f}% set, drag 2.0 -> {100 * hi:.1f}% set")
+
+    # Freeze Now must commit everything in a single step
+    f = Sim(args.res)
+    f.bake_enabled = True
+    f.dye_diss = 0.0
+    f.splat(0.5, 0.5, 1.2, 0.0, (0.0, 0.0, 0.0))
+    before = float(f.dye.read_t.read()[:, :, 3].sum())
+    f.force_freeze = True
+    f.step(dt)
+    after_live = float(f.dye.read_t.read()[:, :, 3].sum())
+    check("Freeze Now commits the whole canvas in one step",
+          after_live < before * 0.02,
+          f"live {before:.1f} -> {after_live:.1f}")
+
+    # Advection is NOT mass-conservative (semi-Lagrangian never is), and
+    # residual divergence makes it much worse: an under-solved velocity field
+    # has convergent regions that concentrate dye, so ink is manufactured.
+    # Measured at 128x128 over 240 frames: 5 sweeps +152%, 15 +50%, 30 +36%,
+    # 60 +14%, 120 +4%. So the invariant to hold is the mechanism -- a better
+    # solve conserves better -- not an absolute bound at any one sweep count.
+    def mass_drift(iters, frames=240):
+        d = Sim(args.res, iters=iters)
+        d.dye_diss = 0.0
+        d.splat(0.5, 0.5, 1.2, 0.0, (0.0, 0.0, 0.0))
+        m0 = float(d.dye.read_t.read()[:, :, 3].sum())
+        for _ in range(frames):
+            d.step(dt)
+        return (float(d.dye.read_t.read()[:, :, 3].sum()) - m0) / max(m0, 1e-6)
+
+    coarse, fine = mass_drift(15), mass_drift(120)
+    check("a better pressure solve conserves ink better",
+          fine < coarse,
+          f"15 sweeps {100 * coarse:+.1f}%, 120 sweeps {100 * fine:+.1f}% over 240 frames")
+    check("a well-solved field keeps ink close to conserved",
+          abs(fine) < 0.12, f"{100 * fine:+.1f}% at 120 sweeps")
     print()
 
     # ---- determinism ----

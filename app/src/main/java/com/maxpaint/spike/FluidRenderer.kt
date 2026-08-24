@@ -21,9 +21,11 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var pendingSimRes: Int = 512
     @Volatile var pendingDyeScale: Int = 1
     @Volatile var debugView = 0
+    @Volatile var heatOverlay = false
     @Volatile var paused = false
     @Volatile var benchmarkRequested = false
     @Volatile var clearRequested = false
+    @Volatile var freezeRequested = false
 
     @Volatile var statsLine: String = ""
     @Volatile var benchmarkReport: String? = null
@@ -87,7 +89,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
     override fun onDrawFrame(gl: GL10?) {
         if (unsupported) {
-            GLES31.glClearColor(0.15f, 0.02f, 0.02f, 1f)
+            GLES31.glClearColor(1f, 0.9f, 0.9f, 1f)
             GLES31.glClear(GLES31.GL_COLOR_BUFFER_BIT)
             return
         }
@@ -117,6 +119,11 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             touches.clear()
         }
 
+        if (freezeRequested) {
+            freezeRequested = false
+            sim.freezeNow()
+        }
+
         while (true) {
             val t = touches.poll() ?: break
             sim.splat(t.u, t.v, t.du, t.dv, t.r, t.g, t.b)
@@ -131,13 +138,16 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private fun render() {
         GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, 0)
         GLES31.glViewport(0, 0, viewW, viewH)
-        GLES31.glClearColor(0.04f, 0.04f, 0.05f, 1f)
+        GLES31.glClearColor(1f, 1f, 1f, 1f)   // paper
         GLES31.glClear(GLES31.GL_COLOR_BUFFER_BIT)
 
         GLES31.glUseProgram(displayProgram)
         GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uDebugView"), debugView)
+        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uHeat"), if (heatOverlay) 1 else 0)
+        GLES31.glUniform1f(GLES31.glGetUniformLocation(displayProgram, "uSettleSpeed"), sim.settleSpeed)
         sim.dyeTexture.bindSampler(0)
         sim.velocityTexture.bindSampler(1)
+        sim.backgroundTexture.bindSampler(2)
 
         GLES31.glBindVertexArray(vao)
         GLES31.glDrawArrays(GLES31.GL_TRIANGLES, 0, 3)

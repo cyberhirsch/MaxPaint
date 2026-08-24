@@ -318,6 +318,10 @@ if schedule allows, since it reuses the bake path.
   convergence is resolution-independent. Drop iteration count adaptively when
   frame time slips — but note that under-solving degrades fluid quality, so
   adaptive quality should step resolution down before it steps sweeps down.
+  M1 sharpened this: under-solving also *manufactures ink*, because convergent
+  regions in a divergent field concentrate dye, so strokes bloom and darken on
+  their own. Sweep count is therefore the last thing adaptive quality should
+  spend, not the first.
 - **Adaptive quality**: a controller monitors frame time and steps down
   (iterations → dye resolution → sim resolution) before it drops frames.
   Never let the canvas stutter; degrade silently.
@@ -331,8 +335,13 @@ if schedule allows, since it reuses the bake path.
 ### 7.6 Testing
 - Golden-image tests: replay a fixed log, compare against reference frames
   within tolerance, per GPU vendor.
-- Solver unit tests: divergence after projection < ε; mass/dye conservation
-  under advection; bake conserves total dye (live + baked) to within ε.
+- Solver unit tests: divergence after projection < ε; bake conserves total dye
+  (live + baked) to within ε. **Note from M1:** advection is *not*
+  mass-conservative and must not be asserted as such — semi-Lagrangian never is,
+  and an under-solved velocity field concentrates dye badly (dye mass drift over
+  240 frames at 128²: +152% at 5 sweeps, +36% at 30, +4% at 120). The invariant
+  to test is that a better solve conserves better, plus a bound at a
+  well-converged sweep count.
 - Device matrix: Pixel (Mali/Adreno), Samsung (Xclipse/Adreno), one budget
   MediaTek device, one tablet.
 
