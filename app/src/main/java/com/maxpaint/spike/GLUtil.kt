@@ -6,6 +6,32 @@ import android.util.Log
 
 private const val TAG = "MaxPaintGL"
 
+/**
+ * One framebuffer, reused. Generating and deleting an FBO per frame is driver
+ * churn for no reason, and this was happening three times a frame.
+ */
+object ScratchFbo {
+    private var id = 0
+
+    fun bind(tex: Tex) {
+        if (id == 0) {
+            val ids = IntArray(1)
+            GLES31.glGenFramebuffers(1, ids, 0)
+            id = ids[0]
+        }
+        GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, id)
+        GLES31.glFramebufferTexture2D(
+            GLES31.GL_FRAMEBUFFER, GLES31.GL_COLOR_ATTACHMENT0,
+            GLES31.GL_TEXTURE_2D, tex.id, 0
+        )
+    }
+
+    fun unbind() = GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, 0)
+
+    /** The context went away; forget the name so the next bind makes a new one. */
+    fun invalidate() { id = 0 }
+}
+
 object GLUtil {
 
     fun readAsset(ctx: Context, path: String): String =
@@ -94,16 +120,10 @@ class Tex(val width: Int, val height: Int, val internalFormat: Int, filter: Int)
     }
 
     fun clear() {
-        val fbo = IntArray(1)
-        GLES31.glGenFramebuffers(1, fbo, 0)
-        GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, fbo[0])
-        GLES31.glFramebufferTexture2D(
-            GLES31.GL_FRAMEBUFFER, GLES31.GL_COLOR_ATTACHMENT0, GLES31.GL_TEXTURE_2D, id, 0
-        )
+        ScratchFbo.bind(this)
         GLES31.glClearColor(0f, 0f, 0f, 0f)
         GLES31.glClear(GLES31.GL_COLOR_BUFFER_BIT)
-        GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, 0)
-        GLES31.glDeleteFramebuffers(1, fbo, 0)
+        ScratchFbo.unbind()
     }
 
     fun bindSampler(unit: Int) {

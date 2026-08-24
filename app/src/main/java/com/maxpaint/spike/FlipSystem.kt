@@ -38,6 +38,17 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
     /** Particles emitted since the last reset; useful for the HUD. */
     var emitted = 0L; private set
 
+    /** True once this medium has been used, so an unused pool costs nothing. */
+    val inUse get() = emitted > 0L
+
+    /**
+     * How much of the pool can hold a particle. Until the ring buffer wraps,
+     * everything past the write head is empty, and updating or drawing it is
+     * pure waste -- this was walking all 120k slots from the first stroke.
+     */
+    private fun liveSpan(): Int =
+        if (emitted >= capacity) capacity else head.coerceAtLeast(1)
+
     fun init() {
         pEmit = ComputeProgram(ctx, "shaders/flip_emit.comp")
         pUpdate = ComputeProgram(ctx, "shaders/flip_update.comp")
@@ -119,7 +130,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         pUpdate.set("uAspect", aspect)
         pUpdate.set("uVel", 0)
         velocityTexture.bindSampler(0)
-        GLES31.glDispatchCompute((capacity + 63) / 64, 1, 1)
+        GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
         GLES31.glMemoryBarrier(
             GLES31.GL_SHADER_STORAGE_BARRIER_BIT or GLES31.GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT
         )
@@ -133,13 +144,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
     fun draw(state: Float, target: Tex) {
         if (buffer == 0) return
 
-        val fbo = IntArray(1)
-        GLES31.glGenFramebuffers(1, fbo, 0)
-        GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, fbo[0])
-        GLES31.glFramebufferTexture2D(
-            GLES31.GL_FRAMEBUFFER, GLES31.GL_COLOR_ATTACHMENT0,
-            GLES31.GL_TEXTURE_2D, target.id, 0
-        )
+        ScratchFbo.bind(target)
         GLES31.glViewport(0, 0, target.width, target.height)
 
         GLES31.glEnable(GLES31.GL_BLEND)
@@ -150,12 +155,11 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         GLES31.glUniform1f(GLES31.glGetUniformLocation(drawProgram, "uWantState"), state)
 
         GLES31.glBindVertexArray(vao)
-        GLES31.glDrawArrays(GLES31.GL_POINTS, 0, capacity)
+        GLES31.glDrawArrays(GLES31.GL_POINTS, 0, liveSpan())
         GLES31.glBindVertexArray(0)
 
         GLES31.glDisable(GLES31.GL_BLEND)
-        GLES31.glBindFramebuffer(GLES31.GL_FRAMEBUFFER, 0)
-        GLES31.glDeleteFramebuffers(1, fbo, 0)
+        ScratchFbo.unbind()
     }
 
     fun release() {

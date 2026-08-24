@@ -27,7 +27,6 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var clearRequested = false
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
-    @Volatile var endStrokeRequested = false
 
     @Volatile var statsLine: String = ""
     @Volatile var benchmarkReport: String? = null
@@ -38,7 +37,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var unsupported = false
 
     private class Touch(val u: Float, val v: Float, val du: Float, val dv: Float,
-                        val r: Float, val g: Float, val b: Float, val pressure: Float)
+                        val r: Float, val g: Float, val b: Float, val pressure: Float,
+                        val prevU: Float, val prevV: Float)
 
     private val touches = ConcurrentLinkedQueue<Touch>()
 
@@ -50,13 +50,15 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
     fun queueSplat(
         u: Float, v: Float, du: Float, dv: Float,
-        r: Float, g: Float, b: Float, pressure: Float = 1f
+        r: Float, g: Float, b: Float, pressure: Float = 1f,
+        prevU: Float = u, prevV: Float = v
     ) {
-        touches.add(Touch(u, v, du, dv, r, g, b, pressure))
+        touches.add(Touch(u, v, du, dv, r, g, b, pressure, prevU, prevV))
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         deviceInfo = "${GLES31.glGetString(GLES31.GL_RENDERER)} / ${GLES31.glGetString(GLES31.GL_VERSION)}"
+        ScratchFbo.invalidate()   // the old context's framebuffer name is gone
 
         if (!hasComputeSupport()) {
             unsupported = true
@@ -138,13 +140,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
         while (true) {
             val t = touches.poll() ?: break
-            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure, tiltSpread)
-        }
-
-        // a lifted pen must not join its next mark to the last one
-        if (endStrokeRequested) {
-            endStrokeRequested = false
-            sim.endStroke()
+            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure, tiltSpread,
+                       t.prevU, t.prevV)
         }
 
         if (!paused) sim.step(dt)

@@ -119,7 +119,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     }.getOrDefault(0f)
                     renderer.tiltSpread = 1f + tilt.coerceIn(0f, 1.4f) * 0.8f
 
-                    renderer.queueSplat(u, v, du, dv, 0f, 0f, 0f, pressure)
+                    // the previous sample for THIS pointer, so two fingers are
+                    // never joined into one stroke
+                    renderer.queueSplat(u, v, du, dv, 0f, 0f, 0f, pressure,
+                                        px / w, 1f - py / h)
 
                     lastX[id] = x
                     lastY[id] = y
@@ -139,7 +142,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 twoFingerDownAt = 0L
                 releasePointer(event)
-                renderer.endStrokeRequested = true
             }
         }
         return true
@@ -267,52 +269,55 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         val presets = Presets.forBrush(selected)
         if (presets.size > 1) {
-            panelBody.addView(labeled("Preset", spinner(presets.map { it.label }, 0) { i ->
-                presets[i].apply(renderer.sim)
-            }))
+            panelBody.addView(labeled("Preset",
+                spinner(presets.map { it.label }, 0, fireOnInit = false) { i ->
+                    presets[i].apply(renderer.sim)
+                }))
         }
 
         when (selected) {
             Brush.GAS -> {
-                panelBody.addView(slider("Swirl", 22, 60) { p, l ->
+                panelBody.addView(slider("Swirl", renderer.sim.vorticity.toInt(), 60) { p, l ->
                     renderer.sim.vorticity = p.toFloat()
                     l.text = "Swirl: $p"
                 })
-                panelBody.addView(slider("Brush size", 20, 100) { p, l ->
+                panelBody.addView(slider("Brush size", (renderer.sim.splatRadius * 1000).toInt(), 100) { p, l ->
                     renderer.sim.splatRadius = p / 1000f
                     l.text = String.format("Brush size: %.3f", p / 1000f)
                 })
             }
 
             Brush.NIB -> {
-                panelBody.addView(slider("Nib size", 6, 40) { p, l ->
+                panelBody.addView(slider("Nib size", (renderer.sim.nibRadius * 1000).toInt(), 40) { p, l ->
                     renderer.sim.nibRadius = p / 1000f
                     l.text = String.format("Nib size: %.3f", p / 1000f)
                 })
-                panelBody.addView(slider("Sharpness", 90, 100) { p, l ->
+                panelBody.addView(slider("Sharpness", (renderer.sim.nibHardness * 100).toInt(), 100) { p, l ->
                     renderer.sim.nibHardness = p / 100f
                     l.text = String.format("Sharpness: %.2f", p / 100f)
                 })
-                panelBody.addView(slider("Soak", 18, 100) { p, l ->
+                panelBody.addView(slider("Soak", (renderer.sim.nibSoak / 5f * 100).toInt(), 100) { p, l ->
                     renderer.sim.nibSoak = p / 100f * 5f
                     l.text = String.format("Soak: %.2f", p / 100f * 5f)
                 })
-                panelBody.addView(slider("Dry", 23, 100) { p, l ->
+                panelBody.addView(slider("Dry", (renderer.sim.nibDry / 3f * 100).toInt(), 100) { p, l ->
                     renderer.sim.nibDry = p / 100f * 3f
                     l.text = String.format("Dry: %.2f", p / 100f * 3f)
                 })
-                panelBody.addView(slider("Paper grain", 60, 100) { p, l ->
+                panelBody.addView(slider("Paper grain", (renderer.sim.nibGrain * 100).toInt(), 100) { p, l ->
                     renderer.sim.nibGrain = p / 100f
                     l.text = String.format("Paper grain: %.2f", p / 100f)
                 })
             }
 
             Brush.FLIP -> {
-                panelBody.addView(slider("Splashy", 92, 100) { p, l ->
+                panelBody.addView(slider("Splashy", (renderer.sim.flip.flipRatio * 100).toInt(), 100) { p, l ->
                     renderer.sim.flip.flipRatio = p / 100f
                     l.text = String.format("Splashy: %.2f  (← viscous)", p / 100f)
                 })
-                panelBody.addView(button("Tilt gravity: off") { b ->
+                panelBody.addView(button(
+            if (tiltGravity) "Tilt gravity: on" else "Tilt gravity: off"
+        ) { b ->
                     tiltGravity = !tiltGravity
                     if (!tiltGravity) {
                         renderer.sim.flip.gravityX = 0f
@@ -323,32 +328,32 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
 
             Brush.WATERCOLOR -> {
-                panelBody.addView(slider("Wetness", 55, 150) { p, l ->
+                panelBody.addView(slider("Wetness", (renderer.sim.wcLoadWater * 100).toInt(), 150) { p, l ->
                     renderer.sim.wcLoadWater = p / 100f
                     l.text = String.format("Wetness: %.2f", p / 100f)
                 })
-                panelBody.addView(slider("Pigment", 30, 100) { p, l ->
+                panelBody.addView(slider("Pigment", (renderer.sim.wcLoadPigment * 100).toInt(), 100) { p, l ->
                     renderer.sim.wcLoadPigment = p / 100f
                     l.text = String.format("Pigment: %.2f", p / 100f)
                 })
-                panelBody.addView(slider("Dry rate", 22, 100) { p, l ->
+                panelBody.addView(slider("Dry rate", (renderer.sim.wcEvaporate * 100).toInt(), 100) { p, l ->
                     renderer.sim.wcEvaporate = p / 100f
                     l.text = String.format("Dry rate: %.2f", p / 100f)
                 })
             }
 
             Brush.VORTEX -> {
-                panelBody.addView(labeled("Mode", spinner(ForceMode.labels, 0) { i ->
-                    renderer.sim.forceMode = ForceMode.entries[i]
-                }))
-                panelBody.addView(slider("Strength", 10, 40) { p, l ->
+                panelBody.addView(labeled("Mode", spinner(
+                    ForceMode.labels, renderer.sim.forceMode.ordinal
+                ) { i -> renderer.sim.forceMode = ForceMode.entries[i] }))
+                panelBody.addView(slider("Strength", (renderer.sim.forceStrength * 10).toInt(), 40) { p, l ->
                     renderer.sim.forceStrength = p / 10f
                     l.text = String.format("Strength: %.1f", p / 10f)
                 })
             }
 
             Brush.SOLVENT -> {
-                panelBody.addView(slider("Bite", 45, 100) { p, l ->
+                panelBody.addView(slider("Bite", (renderer.sim.solventBite * 100).toInt(), 100) { p, l ->
                     renderer.sim.solventBite = p / 100f
                     l.text = String.format("Bite: %.2f  (lower bites harder)", p / 100f)
                 })
@@ -371,29 +376,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         panelBody.removeAllViews()
 
         val resLabels = FluidSim.RESOLUTIONS.map { "$it" }
-        panelBody.addView(labeled("Detail", spinner(resLabels, 4) { i ->
-            renderer.pendingSimRes = FluidSim.RESOLUTIONS[i]
-        }))
-        panelBody.addView(labeled("Ink detail", spinner(listOf("1x", "2x"), 0) { i ->
-            renderer.pendingDyeScale = i + 1
-        }))
-        panelBody.addView(slider("Solver sweeps", 25, 75) { p, l ->
+        panelBody.addView(labeled("Detail", spinner(
+            resLabels,
+            FluidSim.RESOLUTIONS.indexOf(renderer.pendingSimRes).coerceAtLeast(0)
+        ) { i -> renderer.pendingSimRes = FluidSim.RESOLUTIONS[i] }))
+        panelBody.addView(labeled("Ink detail", spinner(
+            listOf("1x", "2x"), renderer.pendingDyeScale - 1
+        ) { i -> renderer.pendingDyeScale = i + 1 }))
+        panelBody.addView(slider("Solver sweeps", renderer.sim.pressureIterations - 5, 75) { p, l ->
             renderer.sim.pressureIterations = p + 5
             l.text = "Solver sweeps: ${p + 5}"
         })
 
         panelBody.addView(divider())
         panelBody.addView(hint("How paint sets"))
-        panelBody.addView(slider("Drag", 100, 100) { p, l ->
+        panelBody.addView(slider("Drag", (renderer.sim.velocityDrag / 3f * 100).toInt(), 100) { p, l ->
             renderer.sim.velocityDrag = p / 100f * 3f
             l.text = String.format("Drag: %.2f  (paint sets sooner →)", p / 100f * 3f)
         })
-        panelBody.addView(slider("Set speed", 0, 100) { p, l ->
+        panelBody.addView(slider("Set speed", (renderer.sim.bakeRate / 10f * 100).toInt(), 100) { p, l ->
             renderer.sim.bakeRate = p / 100f * 10f
             l.text = String.format("Set speed: %.1f%s", p / 100f * 10f,
                 if (p == 0) "  (never sets)" else "")
         })
-        panelBody.addView(slider("Hold", 100, 100) { p, l ->
+        panelBody.addView(slider("Hold", (renderer.sim.settleMinAge / 5f * 100).toInt(), 100) { p, l ->
             renderer.sim.settleMinAge = p / 100f * 5f
             l.text = String.format("Hold: %.2f s", p / 100f * 5f)
         })
@@ -470,15 +476,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return ll
     }
 
-    private fun spinner(items: List<String>, initial: Int, onPick: (Int) -> Unit): Spinner =
+    /**
+     * [fireOnInit] false suppresses the callback Android fires for the initial
+     * selection. Without it, merely opening a panel re-applied preset 0 and
+     * wiped whatever was chosen before.
+     */
+    private fun spinner(
+        items: List<String>,
+        initial: Int,
+        fireOnInit: Boolean = true,
+        onPick: (Int) -> Unit
+    ): Spinner =
         Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity, android.R.layout.simple_spinner_dropdown_item, items
             )
-            setSelection(initial)
+            setSelection(initial.coerceIn(0, (items.size - 1).coerceAtLeast(0)))
+            var seen = fireOnInit
             onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) =
-                    onPick(pos)
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    if (seen) onPick(pos) else seen = true
+                }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
         }
