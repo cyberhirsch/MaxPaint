@@ -423,10 +423,12 @@ Total ≈ 26 weeks to public beta.
 
 ## 12. Open Questions
 
-1. Should baked paint remain *slightly* interactive (a thin "wet skin" that a
-   vortex brush can still smear) or be strictly immutable? Immutable is simpler;
-   a wet-skin is more expressive. **Proposal:** immutable in v1, with the Thaw
-   brush as the escape hatch.
+1. ~~Should baked paint remain *slightly* interactive, or be strictly
+   immutable?~~ **Resolved: interactive.** Immutable shipped first and was wrong
+   in use — stir and lift did nothing to the marks on the canvas, which is the
+   one thing an artist expects a brush to act on. The force brushes now lift set
+   paint back into the simulation under the brush, by an adjustable amount, and
+   setting that amount to zero restores immutability for anyone who wants it.
 2. Is per-layer simulation state worth it, or is one shared sim over a single
    live layer sufficient? **Proposal:** one shared sim in v1.
 3. Pricing: one-time purchase, or free with a paid "Pro brushes" unlock?

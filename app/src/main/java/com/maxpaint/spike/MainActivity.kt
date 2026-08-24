@@ -360,12 +360,20 @@ class MainActivity : AppCompatActivity() {
                     renderer.sim.forceStrength = p / 10f
                     l.text = String.format("Strength: %.1f", p / 10f)
                 })
+                panelBody.addView(slider("Pickup", (renderer.sim.pickup * 10).toInt(), 80) { p, l ->
+                    renderer.sim.pickup = p / 10f
+                    l.text = String.format("Pickup: %.1f  (lifts set paint)", p / 10f)
+                })
             }
 
             Brush.SOLVENT -> {
                 panelBody.addView(slider("Bite", (renderer.sim.solventBite * 100).toInt(), 100) { p, l ->
                     renderer.sim.solventBite = p / 100f
                     l.text = String.format("Bite: %.2f  (lower bites harder)", p / 100f)
+                })
+                panelBody.addView(slider("Pickup", (renderer.sim.pickup * 10).toInt(), 80) { p, l ->
+                    renderer.sim.pickup = p / 10f
+                    l.text = String.format("Pickup: %.1f  (lifts set paint)", p / 10f)
                 })
             }
 

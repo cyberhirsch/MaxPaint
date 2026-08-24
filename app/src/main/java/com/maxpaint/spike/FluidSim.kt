@@ -83,6 +83,14 @@ class FluidSim(private val ctx: Context) {
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
 
+    /**
+     * How readily the force brushes lift paint that has already set, so they
+     * can move it. Baked paint used to be strictly immutable, which meant stir
+     * and lift did nothing to the marks actually on the canvas — the one thing
+     * an artist expects a brush to act on. Zero restores the old behaviour.
+     */
+    var pickup = 2.5f
+
     // --- nib ---
     var nibRadius = 0.006f
     var nibHardness = 0.9f
@@ -338,7 +346,11 @@ class FluidSim(private val ctx: Context) {
                 force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
             }
             Brush.WATERCOLOR -> wet(u, v)
-            Brush.VORTEX -> force(u, v, du, dv, forceMode.code, forceStrength)
+            Brush.VORTEX -> {
+                // lift what has set under the brush, then stir it
+                liftSetPaint(u, v)
+                force(u, v, du, dv, forceMode.code, forceStrength)
+            }
             Brush.SOLVENT -> solvent(u, v)
             Brush.FREEZE -> transfer(1f / 60f, force = true, thaw = false, maskAt = u to v)
             Brush.THAW -> transfer(1f / 60f, force = false, thaw = true, maskAt = u to v)
@@ -503,6 +515,17 @@ class FluidSim(private val ctx: Context) {
         flipVel.swap()
     }
 
+    /**
+     * Lifts a little already-set paint back into the simulation under the
+     * brush, so the force brushes have something to act on. This is the "wet
+     * skin" the PRD left as an open question, resolved in favour of making
+     * baked paint smearable rather than strictly immutable.
+     */
+    private fun liftSetPaint(u: Float, v: Float) {
+        if (pickup <= 0f) return
+        transfer(1f / 60f, force = false, thaw = true, maskAt = u to v, rate = pickup)
+    }
+
     /** Momentum with no pigment: stir, shove, pinch or comb what is already there. */
     fun force(u: Float, v: Float, du: Float, dv: Float, mode: Int, strength: Float) {
         if (!allocated) return
@@ -527,6 +550,9 @@ class FluidSim(private val ctx: Context) {
      */
     fun solvent(u: Float, v: Float) {
         if (!allocated) return
+
+        // solvent works on dried paint too; that is most of what it is for
+        liftSetPaint(u, v)
 
         pSplat.use()
         pSplat.set("uPoint", u, v)
@@ -806,14 +832,19 @@ class FluidSim(private val ctx: Context) {
         dt: Float,
         force: Boolean,
         thaw: Boolean,
-        maskAt: Pair<Float, Float>?
+        maskAt: Pair<Float, Float>?,
+        rate: Float = -1f
     ) {
         if (!allocated) return
 
         pBake.use()
         pBake.set("uDt", dt)
         pBake.set("uSettleSpeed", settleSpeed)
-        pBake.set("uBakeRate", if (thaw) bakeRate * 3f else bakeRate)
+        pBake.set("uBakeRate", when {
+            rate >= 0f -> rate
+            thaw -> bakeRate * 3f
+            else -> bakeRate
+        })
         pBake.set("uSettleMinAge", settleMinAge)
         pBake.set("uForce", if (force) 1 else 0)
         pBake.set("uThaw", if (thaw) 1 else 0)
