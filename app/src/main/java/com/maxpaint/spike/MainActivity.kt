@@ -100,10 +100,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     val dv = -(y - py) / h * 12f
 
                     // Black ink on white paper. Colour is premultiplied by
-                    // coverage, so black paint is rgb 0 with the alpha carrying
-                    // how much ink landed -- pressure drives that.
-                    val ink = 0f
-                    renderer.queueSplat(u, v, du, dv, ink, ink, ink)
+                    // coverage, so the rgb stays 0 and the alpha carries how
+                    // much ink landed. Stylus pressure drives that alpha, and
+                    // tilt widens the mark (PRD FR-6). A finger reports a
+                    // pressure of about 1.0, so this is a no-op for touch.
+                    val pressure = event.getPressure(i).let {
+                        if (it <= 0f) 1f else it
+                    }.coerceIn(0.15f, 1.6f)
+
+                    val tilt = try {
+                        event.getAxisValue(MotionEvent.AXIS_TILT, i)
+                    } catch (_: IllegalArgumentException) {
+                        0f
+                    }
+                    renderer.tiltSpread = 1f + tilt.coerceIn(0f, 1.4f) * 0.8f
+
+                    renderer.queueSplat(u, v, du, dv, 0f, 0f, 0f, pressure)
 
                     lastX[id] = x
                     lastY[id] = y
@@ -168,6 +180,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             orientation = LinearLayout.VERTICAL
             visibility = View.GONE
         }
+        val presetSpinner = Spinner(this)
+        val presetRow = labeled("Preset", presetSpinner)
+
         val flipLabel = TextView(this).apply {
             setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             text = "Splashy 0.92  (\u2190 viscous)"
@@ -190,6 +205,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             renderer.sim.brush = b
             modeRow.visibility = if (b == Brush.VORTEX) View.VISIBLE else View.GONE
             flipRow.visibility = if (b == Brush.FLIP) View.VISIBLE else View.GONE
+            bindPresets(presetSpinner, b)
         }))
 
         modeRow.addView(TextView(this).apply {
@@ -201,8 +217,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         modeRow.addView(spinner(ForceMode.labels, 0) { idx ->
             renderer.sim.forceMode = ForceMode.entries[idx]
         })
+        panel.addView(presetRow)
         panel.addView(modeRow)
         panel.addView(flipRow)
+        bindPresets(presetSpinner, Brush.GAS)
 
 
         // --- resolution ---
@@ -258,6 +276,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         panel.addView(dragLabel)
         panel.addView(dragBar)
 
+        panel.addView(slider("Set speed", 25, 100) { p, label ->
+            val v = p / 100f * 10f
+            renderer.sim.bakeRate = v
+            label.text = String.format("Set speed: %.1f", v)
+        })
+        panel.addView(slider("Hold", 7, 100) { p, label ->
+            val v = p / 100f * 5f
+            renderer.sim.settleMinAge = v
+            label.text = String.format("Hold: %.2f s", v)
+        })
+
         // --- buttons ---
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row.addView(button("Clear") { renderer.clearRequested = true })
@@ -303,6 +332,30 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         return panel
     }
 
+    /** A labelled slider whose label updates as it moves. */
+    private fun slider(name: String, initial: Int, max: Int, onChange: (Int, TextView) -> Unit): View {
+        val label = TextView(this).apply {
+            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            text = name
+        }
+        val bar = SeekBar(this).apply {
+            this.max = max
+            progress = initial
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) =
+                    onChange(p, label)
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        onChange(initial, label)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(label)
+            addView(bar)
+        }
+    }
+
     private fun labeled(label: String, v: View): View {
         val ll = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         ll.addView(TextView(this).apply {
@@ -313,6 +366,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         })
         ll.addView(v)
         return ll
+    }
+
+    /** Repoints the preset picker at whichever medium is now selected. */
+    private fun bindPresets(sp: Spinner, brush: Brush) {
+        val presets = Presets.forBrush(brush)
+        sp.adapter = ArrayAdapter(
+            this, android.R.layout.simple_spinner_dropdown_item, presets.map { it.label }
+        )
+        sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                presets.getOrNull(pos)?.apply?.invoke(renderer.sim)
+            }
+            override fun onNothingSelected(p: AdapterView<*>?) {}
+        }
+        sp.setSelection(0)
     }
 
     private fun spinner(items: List<String>, initial: Int, onPick: (Int) -> Unit): Spinner =

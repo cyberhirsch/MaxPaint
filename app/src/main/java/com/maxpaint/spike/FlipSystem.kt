@@ -83,7 +83,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         seed = 1f
     }
 
-    fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float) {
+    fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float, inkScale: Float = 1f) {
         if (buffer == 0) return
         val count = emitPerSample
 
@@ -95,7 +95,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         pEmit.set("uPoint", u, v)
         pEmit.set("uVel", du, dv)
         pEmit.set("uRadius", radius)
-        pEmit.set("uInk", inkPerParticle)
+        pEmit.set("uInk", inkPerParticle * inkScale)
         pEmit.set("uJitterSeed", seed)
         GLES31.glDispatchCompute((count + 63) / 64, 1, 1)
         GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)

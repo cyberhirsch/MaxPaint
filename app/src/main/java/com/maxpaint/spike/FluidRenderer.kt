@@ -37,15 +37,21 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var unsupported = false
 
     private class Touch(val u: Float, val v: Float, val du: Float, val dv: Float,
-                        val r: Float, val g: Float, val b: Float)
+                        val r: Float, val g: Float, val b: Float, val pressure: Float)
 
     private val touches = ConcurrentLinkedQueue<Touch>()
 
     private var lastFrameNs = 0L
     private val frameTimes = ArrayDeque<Double>()
 
-    fun queueSplat(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {
-        touches.add(Touch(u, v, du, dv, r, g, b))
+    /** Stylus tilt widens the mark; 1.0 is an upright pen (PRD FR-6). */
+    @Volatile var tiltSpread = 1f
+
+    fun queueSplat(
+        u: Float, v: Float, du: Float, dv: Float,
+        r: Float, g: Float, b: Float, pressure: Float = 1f
+    ) {
+        touches.add(Touch(u, v, du, dv, r, g, b, pressure))
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
@@ -131,7 +137,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
         while (true) {
             val t = touches.poll() ?: break
-            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b)
+            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure, tiltSpread)
         }
 
         if (!paused) sim.step(dt)
