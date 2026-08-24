@@ -304,9 +304,22 @@ class MainActivity : AppCompatActivity() {
             }
 
             Brush.FLIP -> {
+                panelBody.addView(slider("Particles", renderer.sim.flip.emitPerSample, 96) { p, l ->
+                    val n = p.coerceAtLeast(1)
+                    renderer.sim.flip.emitPerSample = n
+                    l.text = "Particles per dab: $n"
+                })
+                panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 50) { p, l ->
+                    renderer.sim.flip.cohesion = p.toFloat()
+                    l.text = "Cohesion: $p  (beads up →)"
+                })
                 panelBody.addView(slider("Splashy", (renderer.sim.flip.flipRatio * 100).toInt(), 100) { p, l ->
                     renderer.sim.flip.flipRatio = p / 100f
                     l.text = String.format("Splashy: %.2f  (← viscous)", p / 100f)
+                })
+                panelBody.addView(slider("Drop size", (renderer.sim.flip.pointSize * 2).toInt(), 32) { p, l ->
+                    renderer.sim.flip.pointSize = p / 2f
+                    l.text = String.format("Drop size: %.1f px", p / 2f)
                 })
                 panelBody.addView(hint("Paint travels on the momentum of the " +
                     "stroke. There is no gravity — a canvas has no up."))

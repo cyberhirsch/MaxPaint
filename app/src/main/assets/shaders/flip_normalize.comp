@@ -12,6 +12,9 @@ layout(r32f,    binding = 1) writeonly uniform highp image2D uMass;
 
 uniform ivec2 uGrid;
 
+int idx(ivec2 c) { return (clamp(c, ivec2(0), uGrid - 1).y * uGrid.x
+                         + clamp(c, ivec2(0), uGrid - 1).x) * 4; }
+
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     if (c.x >= uGrid.x || c.y >= uGrid.y) return;
@@ -25,6 +28,20 @@ void main() {
     vec2 v = vec2(wx > 0.5 ? vx / wx : 0.0,
                   wy > 0.5 ? vy / wy : 0.0);
 
-    imageStore(uVel, c, vec4(v, 0.0, 0.0));
-    imageStore(uMass, c, vec4((wx + wy) * 0.5 / 4096.0, 0.0, 0.0, 0.0));
+    // Cell-CENTRED mass, reconstructed by averaging each face pair.
+    //
+    // wx is sampled half a cell below the centre and wy half a cell to the
+    // left, so simply averaging them gives a field skewed along the diagonal.
+    // Its gradient then carries a constant diagonal bias, and anything that
+    // follows that gradient -- cohesion -- walks the whole liquid into a
+    // corner instead of gathering it.
+    float wxr = float(acc[idx(c + ivec2(1, 0)) + 1]);
+    float wyt = float(acc[idx(c + ivec2(0, 1)) + 3]);
+    float mass = 0.25 * (wx + wxr + wy + wyt) / 4096.0;
+
+    // Mass also goes in .z. R32F is not filterable on ES without
+    // OES_texture_float_linear, and the cohesion force needs a smooth gradient,
+    // so it rides in the rgba16f field where bilinear sampling is guaranteed.
+    imageStore(uVel, c, vec4(v, mass, 0.0));
+    imageStore(uMass, c, vec4(mass, 0.0, 0.0, 0.0));
 }

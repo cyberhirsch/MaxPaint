@@ -26,6 +26,8 @@ uniform float uDrag;
 uniform float uAspect;
 uniform float uSettleSpeed;
 uniform float uSettleMinAge;
+uniform float uCohesion;   // surface tension: pulls paint into droplets
+uniform float uMaxSpeed;   // CFL guard, same as the grid uses
 uniform vec2  uTexel;      // 1 / grid, for the staggered sample offsets
 
 // The grid is staggered: x lives on left faces, y on bottom faces. Each
@@ -58,7 +60,40 @@ void main() {
     vec2 flip = vel + (gNew - gOld);
     vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
 
+    // Cohesion. With no gravity there is nothing to gather the paint, so
+    // without this it simply disperses and never reads as liquid. Pulling each
+    // particle up the density gradient is surface tension in the form that
+    // matters here: neighbouring paint attracts, so droplets form and hold
+    // together, while the pressure solve stops them collapsing.
+    if (uCohesion > 0.0) {
+        vec2 t = uTexel;
+        float mHere = texture(uVelNew, pos).z;
+        float mL = texture(uVelNew, pos - vec2(t.x, 0.0)).z;
+        float mR = texture(uVelNew, pos + vec2(t.x, 0.0)).z;
+        float mB = texture(uVelNew, pos - vec2(0.0, t.y)).z;
+        float mT = texture(uVelNew, pos + vec2(0.0, t.y)).z;
+        vec2 grad = 0.5 * vec2(mR - mL, mT - mB);
+
+        // Normalise by the local density. Mass is an accumulated weight, so a
+        // raw gradient scales with how many particles are in play -- the same
+        // cohesion setting would then behave completely differently at either
+        // end of the particle slider, and at high counts it flung paint apart
+        // instead of gathering it.
+        vec2 dir = grad / max(mHere, 0.05);
+        float mag = length(dir);
+        if (mag > 4.0) dir *= 4.0 / mag;
+
+        vel += uCohesion * dir * uDt;
+    }
+
     vel *= 1.0 / (1.0 + uDrag * uDt);
+
+    // particles get the same CFL guard as the grid; without it cohesion could
+    // accelerate one past anything the simulation can represent
+    if (uMaxSpeed > 0.0) {
+        float sp = length(vel);
+        if (sp > uMaxSpeed) vel *= uMaxSpeed / sp;
+    }
 
     pos += vec2(vel.x / uAspect, vel.y) * uDt;
 

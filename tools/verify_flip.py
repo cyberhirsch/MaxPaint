@@ -186,7 +186,7 @@ class Flip:
         self._bar()
 
     def g2p(self, dt, flip_ratio=0.95, drag=0.25, aspect=1.0,
-            settle_speed=0.06, min_age=0.25):
+            settle_speed=0.06, min_age=0.25, cohesion=0.0):
         glUseProgram(self.g2p_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1f(uni(self.g2p_p, "uDt"), dt)
@@ -197,6 +197,8 @@ class Flip:
         glUniform1f(uni(self.g2p_p, "uSettleSpeed"), settle_speed)
         glUniform1f(uni(self.g2p_p, "uSettleMinAge"), min_age)
         glUniform2f(uni(self.g2p_p, "uTexel"), 1.0 / self.gw, 1.0 / self.gh)
+        glUniform1f(uni(self.g2p_p, "uCohesion"), cohesion)
+        glUniform1f(uni(self.g2p_p, "uMaxSpeed"), 4.0)
         glUniform1i(uni(self.g2p_p, "uVelNew"), 0)
         glUniform1i(uni(self.g2p_p, "uVelOld"), 1)
         self.vel.read_t.sampler(0)
@@ -205,10 +207,10 @@ class Flip:
         self._bar()
 
     def step(self, dt, vel_tex=None, flip_ratio=0.95, settle_speed=0.06,
-             min_age=0.25, drag=0.25, aspect=1.0):
+             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0):
         self.p2g()
         self.project(dt)
-        self.g2p(dt, flip_ratio, drag, aspect, settle_speed, min_age)
+        self.g2p(dt, flip_ratio, drag, aspect, settle_speed, min_age, cohesion)
 
     def draw(self, state, target, point_size=5.0):
         fbo = glGenFramebuffers(1)
@@ -268,8 +270,31 @@ def main():
     y1 = float(p[live][:, 1].mean()) if live.sum() else y0
     check("paint travels on the momentum of the stroke", x1 > x0 + 0.02,
           f"x {x0:.3f} -> {x1:.3f}")
-    check("paint does not fall: there is no up", abs(y1 - y0) < 0.01,
-          f"y {y0:.3f} -> {y1:.3f} (drift {y1 - y0:+.4f})")
+
+    # "There is no up" is really two claims, and the honest test is both:
+    # undisturbed paint must not drift at all, and a throw must not leak much
+    # into the cross axis. A single tolerance on a thrown blob conflates gravity
+    # with the blob spreading against a nearby wall.
+    still = Flip()
+    still.make_grid(64, 64)
+    still.emit(0.5, 0.5, 0.0, 0.0, n=256)
+    p = still.read()
+    live = p[:, 6] == 1.0
+    s0 = p[live][:, :2].mean(axis=0)
+    for _ in range(60):
+        still.step(dt, settle_speed=0.0)
+    p = still.read()
+    live = p[:, 6] == 1.0
+    s1 = p[live][:, :2].mean(axis=0)
+    check("undisturbed paint does not drift: there is no up",
+          float(abs(s1[0] - s0[0])) < 1e-4 and float(abs(s1[1] - s0[1])) < 1e-4,
+          f"centroid moved ({s1[0] - s0[0]:+.5f}, {s1[1] - s0[1]:+.5f}) over 60 frames")
+
+    along = abs(x1 - x0)
+    across = abs(y1 - y0)
+    check("a throw stays on its axis", across < along * 0.15,
+          f"travelled {along:.3f} along, {across:.3f} across "
+          f"({100 * across / max(along, 1e-9):.1f}%)")
 
     # and it must come to rest rather than coasting forever
     for _ in range(400):
@@ -405,6 +430,56 @@ def main():
           f"peak grid vx {vel[:,:,0].max():.3f}")
     check("empty cells stay empty", float((mass > 0).mean()) < 0.5,
           f"{100 * (mass > 0).mean():.1f}% of cells hold liquid")
+
+    # --- cohesion: paint must gather into droplets, not disperse ---
+    print()
+    print("Cohesion:")
+
+    def gather(coh, frames=120):
+        """Scatter particles evenly, then see whether they pull together."""
+        q = Flip()
+        q.make_grid(64, 64)
+        rng = np.random.default_rng(7)
+        for k in range(24):
+            a = float(rng.random()) * 2 * np.pi
+            r = 0.28 * float(rng.random()) ** 0.5
+            q.emit(0.5 + r * np.cos(a), 0.5 + r * np.sin(a), 0.0, 0.0,
+                   n=CAP // 24, radius=0.02)
+        p0 = q.read()
+        c0 = p0[p0[:, 6] == 1.0][:, :2].mean(axis=0)
+        for _ in range(frames):
+            q.step(dt, drag=0.6, settle_speed=0.0, cohesion=coh)
+        q.p2g()
+        m = q.mass.read()[:, :, 0]
+        p = q.read()
+        live = p[:, 6] == 1.0
+        c1 = p[live][:, :2].mean(axis=0) if live.sum() else c0
+        speeds = np.hypot(p[live][:, 2], p[live][:, 3]) if live.sum() else np.array([0.0])
+        return dict(cells=int((m > 0.08).sum()), peak=float(m.max()),
+                    drift=float(np.hypot(*(c1 - c0))),
+                    vmax=float(speeds.max()),
+                    finite=bool(np.isfinite(p).all()))
+
+    off = gather(0.0)
+    on = gather(25.0)
+
+    # Clumping is: the same paint occupying fewer, denser cells.
+    check("cohesion gathers paint into fewer cells",
+          on["cells"] < off["cells"] * 0.6,
+          f"{off['cells']} occupied cells without, {on['cells']} with")
+    check("and those cells are denser",
+          on["peak"] > off["peak"] * 1.5,
+          f"peak density {off['peak']:.1f} without, {on['peak']:.1f} with")
+
+    # It must gather in place. A skewed density field biases the gradient and
+    # walks the whole liquid into a corner, which is exactly what the staggered
+    # weights did before the cell-centred mass was reconstructed properly.
+    check("cohesion gathers in place rather than drifting",
+          on["drift"] < 0.05, f"centroid moved {on['drift']:.4f}")
+    check("cohesion stays stable", on["finite"] and on["vmax"] <= 4.5,
+          f"peak particle speed {on['vmax']:.2f}")
+    check("cohesion does not collapse the liquid to a point",
+          on["cells"] > 8, f"{on['cells']} cells still occupied")
 
     print()
     if FAILURES:
