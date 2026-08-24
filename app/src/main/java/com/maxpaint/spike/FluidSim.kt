@@ -4,7 +4,9 @@ import android.content.Context
 import android.opengl.GLES31
 
 /**
- * M0 spike: gaseous 2D fluid on GLES 3.1 compute shaders.
+ * The gaseous medium: 2D Navier-Stokes on GLES 3.1 compute shaders, plus the
+ * bake that turns settled fluid into permanent paint, and the fields the other
+ * media hang off (watercolor's shallow-water solver, the FLIP particle pool).
  *
  * Fields:
  *   velocity  RGBA16F  (xy used) at simRes, bilinear-filterable
@@ -606,7 +608,7 @@ class FluidSim(private val ctx: Context) {
         /** Reduction tile size for [measure]. */
         const val STATS_TILE = 16
 
-        /** Selectable simulation resolutions for the M0 headroom sweep. */
+        /** Selectable simulation resolutions for the headroom sweep. */
         val RESOLUTIONS = intArrayOf(128, 256, 384, 512, 768, 1024, 1536, 2048)
     }
 }

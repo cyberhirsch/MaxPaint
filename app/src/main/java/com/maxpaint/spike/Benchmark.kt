@@ -6,7 +6,8 @@ import kotlin.math.sin
 
 /**
  * Sweeps the selectable resolutions, running an identical scripted stroke at each,
- * and reports honest GPU-side timings. This is the M0 exit-criteria instrument:
+ * and reports honest GPU-side timings alongside solver quality. This is the
+ * instrument for sizing a device:
  * it answers "how high can this device actually go?" rather than guessing.
  *
  * Timing uses glFinish around the sim step. That serialises the pipeline, so the
@@ -98,7 +99,7 @@ class Benchmark(
     }
 
     fun report(deviceLine: String): String = buildString {
-        appendLine("MaxPaint M0 — resolution headroom sweep")
+        appendLine("MaxPaint — resolution headroom sweep")
         appendLine(deviceLine)
         appendLine("solver=${if (sim.useRedBlack) "RB-GS" else "Jacobi"}  iters=${sim.pressureIterations}  " +
                 "dyeScale=${dyeScale}x  ${measureFrames} frames each")
