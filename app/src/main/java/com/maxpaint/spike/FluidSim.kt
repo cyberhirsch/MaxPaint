@@ -70,7 +70,7 @@ class FluidSim(private val ctx: Context) {
     @Volatile var thawRequested = false
 
     // --- brushes ---
-    var brush = Brush.GAS
+    @Volatile var brush = Brush.GAS
     var forceMode = ForceMode.SWIRL
     /** Sustained stirring inflates ink (see README); keep the default gentle. */
     var forceStrength = 1.0f
@@ -129,7 +129,7 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pNib: ComputeProgram
     private lateinit var pSoak: ComputeProgram
     private lateinit var nibInkField: DoubleTex
-    private var lastNib: Pair<Float, Float>? = null
+
     private lateinit var water: DoubleTex
     private lateinit var flipInk: Tex
     val flip = FlipSystem(ctx)
@@ -171,6 +171,7 @@ class FluidSim(private val ctx: Context) {
         pForce = ComputeProgram(ctx, "shaders/force.comp")
         pWatercolor = ComputeProgram(ctx, "shaders/watercolor.comp")
         pWet = ComputeProgram(ctx, "shaders/wet.comp")
+        queryMaxTexture()
         pNib = ComputeProgram(ctx, "shaders/nib.comp")
         pSoak = ComputeProgram(ctx, "shaders/soak.comp")
         flip.init()
@@ -184,6 +185,20 @@ class FluidSim(private val ctx: Context) {
 
     private fun even(v: Float) = (v.toInt() / 2 * 2).coerceAtLeast(8)
 
+    /**
+     * GL_MAX_TEXTURE_SIZE, queried once. Shaping the grid to the canvas makes
+     * the long side much longer than the old square grid, and with 2x ink detail
+     * a 1536 budget on a 2.2:1 screen wants a 4556px texture -- past the 4096
+     * many mobile GPUs report, which fails allocation and leaves a black canvas.
+     */
+    private var maxTexture = 4096
+
+    private fun queryMaxTexture() {
+        val v = IntArray(1)
+        GLES31.glGetIntegerv(GLES31.GL_MAX_TEXTURE_SIZE, v, 0)
+        if (v[0] > 0) maxTexture = v[0]
+    }
+
     /** (Re)allocate all fields. Safe to call at runtime when the user picks a new resolution. */
     fun allocate(newSimRes: Int, newDyeScale: Int) {
         if (allocated) releaseTextures()
@@ -191,8 +206,19 @@ class FluidSim(private val ctx: Context) {
         dyeScale = newDyeScale
 
         val root = kotlin.math.sqrt(aspect.coerceIn(0.2f, 5f))
-        simW = even(simRes * root)
-        simH = even(simRes / root)
+        var w = simRes * root
+        var h = simRes / root
+
+        // every field is allocated at dyeScale times these, so the limit
+        // applies to the product
+        val limit = (maxTexture / dyeScale).toFloat()
+        val over = maxOf(w / limit, h / limit)
+        if (over > 1f) {
+            w /= over
+            h /= over
+        }
+        simW = even(w)
+        simH = even(h)
 
         velocity = DoubleTex(simW, simH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         dye = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
@@ -222,7 +248,8 @@ class FluidSim(private val ctx: Context) {
     fun clear() {
         if (!allocated) return
         velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
-        flipInk.clear(); flip.clear(); nibInkField.clear(); lastNib = null
+        flipInk.clear(); flip.clear(); nibInkField.clear()
+        waterActive = false; nibActive = false
         pressure.clear(); curl.clear(); divergence.clear()
     }
 
@@ -233,7 +260,8 @@ class FluidSim(private val ctx: Context) {
     fun stroke(
         u: Float, v: Float, du: Float, dv: Float,
         r: Float, g: Float, b: Float,
-        pressure: Float = 1f, tiltSpread: Float = 1f
+        pressure: Float = 1f, tiltSpread: Float = 1f,
+        prevU: Float = u, prevV: Float = v
     ) {
         if (!allocated) return
 
@@ -243,17 +271,20 @@ class FluidSim(private val ctx: Context) {
         splatRadius = baseRadius * tiltSpread
         inkPerStroke = baseInk * pressure
         try {
-            strokeInner(u, v, du, dv, r, g, b)
+            strokeInner(u, v, du, dv, r, g, b, prevU, prevV)
         } finally {
             splatRadius = baseRadius
             inkPerStroke = baseInk
         }
     }
 
-    private fun strokeInner(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {
+    private fun strokeInner(
+        u: Float, v: Float, du: Float, dv: Float,
+        r: Float, g: Float, b: Float, prevU: Float, prevV: Float
+    ) {
         when (brush) {
             Brush.GAS -> splat(u, v, du, dv, r, g, b)
-            Brush.NIB -> nib(u, v)
+            Brush.NIB -> nib(u, v, prevU, prevV)
             Brush.FLIP -> {
                 // a little momentum into the grid too, so the pour interacts
                 // with fluid already on the canvas
@@ -273,13 +304,12 @@ class FluidSim(private val ctx: Context) {
      * stays unbroken rather than dotting, and written to its own field so the
      * fluid cannot smear it.
      */
-    fun nib(u: Float, v: Float) {
+    fun nib(u: Float, v: Float, prevU: Float, prevV: Float) {
         if (!allocated) return
-        val prev = lastNib ?: (u to v)
-
+        nibActive = true
         pNib.use()
         pNib.set("uPoint", u, v)
-        pNib.set("uPrev", prev.first, prev.second)
+        pNib.set("uPrev", prevU, prevV)
         pNib.set("uRadius", nibRadius * inkPerStroke.coerceAtLeast(0.25f))
         pNib.set("uAspect", aspect)
         pNib.set("uInk", nibInk * inkPerStroke)
@@ -288,12 +318,7 @@ class FluidSim(private val ctx: Context) {
         nibInkField.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         pNib.dispatch(dyeW, dyeH)
         nibInkField.swap()
-
-        lastNib = u to v
     }
-
-    /** Called when the finger or stylus lifts, so the next mark does not join to it. */
-    fun endStroke() { lastNib = null }
 
     /** Capillary soak plus drying into the background. */
     private fun stepNib(dt: Float) {
@@ -319,6 +344,7 @@ class FluidSim(private val ctx: Context) {
     /** Loads the paper with water and pigment; the watercolor solver takes it from there. */
     fun wet(u: Float, v: Float) {
         if (!allocated) return
+        waterActive = true
         pWet.use()
         pWet.set("uPoint", u, v)
         pWet.set("uRadius", splatRadius)
@@ -458,8 +484,14 @@ class FluidSim(private val ctx: Context) {
     /** Lift the most recent baked paint back into the simulation. */
     fun thaw() { thawRequested = true }
 
-    /** Keeps the paper drying after the artist switches away from watercolor. */
-    var waterActive = true
+    /**
+     * Each extra medium is a full-grid pass (and, for FLIP, a particle update
+     * plus two point draws) every frame. Running them before they have been
+     * touched was pure waste, so each stays dormant until first use and then
+     * keeps running -- paper must go on drying after you switch brushes.
+     */
+    var waterActive = false; private set
+    var nibActive = false; private set
 
     /** True when there is no live fluid left to simulate. */
     fun isIdle(): Boolean = false
@@ -524,14 +556,10 @@ class FluidSim(private val ctx: Context) {
         // 10. bake: settled fluid moves out of the sim and into the background
         bake(dt)
 
-        // 11. watercolor runs its own solver, on its own fields
-        if (brush == Brush.WATERCOLOR || waterActive) stepWatercolor(dt)
-
-        // 12. particles: advance, dry the ones that have stopped, redraw
-        stepFlip(dt)
-
-        // 13. nib ink creeps into the paper and dries
-        stepNib(dt)
+        // 11-13. the other media, each dormant until it has been used
+        if (waterActive) stepWatercolor(dt)
+        if (flip.inUse) stepFlip(dt)
+        if (nibActive) stepNib(dt)
     }
 
     private fun computeDivergence() {
