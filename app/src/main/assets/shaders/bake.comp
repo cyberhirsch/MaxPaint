@@ -24,6 +24,10 @@ uniform float uSettleSpeed;   // speed at/below which settling begins
 uniform float uBakeRate;      // how fast settled dye transfers, per second
 uniform float uSettleMinAge;  // "Hold": seconds paint must stay live first
 uniform int   uForce;         // 1 = Freeze Now: bake everything, immediately
+uniform int   uThaw;          // 1 = run backwards: lift baked paint into the sim
+uniform vec2  uMaskPoint;     // brush centre, for the local freeze/thaw brushes
+uniform float uMaskRadius;    // <= 0 means the whole canvas
+uniform float uAspect;
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
@@ -34,9 +38,29 @@ void main() {
     vec4 bg  = imageLoad(uBgSrc, c);
     float age = imageLoad(uAgeSrc, c).x + uDt;
 
+    // A local freeze or thaw brush limits the transfer to what it touches,
+    // so a good vortex can be locked while the rest keeps moving.
+    float mask = 1.0;
+    if (uMaskRadius > 0.0) {
+        vec2 uvm = (vec2(c) + 0.5) / vec2(sz);
+        vec2 dm = uvm - uMaskPoint;
+        dm.x *= uAspect;
+        mask = exp(-dot(dm, dm) / max(uMaskRadius * uMaskRadius, 1e-8));
+        if (mask < 0.002) mask = 0.0;
+    }
+
+    if (uThaw == 1) {
+        // Lift baked paint back into the simulation so it can be restirred.
+        vec4 lifted = bg * clamp(mask * uBakeRate * uDt, 0.0, 1.0);
+        imageStore(uDyeDst, c, dye + lifted);
+        imageStore(uBgDst, c, bg - lifted);
+        imageStore(uAgeDst, c, vec4(0.0));
+        return;
+    }
+
     float amount;
     if (uForce == 1) {
-        amount = 1.0;
+        amount = mask;
     } else {
         vec2 uv = (vec2(c) + 0.5) / vec2(sz);
         float speed = length(texture(uVel, uv).xy);
@@ -44,7 +68,7 @@ void main() {
         float slowness = clamp((uSettleSpeed - speed) / max(uSettleSpeed, 1e-5), 0.0, 1.0);
         float held     = uSettleMinAge <= 0.0 ? 1.0 : clamp(age / uSettleMinAge, 0.0, 1.0);
 
-        amount = clamp(slowness * held * uBakeRate * uDt, 0.0, 1.0);
+        amount = clamp(mask * slowness * held * uBakeRate * uDt, 0.0, 1.0);
     }
 
     // Accumulate additively rather than compositing "over". Over-compositing

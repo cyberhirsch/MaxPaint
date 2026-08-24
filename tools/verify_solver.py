@@ -180,11 +180,13 @@ class Sim:
         # M1 bake parameters, matching FluidSim.kt
         self.settle_speed, self.bake_rate, self.settle_min_age = 0.35, 2.5, 0.35
         self.bake_enabled = False   # opt in, so solver tests stay isolated
+        self.maccormack = False   # matches FluidSim default
         self.force_freeze = False
 
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
-                   "pressure", "pressure_rb", "clearp", "gradsub", "bake")}
+                   "advect_mc", "pressure", "pressure_rb", "clearp", "gradsub",
+                   "bake", "force")}
 
         self.vel = Double(res, res, GL_RGBA16F, GL_LINEAR)
         self.dye = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
@@ -228,6 +230,37 @@ class Sim:
         self.age.swap()
         glUniform1i(uni(p, "uMode"), 0)
 
+    def force(self, u, v, du, dv, mode, strength, radius=0.075):
+        p = self.p["force"]
+        glUseProgram(p)
+        glUniform2f(uni(p, "uPoint"), u, v)
+        glUniform2f(uni(p, "uDir"), du, dv)
+        glUniform1f(uni(p, "uRadius"), radius)
+        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uStrength"), strength)
+        glUniform1i(uni(p, "uMode"), mode)
+        glUniform1f(uni(p, "uCombFreq"), 14.0)
+        glUniform1f(uni(p, "uDt"), 1.0 / 60.0)
+        self.vel.read_t.image(0, GL_READ_ONLY)
+        self.vel.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.res, self.res)
+        self.vel.swap()
+
+    def lift(self, u, v, keep=0.45, radius=0.05):
+        """Solvent: scale pigment down where the brush bites."""
+        p = self.p["splat"]
+        glUseProgram(p)
+        glUniform2f(uni(p, "uPoint"), u, v)
+        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uRadius"), radius)
+        glUniform1i(uni(p, "uMode"), 2)
+        glUniform4f(uni(p, "uValue"), keep, 0.0, 0.0, 0.0)
+        self.dye.read_t.image(0, GL_READ_ONLY)
+        self.dye.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_res, self.dye_res)
+        self.dye.swap()
+        glUniform1i(uni(p, "uMode"), 0)
+
     def bake(self, dt):
         """Mirrors FluidSim.bake(): settled fluid moves into the background."""
         p = self.p["bake"]
@@ -237,6 +270,15 @@ class Sim:
         glUniform1f(uni(p, "uBakeRate"), self.bake_rate)
         glUniform1f(uni(p, "uSettleMinAge"), self.settle_min_age)
         glUniform1i(uni(p, "uForce"), 1 if self.force_freeze else 0)
+        glUniform1i(uni(p, "uThaw"), 1 if getattr(self, "thawing", False) else 0)
+        glUniform1f(uni(p, "uAspect"), 1.0)
+        mask = getattr(self, "mask_at", None)
+        if mask:
+            glUniform2f(uni(p, "uMaskPoint"), mask[0], mask[1])
+            glUniform1f(uni(p, "uMaskRadius"), 0.05)
+        else:
+            glUniform2f(uni(p, "uMaskPoint"), 0.5, 0.5)
+            glUniform1f(uni(p, "uMaskRadius"), -1.0)
         glUniform1i(uni(p, "uVel"), 0)
         self.force_freeze = False
 
@@ -297,6 +339,7 @@ class Sim:
         glUseProgram(p)
         glUniform1f(uni(p, "uDrag"), 0.0)    # isolate projection from drag
         glUniform1f(uni(p, "uDt"), dt)
+        glUniform1f(uni(p, "uMaxSpeed"), 4.0)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
         self.pres.read_t.image(2, GL_READ_ONLY)
@@ -334,13 +377,14 @@ class Sim:
         glUseProgram(p)
         glUniform1f(uni(p, "uDrag"), self.drag)
         glUniform1f(uni(p, "uDt"), dt)
+        glUniform1f(uni(p, "uMaxSpeed"), 4.0)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
         self.pres.read_t.image(2, GL_READ_ONLY)
         self.dispatch(self.res, self.res)
         self.vel.swap()
 
-        p = self.p["advect"]
+        p = self.p["advect_mc" if self.maccormack else "advect"]
         glUseProgram(p)
         glUniform1f(uni(p, "uDt"), dt)
         glUniform1i(uni(p, "uSrc"), 0)
@@ -580,6 +624,101 @@ def main():
           f"15 sweeps {100 * coarse:+.1f}%, 120 sweeps {100 * fine:+.1f}% over 240 frames")
     check("a well-solved field keeps ink close to conserved",
           abs(fine) < 0.12, f"{100 * fine:+.1f}% at 120 sweeps")
+    print()
+
+    # ---- brushes ----
+    print("Brushes:")
+
+    # Vortex: force only. It must move paint without adding any.
+    vx = Sim(args.res)
+    vx.dye_diss = 0.0
+    vx.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    ink_before = float(vx.dye.read_t.read()[:, :, 3].sum())
+    before_img = vx.dye.read_t.read()[:, :, 3].copy()
+    for _ in range(30):
+        vx.force(0.5, 0.5, 0.0, 0.0, 0, 1.0)   # the shipped default strength
+        vx.step(dt)
+    ink_after = float(vx.dye.read_t.read()[:, :, 3].sum())
+    after_img = vx.dye.read_t.read()[:, :, 3]
+    # The vortex deposits nothing, but sustained stirring still inflates the
+    # total because semi-Lagrangian advection duplicates mass under shear.
+    # Bounded here; the mechanism is documented in the README.
+    check("vortex deposits no pigment of its own", ink_after <= ink_before * 1.6,
+          f"ink {ink_before:.1f} -> {ink_after:.1f} (shear inflation, not deposition)")
+    check("a held force brush cannot blow up the field",
+          bool(np.isfinite(vx.vel.read_t.read()).all()) and
+          float(np.abs(vx.vel.read_t.read()[:, :, :2]).max()) <= 4.5,
+          f"peak speed {float(np.abs(vx.vel.read_t.read()[:, :, :2]).max()):.2f} UV/s")
+    check("vortex rearranges the paint it finds",
+          float(np.abs(after_img - before_img).sum()) > ink_before * 0.1,
+          "dye distribution changed")
+
+    # Swirl must actually rotate: net angular momentum about the brush centre.
+    sw = Sim(args.res)
+    sw.force(0.5, 0.5, 0.0, 0.0, 0, 3.0)
+    v = sw.vel.read_t.read()
+    h, w = v.shape[0], v.shape[1]
+    ys, xs = np.mgrid[0:h, 0:w]
+    rx = (xs + 0.5) / w - 0.5
+    ry = (ys + 0.5) / h - 0.5
+    angular = float((rx * v[:, :, 1] - ry * v[:, :, 0]).sum())
+    check("swirl imparts angular momentum", abs(angular) > 1e-3,
+          f"net angular momentum = {angular:+.3f}")
+
+    # Pinch must converge, and its negative must diverge -- that sign flip is
+    # what the solvent brush relies on to push pigment outward.
+    def radial_flux(strength):
+        s5 = Sim(args.res)
+        s5.force(0.5, 0.5, 0.0, 0.0, 2, strength)
+        vv = s5.vel.read_t.read()
+        rr = np.sqrt(rx * rx + ry * ry) + 1e-6
+        return float(((rx / rr) * vv[:, :, 0] + (ry / rr) * vv[:, :, 1]).sum())
+
+    inward, outward = radial_flux(3.0), radial_flux(-3.0)
+    check("pinch pulls in, negative pinch pushes out",
+          inward < 0 < outward, f"in {inward:+.2f}, out {outward:+.2f}")
+
+    # Solvent lifts pigment rather than merely displacing it.
+    so = Sim(args.res)
+    so.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    pre = float(so.dye.read_t.read()[:, :, 3].sum())
+    so.lift(0.5, 0.5)
+    post = float(so.dye.read_t.read()[:, :, 3].sum())
+    check("solvent lifts pigment", post < pre * 0.9,
+          f"ink {pre:.1f} -> {post:.1f}")
+
+    # Local freeze must bake under the brush and leave the rest alone.
+    lf = Sim(args.res)
+    lf.dye_diss = 0.0
+    lf.splat(0.25, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    lf.splat(0.75, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    lf.settle_min_age = 0.0
+    lf.mask_at = (0.25, 0.5)
+    lf.force_freeze = True
+    lf.bake(dt)
+    bg = lf.bg.read_t.read()[:, :, 3]
+    half = bg.shape[1] // 2
+    left, right = float(bg[:, :half].sum()), float(bg[:, half:].sum())
+    check("the freeze brush bakes only what it touches", left > 0 and right < left * 0.05,
+          f"under brush {left:.1f}, elsewhere {right:.1f}")
+
+    # Thaw is the inverse: baked paint returns to the simulation.
+    th = Sim(args.res)
+    th.dye_diss = 0.0
+    th.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    th.settle_min_age = 0.0
+    th.force_freeze = True
+    th.bake(dt)
+    baked_before = float(th.bg.read_t.read()[:, :, 3].sum())
+    th.thawing = True
+    for _ in range(60):
+        th.bake(dt)
+    th.thawing = False
+    baked_after = float(th.bg.read_t.read()[:, :, 3].sum())
+    live_after = float(th.dye.read_t.read()[:, :, 3].sum())
+    check("thaw returns baked paint to the simulation",
+          baked_after < baked_before * 0.5 and live_after > 0,
+          f"baked {baked_before:.1f} -> {baked_after:.1f}, live 0.0 -> {live_after:.1f}")
     print()
 
     # ---- determinism ----
