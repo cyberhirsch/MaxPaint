@@ -8,6 +8,7 @@ layout(binding = 0) uniform highp sampler2D uDye;         // live fluid
 layout(binding = 1) uniform highp sampler2D uVel;
 layout(binding = 2) uniform highp sampler2D uBackground;  // baked paint
 layout(binding = 3) uniform highp sampler2D uWater;       // watercolor: depth, suspended, adsorbed
+layout(binding = 4) uniform highp sampler2D uFlip;        // live particle ink
 
 uniform int   uDebugView;    // 0 = paint, 1 = velocity
 uniform int   uHeat;         // 1 = tint live fluid by how close it is to setting
@@ -51,6 +52,9 @@ void main() {
     }
 
     col = col * (1.0 - clamp(live.a, 0.0, 1.0)) + liveRgb;
+
+    vec4 drops = texture(uFlip, vUv);
+    col = col * (1.0 - clamp(drops.a, 0.0, 1.0)) + drops.rgb;
 
     fragColor = vec4(col, 1.0);
 }

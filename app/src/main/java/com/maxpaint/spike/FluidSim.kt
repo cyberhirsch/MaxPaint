@@ -103,6 +103,8 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pWatercolor: ComputeProgram
     private lateinit var pWet: ComputeProgram
     private lateinit var water: DoubleTex
+    private lateinit var flipInk: Tex
+    val flip = FlipSystem(ctx)
     private lateinit var statsPartial: Tex
     private var partialRes = 1
 
@@ -118,6 +120,7 @@ class FluidSim(private val ctx: Context) {
     fun vramBytes(): Long =
         if (!allocated) 0
         else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() + water.bytes() +
+             flipInk.bytes() + flip.bytes() +
              pressure.bytes() + curl.bytes() + divergence.bytes()
 
     fun initPrograms() {
@@ -136,6 +139,7 @@ class FluidSim(private val ctx: Context) {
         pForce = ComputeProgram(ctx, "shaders/force.comp")
         pWatercolor = ComputeProgram(ctx, "shaders/watercolor.comp")
         pWet = ComputeProgram(ctx, "shaders/wet.comp")
+        flip.init()
     }
 
     fun setAspect(a: Float) { aspect = a }
@@ -156,6 +160,8 @@ class FluidSim(private val ctx: Context) {
 // RGBA32F: watercolor fluxes are small relative to the depth they modify,
         // and fp16 rounds them away outright
         water = DoubleTex(dyeRes, dyeRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
+        // live particles are drawn here each frame, then composited
+        flipInk = Tex(dyeRes, dyeRes, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
 
         partialRes = (dyeRes + STATS_TILE - 1) / STATS_TILE
         statsPartial = Tex(partialRes, partialRes, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
@@ -170,6 +176,7 @@ class FluidSim(private val ctx: Context) {
     fun clear() {
         if (!allocated) return
         velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
+        flipInk.clear(); flip.clear()
         pressure.clear(); curl.clear(); divergence.clear()
     }
 
@@ -181,7 +188,13 @@ class FluidSim(private val ctx: Context) {
         if (!allocated) return
 
         when (brush) {
-            Brush.GAS, Brush.FLIP -> splat(u, v, du, dv, r, g, b)
+            Brush.GAS -> splat(u, v, du, dv, r, g, b)
+            Brush.FLIP -> {
+                // a little momentum into the grid too, so the pour interacts
+                // with fluid already on the canvas
+                flip.emit(u, v, du, dv, splatRadius * 0.5f)
+                force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
+            }
             Brush.WATERCOLOR -> wet(u, v)
             Brush.VORTEX -> force(u, v, du, dv, forceMode.code, forceStrength)
             Brush.SOLVENT -> solvent(u, v)
@@ -228,6 +241,24 @@ class FluidSim(private val ctx: Context) {
         pWatercolor.dispatch(dyeRes, dyeRes)
         water.swap(); background.swap()
     }
+
+    /**
+     * Advances the particle pool and renders it. Particles that have dried are
+     * drawn once into the background — permanent, and off the simulation's
+     * books — before being retired.
+     */
+    private fun stepFlip(dt: Float) {
+        flip.step(dt, velocity.read)
+
+        // freshly dried particles land in the background layer, permanently
+        flip.draw(state = 2f, target = background.read)
+
+        // live particles are redrawn from scratch each frame
+        flipInk.clear()
+        flip.draw(state = 1f, target = flipInk)
+    }
+
+    val flipTexture get() = flipInk
 
     /** Momentum with no pigment: stir, shove, pinch or comb what is already there. */
     fun force(u: Float, v: Float, du: Float, dv: Float, mode: Int, strength: Float) {
@@ -380,6 +411,9 @@ class FluidSim(private val ctx: Context) {
 
         // 11. watercolor runs its own solver, on its own fields
         if (brush == Brush.WATERCOLOR || waterActive) stepWatercolor(dt)
+
+        // 12. particles: advance, dry the ones that have stopped, redraw
+        stepFlip(dt)
     }
 
     private fun computeDivergence() {
@@ -558,7 +592,7 @@ class FluidSim(private val ctx: Context) {
 
     private fun releaseTextures() {
         velocity.release(); dye.release(); background.release(); age.release()
-        water.release()
+        water.release(); flipInk.release()
         pressure.release(); curl.release(); divergence.release()
         statsPartial.release()
         allocated = false

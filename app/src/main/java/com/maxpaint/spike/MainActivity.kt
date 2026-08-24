@@ -13,10 +13,14 @@ import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.*
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import androidx.appcompat.app.AppCompatActivity
 import java.io.File
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FluidRenderer
@@ -24,6 +28,8 @@ class MainActivity : AppCompatActivity() {
 
     private val ui = Handler(Looper.getMainLooper())
     private var twoFingerDownAt = 0L
+    private var tiltGravity = false
+    private var sensors: SensorManager? = null
 
     // last touch position per pointer, for momentum
     private val lastX = HashMap<Int, Float>()
@@ -48,8 +54,19 @@ class MainActivity : AppCompatActivity() {
         root.addView(buildControls())
         setContentView(root)
 
+        sensors = getSystemService(SENSOR_SERVICE) as? SensorManager
         pollRenderer()
     }
+
+    // PRD FR-8: the device's own tilt can drive where the paint runs.
+    override fun onSensorChanged(event: SensorEvent) {
+        if (!tiltGravity || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        val g = 0.06f
+        renderer.sim.flip.gravityX = -event.values[0] * g
+        renderer.sim.flip.gravityY = -event.values[1] * g
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     // ---------------- input ----------------
 
@@ -141,15 +158,38 @@ class MainActivity : AppCompatActivity() {
         }
 
         // --- brush ---
+        // Declared before the picker that toggles them.
         val modeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             visibility = View.GONE
         }
+        val flipRow = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val flipLabel = TextView(this).apply {
+            setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            text = "Splashy 0.92  (\u2190 viscous)"
+        }
+        flipRow.addView(flipLabel)
+        flipRow.addView(SeekBar(this).apply {
+            max = 100
+            progress = 92
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, p: Int, fromUser: Boolean) {
+                    renderer.sim.flip.flipRatio = p / 100f
+                    flipLabel.text = String.format("Splashy %.2f  (\u2190 viscous)", p / 100f)
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        })
         panel.addView(labeled("Brush", spinner(Brush.labels, 0) { idx ->
             val b = Brush.entries[idx]
             renderer.sim.brush = b
             modeRow.visibility = if (b == Brush.VORTEX) View.VISIBLE else View.GONE
+            flipRow.visibility = if (b == Brush.FLIP) View.VISIBLE else View.GONE
         }))
 
         modeRow.addView(TextView(this).apply {
@@ -162,6 +202,8 @@ class MainActivity : AppCompatActivity() {
             renderer.sim.forceMode = ForceMode.entries[idx]
         })
         panel.addView(modeRow)
+        panel.addView(flipRow)
+
 
         // --- resolution ---
         val resLabels = FluidSim.RESOLUTIONS.map { "$it²" }
@@ -225,6 +267,14 @@ class MainActivity : AppCompatActivity() {
         })
         row.addView(button("Freeze") {
             renderer.freezeRequested = true
+        })
+        row.addView(button("Tilt") { b ->
+            tiltGravity = !tiltGravity
+            if (!tiltGravity) {
+                renderer.sim.flip.gravityX = 0f
+                renderer.sim.flip.gravityY = -0.55f
+            }
+            b.text = if (tiltGravity) "Tilt on" else "Tilt"
         })
         row.addView(button("Thaw") {
             renderer.thawRequested = true
@@ -320,6 +370,17 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
-    override fun onPause() { super.onPause(); glView.onPause() }
-    override fun onResume() { super.onResume(); glView.onResume() }
+    override fun onPause() {
+        super.onPause()
+        glView.onPause()
+        sensors?.unregisterListener(this)
+    }
+
+    override fun onResume() {
+        super.onResume()
+        glView.onResume()
+        sensors?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
+            sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
+        }
+    }
 }
