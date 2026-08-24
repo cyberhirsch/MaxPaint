@@ -16,13 +16,18 @@ into the background layer, where it is permanent and costs nothing to keep.
 | Control | What it does |
 |---|---|
 | **Drag** | The one dial that matters. More drag, paint sets sooner. Measured: at 0.05 a stroke is 80% set after 2s, at 2.0 it is 98% set. |
+| **Set speed / Hold** | How fast settled paint transfers, and how long it must stay live first. Shipped at maximum and zero: paint sets early. |
 | **Freeze** button, or a two-finger tap | Commits the whole canvas immediately. |
 | **Heat** | Tints live fluid by how close it is to setting, so you can see what is about to freeze (PRD UX-3). |
 
 Ink is premultiplied by coverage, so compositing paper → baked → live is a plain
 "over". The bake accumulates additively rather than compositing over, which is
 what makes it exactly conservative: what leaves the dye field is what arrives in
-the background. Compositing "over" there would saturate, and repeatedly laying
+the background — 0.000% error on a single transfer. Across a couple of hundred
+partial transfers it drifts about 0.7%, and that is storage rather than
+arithmetic: the background is `rgba16f`, so once it holds a large value the last
+thin residues of a stroke fall below its ulp. The two are asserted separately, so
+a regression in the operator cannot hide behind the rounding budget. Compositing "over" there would saturate, and repeatedly laying
 down a tenth of a stroke would converge on full coverage instead of the stroke's
 real density — quietly destroying ink.
 
@@ -92,6 +97,16 @@ vector and an accelerometer binding, which meant paint "fell" toward whatever th
 phone thought was down. Paint now travels on the momentum of the stroke and stops
 where drag stops it; the accelerometer is not read at all. Orientation may matter
 again at export, for the framing of the saved image, and nowhere else.
+
+### Paint sets early
+
+Defaults are drag 3.0, set speed at maximum, hold at zero, and a generous settle
+threshold. A stroke is **22% set after 0.1s, 69% after 0.25s, and completely set
+within a second**. That also matters for the force brushes: they can only pick up
+paint that has actually set, so slow baking left them with nothing to grab.
+
+The nib and watercolor keep their own drying rates — a nib is supposed to soak
+slowly while held, which is the opposite requirement.
 
 ### Set paint is smearable
 
