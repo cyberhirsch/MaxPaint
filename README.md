@@ -67,6 +67,24 @@ milestone M3, the app around the paint, is not built:
 Determinism is *verified* (identical inputs give bit-identical output) but the
 replay log that would exploit it is not written yet.
 
+## Bugs found by review
+
+A pass over the code after the first real session. Most were invisible until
+looked for, which is why they are recorded here:
+
+| Bug | Effect |
+|---|---|
+| Every medium's solver ran every frame | With the gas brush, each frame still updated **120,000 particles and drew them twice**, plus two unused full-grid passes. Each medium is now dormant until first used. |
+| The particle pool was walked in full from the first stroke | The ring buffer only holds particles up to the write head; the rest was waste. Only the filled span is updated and drawn now. |
+| A framebuffer was created and destroyed **three times a frame** | Driver churn for nothing. One reusable scratch FBO now. |
+| The nib shared one "previous point" across all pointers | A second finger joined its mark to the first, drawing a line across the canvas. The previous sample is now per pointer. |
+| Grid dimensions ignored `GL_MAX_TEXTURE_SIZE` | Shaping the grid to the canvas makes the long side much longer. At a 1536 budget with 2× ink detail on a 2.2:1 screen the dye texture wants **4556px**, past the 4096 many mobile GPUs report — allocation fails and the canvas goes black. Now clamped to the reported limit. |
+| Opening a settings panel reset the settings | Widgets initialised from hardcoded values and fired their callbacks, so opening a panel silently overwrote the preset just chosen. Widgets read the live value now, and the preset picker ignores the initial selection Android fires for it. |
+| Sweep wiped the canvas without warning | It reallocates at every resolution. It asks first now. |
+
+Known and not yet fixed: changing the canvas shape (rotation, split screen)
+reallocates the fields and so clears the painting.
+
 ## The canvas grid is not square
 
 The simulation grid takes the shape of the canvas. Picking a resolution N sets a

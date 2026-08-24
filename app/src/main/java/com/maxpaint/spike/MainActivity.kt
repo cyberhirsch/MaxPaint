@@ -423,8 +423,17 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             b.text = if (renderer.debugView == 1) "Paint" else "Velocity"
         })
         row2.addView(button("Sweep") {
-            toast("Running resolution sweep…")
-            renderer.benchmarkRequested = true
+            // it reallocates at every resolution, so the canvas does not survive
+            AlertDialog.Builder(this)
+                .setTitle("Run the resolution sweep?")
+                .setMessage("This measures speed and solver quality at every " +
+                    "resolution. It clears the canvas and takes a few seconds.")
+                .setPositiveButton("Run") { _, _ ->
+                    toast("Running resolution sweep…")
+                    renderer.benchmarkRequested = true
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
         })
         panelBody.addView(row2)
     }
