@@ -10,7 +10,8 @@ uniform vec2  uPoint;    // UV
 uniform vec4  uValue;    // amount to add at the centre
 uniform float uRadius;   // in UV units
 uniform float uAspect;   // width / height
-uniform int   uMode;     // 0 = add (paint), 1 = lerp toward uValue (reset age)
+uniform int   uMode;     // 0 = add (paint), 1 = lerp toward uValue (reset age),
+                         // 2 = scale down (solvent lifting pigment)
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
@@ -25,7 +26,14 @@ void main() {
 
     float falloff = exp(-dot(d, d) / max(uRadius * uRadius, 1e-8));
 
-    vec4 result = uMode == 1 ? mix(prev, uValue, falloff)
-                             : prev + uValue * falloff;
+    vec4 result;
+    if (uMode == 1) {
+        result = mix(prev, uValue, falloff);
+    } else if (uMode == 2) {
+        // uValue.x is how much is left where the brush bites hardest
+        result = prev * mix(1.0, uValue.x, falloff);
+    } else {
+        result = prev + uValue * falloff;
+    }
     imageStore(uDst, c, result);
 }

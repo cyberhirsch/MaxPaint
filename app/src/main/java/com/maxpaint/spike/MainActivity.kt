@@ -140,6 +140,29 @@ class MainActivity : AppCompatActivity() {
             setPadding(20, 12, 20, 12)
         }
 
+        // --- brush ---
+        val modeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+        }
+        panel.addView(labeled("Brush", spinner(Brush.labels, 0) { idx ->
+            val b = Brush.entries[idx]
+            renderer.sim.brush = b
+            modeRow.visibility = if (b == Brush.VORTEX) View.VISIBLE else View.GONE
+        }))
+
+        modeRow.addView(TextView(this).apply {
+            text = "Mode"
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setPadding(0, 0, 16, 0)
+        })
+        modeRow.addView(spinner(ForceMode.labels, 0) { idx ->
+            renderer.sim.forceMode = ForceMode.entries[idx]
+        })
+        panel.addView(modeRow)
+
         // --- resolution ---
         val resLabels = FluidSim.RESOLUTIONS.map { "$it²" }
         panel.addView(labeled("Sim resolution", spinner(resLabels, 3) { idx ->
@@ -202,6 +225,9 @@ class MainActivity : AppCompatActivity() {
         })
         row.addView(button("Freeze") {
             renderer.freezeRequested = true
+        })
+        row.addView(button("Thaw") {
+            renderer.thawRequested = true
         })
         row.addView(button("Heat") { b ->
             renderer.heatOverlay = !renderer.heatOverlay

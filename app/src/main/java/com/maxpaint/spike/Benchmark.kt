@@ -26,10 +26,17 @@ class Benchmark(
         val medianMs: Double,
         val p95Ms: Double,
         val meanMs: Double,
-        val vramMb: Double
+        val vramMb: Double,
+        /** Fraction of divergence one cold solve removes, at this sweep count. */
+        val convergence: Double,
+        /** Fractional change in total ink across the measured run. */
+        val inkDrift: Double
     ) {
         val estimatedFps get() = if (medianMs > 0) 1000.0 / medianMs else 0.0
-        val holds60 get() = medianMs <= 16.6 && p95Ms <= 20.0
+        val fastEnough get() = medianMs <= 16.6 && p95Ms <= 20.0
+        /** Converged enough that strokes neither smear nor visibly bloom. */
+        val solvedEnough get() = convergence >= 0.5 && kotlin.math.abs(inkDrift) <= 0.15
+        val usable get() = fastEnough && solvedEnough
     }
 
     var results: List<Result> = emptyList(); private set
@@ -46,6 +53,12 @@ class Benchmark(
             repeat(warmupFrames) { i -> scriptedFrame(i, dt) }
             GLES31.glFinish()
 
+            // Quality, measured on the same state the timing run will use.
+            // Frame time alone is a misleading PASS: an under-solved field is
+            // both mushy and ink-generating however fast it runs.
+            val convergence = sim.measureConvergence().toDouble()
+            val inkBefore = sim.measure().ink.toDouble()
+
             val samples = DoubleArray(measureFrames)
             for (i in 0 until measureFrames) {
                 val t0 = System.nanoTime()
@@ -53,6 +66,7 @@ class Benchmark(
                 GLES31.glFinish()
                 samples[i] = (System.nanoTime() - t0) / 1_000_000.0
             }
+            val inkAfter = sim.measure().ink.toDouble()
             samples.sort()
 
             out.add(
@@ -62,7 +76,9 @@ class Benchmark(
                     medianMs = samples[samples.size / 2],
                     p95Ms = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)],
                     meanMs = samples.average(),
-                    vramMb = sim.vramBytes() / (1024.0 * 1024.0)
+                    vramMb = sim.vramBytes() / (1024.0 * 1024.0),
+                    convergence = convergence,
+                    inkDrift = if (inkBefore > 1e-6) (inkAfter - inkBefore) / inkBefore else 0.0
                 )
             )
         }
@@ -87,26 +103,45 @@ class Benchmark(
         appendLine("solver=${if (sim.useRedBlack) "RB-GS" else "Jacobi"}  iters=${sim.pressureIterations}  " +
                 "dyeScale=${dyeScale}x  ${measureFrames} frames each")
         appendLine()
-        appendLine("  sim     dye    median     p95     est.fps   vram    60fps")
-        appendLine("  ----------------------------------------------------------")
+        appendLine("  sim     dye    median     p95   est.fps    vram   solved   ink    verdict")
+        appendLine("  ---------------------------------------------------------------------------")
         results.forEach { r ->
             appendLine(
                 String.format(
-                    "  %-6s %-6s %6.2fms %6.2fms %7.1f %7.1fMB   %s",
+                    "  %-6s %-6s %6.2fms %6.2fms %6.1f %6.1fMB %6.0f%% %+5.0f%%   %s",
                     "${r.simRes}²", "${r.dyeRes}²",
                     r.medianMs, r.p95Ms, r.estimatedFps, r.vramMb,
-                    if (r.holds60) "PASS" else "fail"
+                    r.convergence * 100, r.inkDrift * 100,
+                    when {
+                        r.usable -> "USABLE"
+                        r.fastEnough -> "under-solved"
+                        else -> "too slow"
+                    }
                 )
             )
         }
         appendLine()
-        val best = results.lastOrNull { it.holds60 }
+        appendLine("  solved  = divergence removed by one cold solve at this sweep count")
+        appendLine("  ink     = change in total ink over the run; a positive number means")
+        appendLine("            strokes are gaining mass and will bloom on their own")
+        appendLine()
+
+        val fastest = results.lastOrNull { it.fastEnough }
+        val best = results.lastOrNull { it.usable }
         appendLine(
             if (best != null)
-                "Highest resolution holding 60fps: ${best.simRes}² (${best.medianMs.format()}ms median)"
+                "Highest usable resolution: ${best.simRes}² — " +
+                "${best.medianMs.format()}ms, ${(best.convergence * 100).toInt()}% solved"
             else
-                "No tested resolution holds 60fps. Lower pressure iterations and re-run."
+                "No tested resolution is both fast and adequately solved."
         )
+        if (fastest != null && (best == null || fastest.simRes > best.simRes)) {
+            appendLine(
+                "Note: ${fastest.simRes}² holds 60fps but is only " +
+                "${(fastest.convergence * 100).toInt()}% solved — it will look worse " +
+                "than the resolution above despite running fast."
+            )
+        }
     }
 
     private fun Double.format() = String.format("%.2f", this)

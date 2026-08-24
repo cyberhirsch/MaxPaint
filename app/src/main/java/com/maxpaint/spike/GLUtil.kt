@@ -118,6 +118,7 @@ class Tex(val width: Int, val height: Int, val internalFormat: Int, filter: Int)
     /** Approximate VRAM footprint in bytes. */
     fun bytes(): Long {
         val bpp = when (internalFormat) {
+            GLES31.GL_RGBA32F -> 16
             GLES31.GL_RGBA16F -> 8
             GLES31.GL_R32F -> 4
             else -> 4

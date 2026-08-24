@@ -1,0 +1,51 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Tile-wise reduction. Each invocation sums one TILE x TILE block and writes a
+// single partial; the host reads back the small partial texture and finishes
+// the sum on the CPU. Avoids shared-memory reductions and any dependence on
+// mipmap generation for float formats.
+//
+// Two quantities at once, because they are always wanted together:
+//   .x  total ink   (dye alpha, i.e. coverage)
+//   .y  divergence squared, for an RMS
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uDye;
+layout(r32f,    binding = 1) readonly  uniform highp image2D uDivergence;
+layout(rgba32f, binding = 2) writeonly uniform highp image2D uPartial;
+
+uniform int uTile;
+uniform int uDyeScale;   // dye grid is uDyeScale x the divergence grid
+
+void main() {
+    ivec2 t = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 partialSize = imageSize(uPartial);
+    if (t.x >= partialSize.x || t.y >= partialSize.y) return;
+
+    ivec2 dyeSize = imageSize(uDye);
+    ivec2 divSize = imageSize(uDivergence);
+
+    float ink = 0.0;
+    float div2 = 0.0;
+
+    ivec2 base = t * uTile;
+    for (int y = 0; y < uTile; ++y) {
+        for (int x = 0; x < uTile; ++x) {
+            ivec2 c = base + ivec2(x, y);
+
+            if (c.x < dyeSize.x && c.y < dyeSize.y) {
+                ink += imageLoad(uDye, c).a;
+            }
+            // the divergence grid is coarser when dye is supersampled
+            ivec2 dc = c / uDyeScale;
+            if (c.x % uDyeScale == 0 && c.y % uDyeScale == 0 &&
+                dc.x < divSize.x && dc.y < divSize.y) {
+                float d = imageLoad(uDivergence, dc).x;
+                div2 += d * d;
+            }
+        }
+    }
+
+    imageStore(uPartial, t, vec4(ink, div2, 0.0, 0.0));
+}

@@ -1,0 +1,64 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// MacCormack / BFECC advection.
+//
+// Plain semi-Lagrangian advection is first-order and not conservative: under
+// strong shear many destination cells backtrace into the same dense region and
+// each samples near its peak, so ink is duplicated. Measured with a sustained
+// swirl, plain advection tripled the total ink on the canvas -- strokes gain
+// mass and darken on their own, which is fatal for a paint app.
+//
+// The estimate is corrected by its own round-trip error, then clamped to the
+// range actually present around the backtrace point so the correction can
+// never introduce a value that was not there to begin with.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(binding = 1) uniform highp sampler2D uVel;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform vec2  uDstTexel;
+uniform float uDt;
+uniform float uDissipation;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec2 uv = (vec2(c) + 0.5) * uDstTexel;
+
+    // first order estimate
+    vec2 vel  = texture(uVel, uv).xy;
+    vec2 back = uv - uDt * vel;
+    vec4 phiHat = texture(uSrc, back);
+
+    // send it forward again; whatever fails to return is the error
+    vec2 velBack = texture(uVel, back).xy;
+    vec2 fwd = back + uDt * velBack;
+    vec4 phiTilde = texture(uSrc, fwd);
+
+    vec4 corrected = phiHat + 0.5 * (texture(uSrc, uv) - phiTilde);
+
+    // limiter: the corrected value must lie within the range of the four
+    // texels the backtrace actually landed between
+    ivec2 srcSize = textureSize(uSrc, 0);
+    vec2 p = back / uDstTexel - 0.5;
+    ivec2 i0 = ivec2(floor(p));
+    ivec2 mx = srcSize - 1;
+
+    vec4 s00 = texelFetch(uSrc, clamp(i0,               ivec2(0), mx), 0);
+    vec4 s10 = texelFetch(uSrc, clamp(i0 + ivec2(1, 0), ivec2(0), mx), 0);
+    vec4 s01 = texelFetch(uSrc, clamp(i0 + ivec2(0, 1), ivec2(0), mx), 0);
+    vec4 s11 = texelFetch(uSrc, clamp(i0 + ivec2(1, 1), ivec2(0), mx), 0);
+
+    vec4 lo = min(min(s00, s10), min(s01, s11));
+    vec4 hi = max(max(s00, s10), max(s01, s11));
+
+    vec4 result = clamp(corrected, lo, hi);
+
+    float decay = 1.0 / (1.0 + uDissipation * uDt);
+    imageStore(uDst, c, result * decay);
+}

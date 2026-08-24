@@ -1,0 +1,62 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Force-only brushes: they inject momentum and no pigment, so they reshape
+// paint that is already on the canvas rather than adding to it. This is what
+// makes marbling and suminagashi first-class rather than a happy accident.
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
+
+uniform vec2  uPoint;      // UV
+uniform vec2  uDir;        // stroke direction, UV/sec
+uniform float uRadius;
+uniform float uAspect;
+uniform float uStrength;   // a rate, so it is scaled by dt
+uniform float uDt;
+uniform int   uMode;       // 0 swirl, 1 push, 2 pinch, 3 comb
+uniform float uCombFreq;   // tines per UV unit, mode 3
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 v = imageLoad(uSrc, c);
+
+    vec2 uv = (vec2(c) + 0.5) / vec2(sz);
+    vec2 d = uv - uPoint;
+    d.x *= uAspect;
+
+    float r2 = dot(d, d);
+    float falloff = exp(-r2 / max(uRadius * uRadius, 1e-8));
+
+    if (falloff > 0.002) {
+        vec2 radial = d / (length(d) + 1e-6);
+        vec2 force = vec2(0.0);
+
+        if (uMode == 0) {
+            // swirl: tangential, so the stroke stirs rather than shoves
+            force = vec2(-radial.y, radial.x) * uStrength;
+        } else if (uMode == 1) {
+            force = uDir * uStrength;
+        } else if (uMode == 2) {
+            // pinch: convergent (or divergent for negative strength)
+            force = -radial * uStrength;
+        } else {
+            // comb: alternating tines across the stroke, like a marbling rake
+            vec2 along = normalize(uDir + vec2(1e-6, 0.0));
+            vec2 across = vec2(-along.y, along.x);
+            float tine = sign(sin(dot(d, across) * uCombFreq * 6.2831853));
+            force = along * uStrength * tine;
+        }
+
+        // Scale by dt. Without this the brush adds its full strength every
+        // frame, velocity accumulates without bound, and the semi-Lagrangian
+        // backtrace walks off the grid and manufactures dye.
+        v.xy += force * falloff * uDt;
+    }
+
+    imageStore(uDst, c, v);
+}

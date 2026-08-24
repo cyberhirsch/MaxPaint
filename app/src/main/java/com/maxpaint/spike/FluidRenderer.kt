@@ -26,6 +26,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var benchmarkRequested = false
     @Volatile var clearRequested = false
     @Volatile var freezeRequested = false
+    @Volatile var thawRequested = false
 
     @Volatile var statsLine: String = ""
     @Volatile var benchmarkReport: String? = null
@@ -123,10 +124,14 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             freezeRequested = false
             sim.freezeNow()
         }
+        if (thawRequested) {
+            thawRequested = false
+            sim.thaw()
+        }
 
         while (true) {
             val t = touches.poll() ?: break
-            sim.splat(t.u, t.v, t.du, t.dv, t.r, t.g, t.b)
+            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b)
         }
 
         if (!paused) sim.step(dt)
@@ -176,8 +181,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         val vram = sim.vramBytes() / (1024.0 * 1024.0)
 
         statsLine = String.format(
-            "%d²  dye %d²  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
-            sim.simRes, sim.dyeRes,
+            "%s · %d²  dye %d²  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
+            sim.brush.label, sim.simRes, sim.dyeRes,
             if (sim.useRedBlack) "RB-GS" else "Jacobi", sim.pressureIterations,
             if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram
         )

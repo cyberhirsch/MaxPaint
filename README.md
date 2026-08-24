@@ -26,6 +26,51 @@ the background. Compositing "over" there would saturate, and repeatedly laying
 down a tenth of a stroke would converge on full coverage instead of the stroke's
 real density — quietly destroying ink.
 
+## Brushes
+
+A brush is a *medium* — which solver it drives and how it deposits paint — plus
+parameters over it. The force-only brushes carry no pigment at all; they exist to
+reshape what is already on the canvas, which is what makes marbling a workflow
+rather than an accident.
+
+| Brush | Deposits | What it does |
+|---|---|---|
+| **Gas** | ink + momentum | The hero brush. Ink-in-water bloom and curl. |
+| **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. |
+| **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. |
+| **Freeze** | — | Local Freeze Now: bakes only what it touches, so one good vortex can be locked while the rest keeps moving. |
+| **Thaw** | — | The inverse: lifts baked paint back into the simulation to be restirred. |
+
+### Two measured findings from building them
+
+**A force brush must scale by dt.** Without it the brush adds its full strength
+every frame, velocity accumulates without bound, and the semi-Lagrangian
+backtrace walks off the grid — the first version multiplied total ink by 130×.
+There is now a CFL speed clamp as a second line of defence.
+
+**MacCormack advection is the wrong upgrade here, and the numbers say so.**
+Second-order advection is the standard fix for smeared fluid, so it went in —
+and then measured worse. Over 240 frames after one flick of momentum:
+
+```
+  sweeps    plain   MacCormack        peak density (sharpness)
+      15     1.50x        2.28x         plain       0.1725
+      30     1.36x        1.88x         MacCormack  0.1783
+      60     1.14x        1.78x
+     120     1.04x        1.63x
+```
+
+It is ~3% sharper and ~50% worse at conserving ink, because reducing numerical
+diffusion sharpens the dye peaks and the mass-duplication artefact under shear
+is driven by peak sampling. For a paint app, conserving ink beats a marginally
+crisper edge, so it ships off, behind a toggle.
+
+That artefact is a real remaining limitation: sustained hard stirring still
+inflates total ink (~1.5× for 30 frames of swirl at the default strength). It is
+*not* the pressure solve — it plateaus at ~3.2× even at 240 sweeps, and pure
+advection with no forcing conserves exactly. The fix is a conservative or
+mass-renormalised advection step, which belongs with the M4 quality work.
+
 ## M0 — resolution headroom spike
 
 This milestone is the de-risking spike from the PRD: a gaseous 2D Navier–Stokes
@@ -55,12 +100,20 @@ The **Sweep** button runs every resolution through an identical scripted
 figure-eight stroke (20 warm-up + 90 measured frames each) and prints a table:
 
 ```
-  sim     dye    median     p95     est.fps   vram    60fps
-  ----------------------------------------------------------
-  512²   512²    4.20ms   5.10ms    238.1    12.6MB   PASS
-  1024²  1024²  14.80ms  17.90ms     67.6    50.3MB   PASS
-  2048²  2048²  58.10ms  63.20ms     17.2   201.3MB   fail
+  sim     dye    median     p95   est.fps    vram   solved   ink    verdict
+  ---------------------------------------------------------------------------
+  512²   512²    4.20ms   5.10ms  238.1   12.6MB     78%   +2%    USABLE
+  1024²  1024²  14.80ms  17.90ms   67.6   50.3MB     41%  +19%    under-solved
+  2048²  2048²  58.10ms  63.20ms   17.2  201.3MB     12%  +64%    too slow
 ```
+
+It reports **quality alongside speed**, because frame time alone gives a
+misleading PASS. `solved` is the fraction of divergence one cold solve removes at
+that sweep count; `ink` is how much total ink changed over the run — a positive
+number means strokes are gaining mass and will bloom on their own. A resolution
+that runs at 60fps but is only 40% solved will look *worse* than a slower one, so
+the verdict now requires both. The numbers above are illustrative; run it on your
+device for real ones.
 
 Timing brackets the sim step with `glFinish`, so the numbers are honest GPU cost
 rather than pipelined wall-clock — slightly pessimistic, which is the right bias
