@@ -177,11 +177,25 @@ class FluidSim(private val ctx: Context) {
         flip.init()
     }
 
+    /**
+     * The canvas takes its shape once and keeps it. A painting is not a view
+     * that reflows: rotating the device, or the window changing size, must not
+     * reshape the surface being painted on -- that would reallocate every field
+     * and throw the artwork away. Only [newCanvas] changes the shape.
+     */
     fun setAspect(a: Float) {
-        if (kotlin.math.abs(a - aspect) < 1e-4f) return
+        if (canvasShaped) return
         aspect = a
-        if (allocated) allocate(simRes, dyeScale)   // re-shape to the new canvas
     }
+
+    /** Starts a fresh canvas at a new shape. Discards what is on the old one. */
+    fun newCanvas(a: Float) {
+        aspect = a
+        canvasShaped = false
+        if (allocated) allocate(simRes, dyeScale)
+    }
+
+    private var canvasShaped = false
 
     private fun even(v: Float) = (v.toInt() / 2 * 2).coerceAtLeast(8)
 
@@ -219,6 +233,7 @@ class FluidSim(private val ctx: Context) {
         }
         simW = even(w)
         simH = even(h)
+        canvasShaped = true
 
         velocity = DoubleTex(simW, simH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         dye = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)

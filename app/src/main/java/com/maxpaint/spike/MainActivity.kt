@@ -2,10 +2,6 @@ package com.maxpaint.spike
 
 import android.app.AlertDialog
 import android.graphics.Color
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
@@ -24,7 +20,7 @@ import java.io.File
  * Canvas first. Tools live in a narrow rail; the settings panel stays shut until
  * you tap the tool you already have selected. Nothing else covers the paint.
  */
-class MainActivity : AppCompatActivity(), SensorEventListener {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var glView: GLSurfaceView
     private lateinit var renderer: FluidRenderer
@@ -36,8 +32,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     private val ui = Handler(Looper.getMainLooper())
     private var versionLabel = ""
-    private var tiltGravity = false
-    private var sensors: SensorManager? = null
 
     private var selected: Brush = Brush.GAS
     private var panelOpen = false
@@ -75,7 +69,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         }.getOrDefault("")
 
-        sensors = getSystemService(SENSOR_SERVICE) as? SensorManager
         selectTool(Brush.GAS, fromUser = false)
         pollRenderer()
     }
@@ -315,16 +308,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     renderer.sim.flip.flipRatio = p / 100f
                     l.text = String.format("Splashy: %.2f  (← viscous)", p / 100f)
                 })
-                panelBody.addView(button(
-            if (tiltGravity) "Tilt gravity: on" else "Tilt gravity: off"
-        ) { b ->
-                    tiltGravity = !tiltGravity
-                    if (!tiltGravity) {
-                        renderer.sim.flip.gravityX = 0f
-                        renderer.sim.flip.gravityY = -0.55f
-                    }
-                    b.text = if (tiltGravity) "Tilt gravity: on" else "Tilt gravity: off"
-                })
+                panelBody.addView(hint("Paint travels on the momentum of the " +
+                    "stroke. There is no gravity — a canvas has no up."))
             }
 
             Brush.WATERCOLOR -> {
@@ -536,15 +521,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
     // ---------------- lifecycle ----------------
 
-    override fun onSensorChanged(event: SensorEvent) {
-        if (!tiltGravity || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
-        val g = 0.06f
-        renderer.sim.flip.gravityX = -event.values[0] * g
-        renderer.sim.flip.gravityY = -event.values[1] * g
-    }
-
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
-
     private fun pollRenderer() {
         ui.postDelayed(object : Runnable {
             override fun run() {
@@ -585,14 +561,10 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onPause() {
         super.onPause()
         glView.onPause()
-        sensors?.unregisterListener(this)
     }
 
     override fun onResume() {
         super.onResume()
         glView.onResume()
-        sensors?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)?.let {
-            sensors?.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME)
-        }
     }
 }

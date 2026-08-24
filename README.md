@@ -82,8 +82,16 @@ looked for, which is why they are recorded here:
 | Opening a settings panel reset the settings | Widgets initialised from hardcoded values and fired their callbacks, so opening a panel silently overwrote the preset just chosen. Widgets read the live value now, and the preset picker ignores the initial selection Android fires for it. |
 | Sweep wiped the canvas without warning | It reallocates at every resolution. It asks first now. |
 
-Known and not yet fixed: changing the canvas shape (rotation, split screen)
-reallocates the fields and so clears the painting.
+**Fixed since:** the canvas no longer reshapes at all. It takes its shape once
+and keeps it, because a painting is not a view that reflows — rotating the device
+must not reallocate every field and throw the artwork away. Only starting a new
+canvas changes the shape.
+
+**Also removed: gravity.** A canvas has no up. The FLIP medium carried a gravity
+vector and an accelerometer binding, which meant paint "fell" toward whatever the
+phone thought was down. Paint now travels on the momentum of the stroke and stops
+where drag stops it; the accelerometer is not read at all. Orientation may matter
+again at export, for the framing of the saved image, and nowhere else.
 
 ## The canvas grid is not square
 
@@ -116,7 +124,7 @@ rather than an accident.
 |---|---|---|
 | **Gas** | ink + momentum | The hero brush. Ink-in-water bloom and curl. |
 | **Nib** | hard-edged ink | A pen. Writes to its own field so the fluid never smears it, and creeps into the paper by capillary action — hold still and the mark blooms. |
-| **Flip** | particles | Paint that pours, drips and runs down the canvas, then dries where it pools. One slider goes splashy to viscous. Device tilt can steer gravity. |
+| **Flip** | particles | Flung paint: droplets and trails that carry as far as the gesture threw them, then dry where they stop. One slider goes splashy to viscous. |
 | **Water** | water + pigment | Shallow-water pigment on paper: bleeds, blooms, darkens at the edges, granulates on the paper grain. |
 | **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. |
 | **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. |
@@ -191,6 +199,9 @@ as soft additive points rather than scattered by hand. And ES 3.1 guarantees
 *zero* storage blocks in vertex shaders, so the particle pool is one buffer
 bound two ways — as an SSBO for the compute passes, and as a vertex buffer for
 the draws.
+
+There is **no gravity**, and the tests assert it: paint thrown sideways must
+travel sideways and show no vertical drift (measured: −0.0024 over 40 frames).
 
 It is **one-way coupled**: particles read the grid but do not write back to it.
 Full FLIP scatters particle momentum onto the grid, which needs the fixed-point
