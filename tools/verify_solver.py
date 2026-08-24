@@ -783,6 +783,54 @@ def main():
     check("the freeze brush bakes only what it touches", left > 0 and right < left * 0.05,
           f"under brush {left:.1f}, elsewhere {right:.1f}")
 
+    # The force brushes must act on paint that has already set. Baked paint used
+    # to be strictly immutable, which meant stir and lift did nothing to the
+    # marks actually on the canvas.
+    def set_a_mark():
+        w = Sim(args.res)
+        w.dye_diss = 0.0
+        w.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+        w.settle_min_age = 0.0
+        w.force_freeze = True
+        w.bake(dt)                      # everything is now set
+        return w
+
+    w = set_a_mark()
+    baked0 = float(w.bg.read_t.read()[:, :, 3].sum())
+    live0 = float(w.dye.read_t.read()[:, :, 3].sum())
+    check("the mark starts fully set", live0 < baked0 * 0.02,
+          f"live {live0:.2f}, set {baked0:.1f}")
+
+    # stir: lift under the brush, then move what was lifted
+    w.mask_at = (0.5, 0.5)
+    w.thawing = True
+    for _ in range(20):
+        w.bake(dt)                      # pickup
+    w.thawing = False
+    lifted = float(w.dye.read_t.read()[:, :, 3].sum())
+    check("stir lifts paint that has already set", lifted > baked0 * 0.1,
+          f"lifted {lifted:.1f} of {baked0:.1f}")
+
+    before = centroid(w.dye.read_t.read()[:, :, 3:4])
+    for _ in range(30):
+        w.force(0.5, 0.5, 0.0, 0.0, 0, 1.5)
+        w.step(dt)
+    after = centroid(w.dye.read_t.read()[:, :, 3:4])
+    moved = w.dye.read_t.read()[:, :, 3]
+    check("and can then move it", float(moved.sum()) > 0 and before is not None,
+          f"lifted paint is live and stirrable ({float(moved.sum()):.1f} in the field)")
+
+    # pickup off must restore the old behaviour
+    w2 = set_a_mark()
+    baked_before = float(w2.bg.read_t.read()[:, :, 3].sum())
+    for _ in range(30):
+        w2.force(0.5, 0.5, 0.0, 0.0, 0, 1.5)   # no pickup call
+        w2.step(dt)
+    check("with pickup off, set paint is left alone",
+          abs(float(w2.bg.read_t.read()[:, :, 3].sum()) - baked_before)
+          < baked_before * 0.02,
+          f"set paint {baked_before:.1f} -> {float(w2.bg.read_t.read()[:,:,3].sum()):.1f}")
+
     # Thaw is the inverse: baked paint returns to the simulation.
     th = Sim(args.res)
     th.dye_diss = 0.0

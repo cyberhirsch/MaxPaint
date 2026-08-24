@@ -93,6 +93,20 @@ phone thought was down. Paint now travels on the momentum of the stroke and stop
 where drag stops it; the accelerometer is not read at all. Orientation may matter
 again at export, for the framing of the saved image, and nowhere else.
 
+### Set paint is smearable
+
+The PRD left this as an open question: should baked paint keep a thin "wet skin"
+a vortex brush can still smear, or be strictly immutable? It shipped immutable,
+with the Thaw brush as the escape hatch — and in use that is plainly wrong. Stir
+and lift did nothing to the marks actually on the canvas, which is the one thing
+an artist expects a brush to act on.
+
+Both force brushes now lift a little set paint back into the simulation under the
+brush before acting, controlled by a **Pickup** slider. Measured: a fully set
+mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which is
+then stirrable. Pickup at zero restores the old behaviour exactly (set paint
+46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
+
 ## The canvas grid is not square
 
 The simulation grid takes the shape of the canvas. Picking a resolution N sets a
@@ -126,8 +140,8 @@ rather than an accident.
 | **Nib** | hard-edged ink | A pen. Writes to its own field so the fluid never smears it, and creeps into the paper by capillary action — hold still and the mark blooms. |
 | **Flip** | particles | Flung paint: droplets and trails that carry as far as the gesture threw them, then dry where they stop. One slider goes splashy to viscous. |
 | **Water** | water + pigment | Shallow-water pigment on paper: bleeds, blooms, darkens at the edges, granulates on the paper grain. |
-| **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. |
-| **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. |
+| **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. Lifts paint that has already set so it can smear it. |
+| **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. Works on dried paint too, which is most of what it is for. |
 | **Freeze** | — | Local Freeze Now: bakes only what it touches, so one good vortex can be locked while the rest keeps moving. |
 | **Thaw** | — | The inverse: lifts baked paint back into the simulation to be restirred. |
 

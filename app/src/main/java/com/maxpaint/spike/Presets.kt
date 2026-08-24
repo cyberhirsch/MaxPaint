@@ -113,16 +113,17 @@ object Presets {
     )
 
     private val vortex = listOf(
-        Preset("Stir") { s -> s.forceStrength = 1.0f; s.combFrequency = 14f },
-        Preset("Hard Stir") { s -> s.forceStrength = 2.2f; s.combFrequency = 14f },
-        Preset("Fine Rake") { s -> s.forceStrength = 1.2f; s.combFrequency = 26f },
-        Preset("Wide Rake") { s -> s.forceStrength = 1.2f; s.combFrequency = 7f }
+        Preset("Stir") { s -> s.forceStrength = 1.0f; s.combFrequency = 14f; s.pickup = 2.5f },
+        Preset("Hard Stir") { s -> s.forceStrength = 2.2f; s.combFrequency = 14f; s.pickup = 5f },
+        Preset("Fine Rake") { s -> s.forceStrength = 1.2f; s.combFrequency = 26f; s.pickup = 3f },
+        Preset("Wide Rake") { s -> s.forceStrength = 1.2f; s.combFrequency = 7f; s.pickup = 3f },
+        Preset("Smear Only") { s -> s.forceStrength = 1.0f; s.combFrequency = 14f; s.pickup = 0f }
     )
 
     private val solvent = listOf(
-        Preset("Alcohol Drop") { s -> s.solventBite = 0.45f; s.forceStrength = 1.0f },
-        Preset("Hard Lift") { s -> s.solventBite = 0.12f; s.forceStrength = 1.6f },
-        Preset("Soft Lift") { s -> s.solventBite = 0.75f; s.forceStrength = 0.5f }
+        Preset("Alcohol Drop") { s -> s.solventBite = 0.45f; s.forceStrength = 1.0f; s.pickup = 2.5f },
+        Preset("Hard Lift") { s -> s.solventBite = 0.12f; s.forceStrength = 1.6f; s.pickup = 6f },
+        Preset("Soft Lift") { s -> s.solventBite = 0.75f; s.forceStrength = 0.5f; s.pickup = 1.2f }
     )
 
     private val none = listOf(Preset("Default") { })
