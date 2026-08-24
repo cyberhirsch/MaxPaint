@@ -63,12 +63,16 @@ class FluidSim(private val ctx: Context) {
     var useMacCormack = false
 
     // --- M1: the bake ---
-    /** Speed at or below which paint begins to set. */
-    var settleSpeed = 0.35f
-    /** How fast settled dye transfers to the background, per second. */
-    var bakeRate = 0f
-    /** "Hold": seconds paint must stay live before it may bake at all. */
-    var settleMinAge = 5.0f
+    /** Speed at or below which paint begins to set. Generous by default, so
+     *  most of a stroke qualifies as settled almost immediately. */
+    var settleSpeed = 0.6f
+    /** How fast settled dye transfers to the background, per second. Maximum
+     *  by default: paint should become permanent early, which is also what
+     *  gives the force brushes something to pick up. */
+    var bakeRate = 10f
+    /** "Hold": seconds paint must stay live before it may bake at all. Zero by
+     *  default; any hold directly contradicts baking early. */
+    var settleMinAge = 0f
     /** Set by Freeze Now; consumed on the next step. */
     @Volatile var freezeRequested = false
     /** Set by global Thaw; consumed on the next step. */
