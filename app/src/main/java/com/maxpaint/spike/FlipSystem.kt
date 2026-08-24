@@ -13,12 +13,13 @@ import android.opengl.GLES31
  *
  * Particles are drawn as soft round points with additive blending rather than
  * scattered by hand, which sidesteps the float atomics ES 3.1 lacks.
+ *
+ * There is no gravity: a canvas has no up. Paint travels on the momentum of the
+ * stroke and stops where drag stops it.
  */
 class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
 
     var flipRatio = 0.92f       // 1 = splashy and particle-driven, 0 = viscous
-    var gravityX = 0f
-    var gravityY = -0.55f
     var particleDrag = 0.25f
     var settleSpeed = 0.06f
     var settleMinAge = 0.25f
@@ -123,7 +124,6 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         pUpdate.set("uDt", dt)
         pUpdate.set("uCapacity", capacity)
         pUpdate.set("uFlipRatio", flipRatio)
-        pUpdate.set("uGravity", gravityX, gravityY)
         pUpdate.set("uSettleSpeed", settleSpeed)
         pUpdate.set("uSettleMinAge", settleMinAge)
         pUpdate.set("uDrag", particleDrag)

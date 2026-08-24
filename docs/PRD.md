@@ -55,6 +55,12 @@ pigment-diffusion) so that "fluid" is a family of media rather than one effect.
 - Cloud sync or accounts. Files are local; export is the sharing mechanism.
 - Physically accurate pigment spectral rendering (Kubelka–Munk is a v1.x
   stretch, see §6.3).
+- **Gravity, and any notion of canvas orientation.** A canvas has no up. Paint
+  travels on the momentum of the stroke and stops where drag stops it. This
+  removes device-tilt gravity (was FR-8) and the "runs down the canvas" language
+  from the FLIP medium. Device rotation likewise does not reshape the canvas —
+  the surface takes its shape once. Orientation may matter again at export, for
+  the framing of the saved image, and nowhere else.
 - **Multiple layers.** Dropped after review: one canvas with one background
   layer that paint bakes into. The bake already gives the artist control over
   what is permanent, which is most of what layers were there to provide, and
@@ -151,15 +157,17 @@ media are built in.
   grid for pressure solve, then blend back (`flip_ratio` ≈ 0.95 for splashy,
   ≈ 0.6 for viscous).
 - **Injection:** each stroke emits particles with the stylus velocity, jittered
-  by brush radius. Optional gravity + surface tension.
-- **Feel:** paint that *pours*, droplets, splatters, runs down the canvas.
+  by brush radius.
+- **Feel:** flung paint — droplets, splatters, and trails that carry as far as
+  the gesture threw them. No gravity, so nothing runs "down": drag alone decides
+  where a droplet stops.
 - **Baking:** per-particle. A particle whose speed stays below threshold for
   `settle_min_age` splats itself into the background with a soft round kernel
   scaled by particle radius, then dies. This gives lovely dried-droplet edges.
-- **Key params:** gravity vector (with optional device-tilt binding), flip ratio,
-  particle mass/size, surface tension, cohesion, drip threshold.
-- **Presets:** *Wet Paint*, *Drip*, *Splatter*, *Honey* (high viscosity),
-  *Mercury* (high tension, high cohesion).
+- **Key params:** flip ratio, particle mass/size, drag, surface tension,
+  cohesion, settle threshold.
+- **Presets:** *Wet Paint*, *Splatter*, *Fling*, *Honey* (high drag),
+  *Mercury* (low drag, high cohesion).
 
 ### 5.3 Watercolor Brush — *pigment on paper*
 
@@ -235,8 +243,8 @@ if schedule allows, since it reuses the bake path.
 - FR-7 Multi-touch: 2-finger pan/zoom/rotate on canvas; 2-finger tap =
   Freeze Now; 3-finger swipe left/right = undo/redo (Procreate-compatible
   muscle memory).
-- FR-8 Device tilt (accelerometer) optionally drives FLIP gravity. Off by
-  default; toggle in the FLIP brush panel.
+- ~~FR-8 Device tilt drives FLIP gravity~~ — dropped, see Non-Goals. There is no
+  gravity and no canvas orientation, so the accelerometer is not read at all.
 - FR-9 Samsung S-Pen and generic USI/AES styluses supported; palm rejection.
 
 ### 6.3 Color
@@ -248,7 +256,7 @@ if schedule allows, since it reuses the bake path.
 
 ### 6.4 Simulation controls (global panel)
 - FR-13 Global: sim resolution, time step, iteration count, boundary condition
-  (walls / open / wrap), global drag multiplier, gravity.
+  (walls / open / wrap), global drag multiplier.
 - FR-15 Boundary "wrap" enables seamless tiling textures — a genuinely
   differentiating export mode.
 - FR-16 Pause/step: freeze the simulation clock without baking. Essential for

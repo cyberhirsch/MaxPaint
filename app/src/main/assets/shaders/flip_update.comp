@@ -7,6 +7,9 @@ layout(local_size_x = 64) in;
 // the grid's each step: uFlipRatio near 1 keeps particle momentum and reads
 // splashy, near 0 follows the grid and reads viscous.
 //
+// There is no gravity. A canvas has no up: paint goes where the stroke throws
+// it and stops where drag stops it, which is what a painting tool wants.
+//
 // This is one-way coupled -- particles read the grid but do not write back to
 // it. Full FLIP scatters particle momentum onto the grid, which needs float
 // atomics that ES 3.1 does not have; the fixed-point workaround belongs with
@@ -21,7 +24,6 @@ layout(binding = 0) uniform highp sampler2D uVel;
 uniform float uDt;
 uniform int   uCapacity;
 uniform float uFlipRatio;
-uniform vec2  uGravity;
 uniform float uSettleSpeed;
 uniform float uSettleMinAge;
 uniform float uDrag;
@@ -48,13 +50,12 @@ void main() {
 
     vec2 gridVel = texture(uVel, pos).xy;
     vel = mix(gridVel, vel, uFlipRatio);
-    vel += uGravity * uDt;
     vel *= 1.0 / (1.0 + uDrag * uDt);
 
     // world velocity -> UV step
     pos += vec2(vel.x / uAspect, vel.y) * uDt;
 
-    // walls: paint runs down them and pools rather than vanishing
+    // walls: paint piles against the edge rather than vanishing
     if (pos.x < 0.0) { pos.x = 0.0; vel.x = abs(vel.x) * 0.2; }
     if (pos.x > 1.0) { pos.x = 1.0; vel.x = -abs(vel.x) * 0.2; }
     if (pos.y < 0.0) { pos.y = 0.0; vel.y = abs(vel.y) * 0.2; }

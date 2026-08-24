@@ -52,30 +52,33 @@ object Presets {
         }
     )
 
+    // No gravity: these differ by how far the stroke's momentum carries the
+    // paint and how abruptly drag stops it.
     private val flip = listOf(
         Preset("Wet Paint") { s ->
-            s.flip.flipRatio = 0.92f; s.flip.gravityY = -0.55f
-            s.flip.particleDrag = 0.25f; s.flip.settleSpeed = 0.06f
+            s.flip.flipRatio = 0.92f; s.flip.particleDrag = 0.25f
+            s.flip.settleSpeed = 0.06f
             s.flip.pointSize = 5f; s.flip.emitPerSample = 12
         },
-        Preset("Drip") { s ->
-            s.flip.flipRatio = 0.88f; s.flip.gravityY = -1.4f
-            s.flip.particleDrag = 0.08f; s.flip.settleSpeed = 0.03f
-            s.flip.pointSize = 4f; s.flip.emitPerSample = 6
-        },
         Preset("Splatter") { s ->
-            s.flip.flipRatio = 0.99f; s.flip.gravityY = -0.4f
-            s.flip.particleDrag = 0.02f; s.flip.settleSpeed = 0.12f
+            s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
+            s.flip.settleSpeed = 0.12f
             s.flip.pointSize = 3f; s.flip.emitPerSample = 28
         },
+        Preset("Fling") { s ->
+            // travels a long way before it stops
+            s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.05f
+            s.flip.settleSpeed = 0.03f
+            s.flip.pointSize = 4f; s.flip.emitPerSample = 8
+        },
         Preset("Honey") { s ->
-            s.flip.flipRatio = 0.45f; s.flip.gravityY = -0.35f
-            s.flip.particleDrag = 1.6f; s.flip.settleSpeed = 0.02f
+            s.flip.flipRatio = 0.45f; s.flip.particleDrag = 1.6f
+            s.flip.settleSpeed = 0.02f
             s.flip.pointSize = 8f; s.flip.emitPerSample = 10
         },
         Preset("Mercury") { s ->
-            s.flip.flipRatio = 0.97f; s.flip.gravityY = -0.9f
-            s.flip.particleDrag = 0.04f; s.flip.settleSpeed = 0.015f
+            s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.04f
+            s.flip.settleSpeed = 0.015f
             s.flip.pointSize = 7f; s.flip.emitPerSample = 14
         }
     )
