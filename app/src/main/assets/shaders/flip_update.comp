@@ -25,6 +25,7 @@ uniform vec2  uGravity;
 uniform float uSettleSpeed;
 uniform float uSettleMinAge;
 uniform float uDrag;
+uniform float uAspect;
 
 void main() {
     int i = int(gl_GlobalInvocationID.x);
@@ -50,7 +51,8 @@ void main() {
     vel += uGravity * uDt;
     vel *= 1.0 / (1.0 + uDrag * uDt);
 
-    pos += vel * uDt;
+    // world velocity -> UV step
+    pos += vec2(vel.x / uAspect, vel.y) * uDt;
 
     // walls: paint runs down them and pools rather than vanishing
     if (pos.x < 0.0) { pos.x = 0.0; vel.x = abs(vel.x) * 0.2; }

@@ -104,13 +104,13 @@ class Benchmark(
         appendLine("solver=${if (sim.useRedBlack) "RB-GS" else "Jacobi"}  iters=${sim.pressureIterations}  " +
                 "dyeScale=${dyeScale}x  ${measureFrames} frames each")
         appendLine()
-        appendLine("  sim     dye    median     p95   est.fps    vram   solved   ink    verdict")
+        appendLine("  cells   dye    median     p95   est.fps    vram   solved   ink    verdict")
         appendLine("  ---------------------------------------------------------------------------")
         results.forEach { r ->
             appendLine(
                 String.format(
                     "  %-6s %-6s %6.2fms %6.2fms %6.1f %6.1fMB %6.0f%% %+5.0f%%   %s",
-                    "${r.simRes}²", "${r.dyeRes}²",
+                    "${r.simRes}", "${r.dyeRes}",
                     r.medianMs, r.p95Ms, r.estimatedFps, r.vramMb,
                     r.convergence * 100, r.inkDrift * 100,
                     when {

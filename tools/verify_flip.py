@@ -100,7 +100,7 @@ class Flip:
         self.seed = (self.seed + 13.37) % 1000.0
 
     def step(self, dt, vel_tex, flip_ratio=0.92, gravity=(0.0, -0.55),
-             settle_speed=0.06, min_age=0.25, drag=0.25):
+             settle_speed=0.06, min_age=0.25, drag=0.25, aspect=1.0):
         glUseProgram(self.update_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1f(uni(self.update_p, "uDt"), dt)
@@ -110,6 +110,8 @@ class Flip:
         glUniform1f(uni(self.update_p, "uSettleSpeed"), settle_speed)
         glUniform1f(uni(self.update_p, "uSettleMinAge"), min_age)
         glUniform1f(uni(self.update_p, "uDrag"), drag)
+        # world velocity -> UV step; without this the shader divides by zero
+        glUniform1f(uni(self.update_p, "uAspect"), aspect)
         glUniform1i(uni(self.update_p, "uVel"), 0)
         vel_tex.sampler(0)
         glDispatchCompute((CAP + 63) // 64, 1, 1)

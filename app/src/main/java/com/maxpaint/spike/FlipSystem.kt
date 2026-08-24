@@ -105,7 +105,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         seed = (seed + 13.37f) % 1000f
     }
 
-    fun step(dt: Float, velocityTexture: Tex) {
+    fun step(dt: Float, velocityTexture: Tex, aspect: Float) {
         if (buffer == 0) return
         pUpdate.use()
         GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
@@ -116,6 +116,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 120_000) {
         pUpdate.set("uSettleSpeed", settleSpeed)
         pUpdate.set("uSettleMinAge", settleMinAge)
         pUpdate.set("uDrag", particleDrag)
+        pUpdate.set("uAspect", aspect)
         pUpdate.set("uVel", 0)
         velocityTexture.bindSampler(0)
         GLES31.glDispatchCompute((capacity + 63) / 64, 1, 1)

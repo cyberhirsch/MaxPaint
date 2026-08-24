@@ -11,29 +11,44 @@ object Presets {
 
     private val gas = listOf(
         Preset("Smoke") { s ->
-            s.vorticity = 22f; s.velocityDrag = 0.12f; s.dyeDissipation = 0.05f
+            s.vorticity = 22f; s.dyeDissipation = 0.05f
             s.splatRadius = 0.02f; s.velocityGain = 1.0f
-            s.settleSpeed = 0.35f; s.bakeRate = 2.5f; s.settleMinAge = 0.35f
         },
         Preset("Ink Drop") { s ->
-            s.vorticity = 8f; s.velocityDrag = 0.9f; s.dyeDissipation = 0.0f
+            s.vorticity = 8f; s.dyeDissipation = 0.0f
             s.splatRadius = 0.035f; s.velocityGain = 0.4f
-            s.settleSpeed = 0.5f; s.bakeRate = 4f; s.settleMinAge = 0.15f
         },
         Preset("Nebula") { s ->
-            s.vorticity = 38f; s.velocityDrag = 0.03f; s.dyeDissipation = 0.02f
+            s.vorticity = 38f; s.dyeDissipation = 0.02f
             s.splatRadius = 0.05f; s.velocityGain = 1.6f
-            s.settleSpeed = 0.12f; s.bakeRate = 0.8f; s.settleMinAge = 2.0f
         },
         Preset("Aurora") { s ->
-            s.vorticity = 30f; s.velocityDrag = 0.06f; s.dyeDissipation = 0.08f
+            s.vorticity = 30f; s.dyeDissipation = 0.08f
             s.splatRadius = 0.03f; s.velocityGain = 2.2f
-            s.settleSpeed = 0.2f; s.bakeRate = 1.2f; s.settleMinAge = 1.2f
         },
         Preset("Steam") { s ->
-            s.vorticity = 14f; s.velocityDrag = 0.25f; s.dyeDissipation = 0.35f
+            s.vorticity = 14f; s.dyeDissipation = 0.35f
             s.splatRadius = 0.045f; s.velocityGain = 0.9f
-            s.settleSpeed = 0.3f; s.bakeRate = 1.5f; s.settleMinAge = 0.8f
+        }
+    )
+
+    private val nib = listOf(
+        Preset("Fine") { s ->
+            s.nibRadius = 0.005f; s.nibHardness = 0.94f
+            s.nibSoak = 0.7f; s.nibDry = 0.9f; s.nibGrain = 0.5f
+        },
+        Preset("Broad") { s ->
+            s.nibRadius = 0.014f; s.nibHardness = 0.9f
+            s.nibSoak = 0.8f; s.nibDry = 0.8f; s.nibGrain = 0.5f
+        },
+        Preset("Bleed") { s ->
+            // creeps far and dries slowly, so holding still blooms visibly
+            s.nibRadius = 0.007f; s.nibHardness = 0.92f
+            s.nibSoak = 3.2f; s.nibDry = 0.25f; s.nibGrain = 0.8f
+        },
+        Preset("Dry Pen") { s ->
+            s.nibRadius = 0.004f; s.nibHardness = 0.99f
+            s.nibSoak = 0.15f; s.nibDry = 2.5f; s.nibGrain = 0.85f
         }
     )
 
@@ -110,6 +125,7 @@ object Presets {
 
     fun forBrush(b: Brush): List<Preset> = when (b) {
         Brush.GAS -> gas
+        Brush.NIB -> nib
         Brush.FLIP -> flip
         Brush.WATERCOLOR -> watercolor
         Brush.VORTEX -> vortex

@@ -173,7 +173,14 @@ class Double:
 # ---------------------------------------------------------------- the solver
 
 class Sim:
-    def __init__(self, res, dye_scale=1, iters=30, use_rb=True):
+    def __init__(self, res, dye_scale=1, iters=30, use_rb=True, aspect=1.0):
+        # grid matches the canvas aspect: N*sqrt(a) x N/sqrt(a) keeps cells
+        # square in world space and the cell count near N^2
+        root = aspect ** 0.5
+        self.aspect = aspect
+        self.w = max(8, int(res * root) // 2 * 2)
+        self.h = max(8, int(res / root) // 2 * 2)
+        self.dye_w, self.dye_h = self.w * dye_scale, self.h * dye_scale
         self.res, self.dye_res, self.iters = res, res * dye_scale, iters
         self.use_rb = use_rb
         self.vorticity, self.drag, self.dye_diss = 22.0, 0.12, 0.05
@@ -186,19 +193,20 @@ class Sim:
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
                    "advect_mc", "pressure", "pressure_rb", "clearp", "gradsub",
-                   "bake", "force", "watercolor", "wet")}
+                   "bake", "force", "watercolor", "wet", "nib", "soak")}
 
-        self.vel = Double(res, res, GL_RGBA16F, GL_LINEAR)
-        self.dye = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
-        self.bg = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_LINEAR)
-        self.water = Double(self.dye_res, self.dye_res, GL_RGBA32F, GL_NEAREST)
+        self.vel = Double(self.w, self.h, GL_RGBA16F, GL_LINEAR)
+        self.dye = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_LINEAR)
+        self.bg = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_LINEAR)
+        self.nib_ink = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_LINEAR)
+        self.water = Double(self.dye_w, self.dye_h, GL_RGBA32F, GL_NEAREST)
         self.wc = dict(flow=6.0, grain=0.35, adsorb=0.12, desorb=0.05,
                        capacity=1.2, evaporate=0.22, edge=6.0, paper=0.09,
                        dry=0.002)
-        self.age = Double(self.dye_res, self.dye_res, GL_RGBA16F, GL_NEAREST)
-        self.pres = Double(res, res, GL_R32F, GL_NEAREST)
-        self.curl = Tex(res, res, GL_R32F, GL_NEAREST)
-        self.div = Tex(res, res, GL_R32F, GL_NEAREST)
+        self.age = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_NEAREST)
+        self.pres = Double(self.w, self.h, GL_R32F, GL_NEAREST)
+        self.curl = Tex(self.w, self.h, GL_R32F, GL_NEAREST)
+        self.div = Tex(self.w, self.h, GL_R32F, GL_NEAREST)
 
     def dispatch(self, w, h):
         glDispatchCompute((w + 7) // 8, (h + 7) // 8, 1)
@@ -208,21 +216,21 @@ class Sim:
         p = self.p["splat"]
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
-        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         glUniform1i(uni(p, "uMode"), 0)
 
         glUniform1f(uni(p, "uRadius"), radius)
         glUniform4f(uni(p, "uValue"), du, dv, 0.0, 0.0)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
         glUniform1f(uni(p, "uRadius"), radius * 0.6)
         glUniform4f(uni(p, "uValue"), *color, 1.0)
         self.dye.read_t.image(0, GL_READ_ONLY)
         self.dye.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.dye.swap()
 
         # freshly injected paint is new, so its age restarts
@@ -230,7 +238,7 @@ class Sim:
         glUniform4f(uni(p, "uValue"), 0.0, 0.0, 0.0, 0.0)
         self.age.read_t.image(0, GL_READ_ONLY)
         self.age.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.age.swap()
         glUniform1i(uni(p, "uMode"), 0)
 
@@ -240,14 +248,14 @@ class Sim:
         glUniform2f(uni(p, "uPoint"), u, v)
         glUniform2f(uni(p, "uDir"), du, dv)
         glUniform1f(uni(p, "uRadius"), radius)
-        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         glUniform1f(uni(p, "uStrength"), strength)
         glUniform1i(uni(p, "uMode"), mode)
         glUniform1f(uni(p, "uCombFreq"), 14.0)
         glUniform1f(uni(p, "uDt"), 1.0 / 60.0)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
     def lift(self, u, v, keep=0.45, radius=0.05):
@@ -255,13 +263,13 @@ class Sim:
         p = self.p["splat"]
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
-        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         glUniform1f(uni(p, "uRadius"), radius)
         glUniform1i(uni(p, "uMode"), 2)
         glUniform4f(uni(p, "uValue"), keep, 0.0, 0.0, 0.0)
         self.dye.read_t.image(0, GL_READ_ONLY)
         self.dye.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.dye.swap()
         glUniform1i(uni(p, "uMode"), 0)
 
@@ -270,12 +278,12 @@ class Sim:
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
         glUniform1f(uni(p, "uRadius"), radius)
-        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         glUniform1f(uni(p, "uWater"), water)
         glUniform1f(uni(p, "uPigment"), pigment)
         self.water.read_t.image(0, GL_READ_ONLY)
         self.water.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.water.swap()
 
     def step_watercolor(self, dt):
@@ -294,8 +302,41 @@ class Sim:
         self.bg.read_t.sampler(1)
         self.water.write_t.image(0, GL_WRITE_ONLY)
         self.bg.write_t.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.water.swap(); self.bg.swap()
+
+    def nib(self, u, v, prev=None, radius=0.02, ink=1.0, hardness=0.9):
+        p = self.p["nib"]
+        glUseProgram(p)
+        glUniform2f(uni(p, "uPoint"), u, v)
+        pu, pv = prev if prev else (u, v)
+        glUniform2f(uni(p, "uPrev"), pu, pv)
+        glUniform1f(uni(p, "uRadius"), radius)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
+        glUniform1f(uni(p, "uInk"), ink)
+        glUniform1f(uni(p, "uHardness"), hardness)
+        self.nib_ink.read_t.image(0, GL_READ_ONLY)
+        self.nib_ink.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_w, self.dye_h)
+        self.nib_ink.swap()
+
+    def step_nib(self, dt, soak=0.9, dry=0.7, grain=0.6, threshold=0.02):
+        p = self.p["soak"]
+        glUseProgram(p)
+        glUniform1f(uni(p, "uDt"), dt)
+        glUniform1f(uni(p, "uSoak"), soak)
+        glUniform1f(uni(p, "uDry"), dry)
+        glUniform1f(uni(p, "uGrain"), grain)
+        glUniform1f(uni(p, "uPaperScale"), 0.25)
+        glUniform1f(uni(p, "uThreshold"), threshold)
+        glUniform1i(uni(p, "uInkSrc"), 0)
+        glUniform1i(uni(p, "uBgSrc"), 1)
+        self.nib_ink.read_t.sampler(0)
+        self.bg.read_t.sampler(1)
+        self.nib_ink.write_t.image(0, GL_WRITE_ONLY)
+        self.bg.write_t.image(1, GL_WRITE_ONLY)
+        self.dispatch(self.dye_w, self.dye_h)
+        self.nib_ink.swap(); self.bg.swap()
 
     def bake(self, dt):
         """Mirrors FluidSim.bake(): settled fluid moves into the background."""
@@ -307,7 +348,7 @@ class Sim:
         glUniform1f(uni(p, "uSettleMinAge"), self.settle_min_age)
         glUniform1i(uni(p, "uForce"), 1 if self.force_freeze else 0)
         glUniform1i(uni(p, "uThaw"), 1 if getattr(self, "thawing", False) else 0)
-        glUniform1f(uni(p, "uAspect"), 1.0)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         mask = getattr(self, "mask_at", None)
         if mask:
             glUniform2f(uni(p, "uMaskPoint"), mask[0], mask[1])
@@ -328,7 +369,7 @@ class Sim:
         self.dye.write_t.image(0, GL_WRITE_ONLY)
         self.bg.write_t.image(1, GL_WRITE_ONLY)
         self.age.write_t.image(2, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.dye.swap(); self.bg.swap(); self.age.swap()
 
     def compute_divergence(self):
@@ -336,7 +377,7 @@ class Sim:
         glUseProgram(p)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.div.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
 
     def solve_pressure(self):
         """Mirrors FluidSim.step(): red-black Gauss-Seidel in place, or Jacobi."""
@@ -344,12 +385,12 @@ class Sim:
             p = self.p["pressure_rb"]
             glUseProgram(p)
             self.div.image(2, GL_READ_ONLY)
-            half = (self.res + 1) // 2
+            half = (self.w + 1) // 2
             for _ in range(self.iters):
                 for parity in (0, 1):
                     self.pres.read_t.image(0, GL_READ_WRITE)
                     glUniform1i(uni(p, "uParity"), parity)
-                    self.dispatch(half, self.res)
+                    self.dispatch(half, self.h)
         else:
             p = self.p["pressure"]
             glUseProgram(p)
@@ -357,7 +398,7 @@ class Sim:
             for _ in range(self.iters):
                 self.pres.read_t.image(0, GL_READ_ONLY)
                 self.pres.write_t.image(1, GL_WRITE_ONLY)
-                self.dispatch(self.res, self.res)
+                self.dispatch(self.w, self.h)
                 self.pres.swap()
 
     def project(self, dt):
@@ -370,7 +411,7 @@ class Sim:
         glUseProgram(p)
         glUniform1f(uni(p, "uValue"), 0.0)   # cold start: measure this solve alone
         self.pres.read_t.image(0, GL_READ_WRITE)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
 
         self.solve_pressure()
 
@@ -382,7 +423,7 @@ class Sim:
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
         self.pres.read_t.image(2, GL_READ_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
     def step(self, dt):
@@ -390,7 +431,7 @@ class Sim:
         glUseProgram(p)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.curl.image(1, GL_WRITE_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
 
         p = self.p["vorticity"]
         glUseProgram(p)
@@ -399,7 +440,7 @@ class Sim:
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
         self.curl.image(2, GL_READ_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
         self.compute_divergence()
@@ -408,7 +449,7 @@ class Sim:
         glUseProgram(p)
         glUniform1f(uni(p, "uValue"), 0.8)
         self.pres.read_t.image(0, GL_READ_WRITE)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
 
         self.solve_pressure()
 
@@ -420,36 +461,37 @@ class Sim:
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.vel.write_t.image(1, GL_WRITE_ONLY)
         self.pres.read_t.image(2, GL_READ_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
         p = self.p["advect_mc" if self.maccormack else "advect"]
         glUseProgram(p)
         glUniform1f(uni(p, "uDt"), dt)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
         glUniform1i(uni(p, "uSrc"), 0)
         glUniform1i(uni(p, "uVel"), 1)
-        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.res, 1.0 / self.res)
+        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.w, 1.0 / self.h)
         glUniform1f(uni(p, "uDissipation"), 0.0)
         self.vel.read_t.sampler(0)
         self.vel.read_t.sampler(1)
         self.vel.write_t.image(0, GL_WRITE_ONLY)
-        self.dispatch(self.res, self.res)
+        self.dispatch(self.w, self.h)
         self.vel.swap()
 
-        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.dye_res, 1.0 / self.dye_res)
+        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.dye_w, 1.0 / self.dye_h)
         glUniform1f(uni(p, "uDissipation"), self.dye_diss)
         self.dye.read_t.sampler(0)
         self.vel.read_t.sampler(1)
         self.dye.write_t.image(0, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.dye.swap()
 
-        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.dye_res, 1.0 / self.dye_res)
+        glUniform2f(uni(p, "uDstTexel"), 1.0 / self.dye_w, 1.0 / self.dye_h)
         glUniform1f(uni(p, "uDissipation"), 0.0)
         self.age.read_t.sampler(0)
         self.vel.read_t.sampler(1)
         self.age.write_t.image(0, GL_WRITE_ONLY)
-        self.dispatch(self.dye_res, self.dye_res)
+        self.dispatch(self.dye_w, self.dye_h)
         self.age.swap()
 
         if self.bake_enabled:
@@ -837,6 +879,77 @@ def main():
     check("water flow conserves water", abs(after - before) / max(before, 1e-6) < 0.01,
           f"{before:.3f} -> {after:.3f} "
           f"({100 * (after - before) / max(before, 1e-6):+.3f}%)")
+    print()
+
+    # ---- non-square grid ----
+    print("Non-square canvas:")
+    wide = Sim(args.res, aspect=2.2)
+    check("the grid takes the canvas shape",
+          wide.w > wide.h, f"{wide.w}x{wide.h} for aspect 2.2")
+    check("cells stay square in world space",
+          abs((wide.aspect / wide.w) - (1.0 / wide.h)) < 1e-3,
+          f"dx {wide.aspect / wide.w:.5f} vs dy {1.0 / wide.h:.5f}")
+    check("the cell budget is preserved",
+          abs(wide.w * wide.h - args.res ** 2) / args.res ** 2 < 0.05,
+          f"{wide.w * wide.h} cells vs {args.res ** 2} nominal")
+
+    # A diagonal push must travel diagonally on a stretched grid. Velocity is
+    # already in world units here, so equal components must give equal world
+    # displacement -- gentle enough that the dye never reaches a wall.
+    wide.dye_diss = 0.0
+    wide.drag = 0.0
+    wide.splat(0.4, 0.35, 0.5, 0.5, (0.0, 0.0, 0.0))
+    # black ink has zero rgb by construction, so coverage lives in alpha
+    c0 = centroid(wide.dye.read_t.read()[:, :, 3:4])
+    for _ in range(30):
+        wide.step(dt)
+    c1 = centroid(wide.dye.read_t.read()[:, :, 3:4])
+    assert c0 and c1, "dye left the canvas"
+    # equal world velocity in x and y -> equal world displacement
+    dx_world = (c1[0] - c0[0]) * wide.aspect
+    dy_world = c1[1] - c0[1]
+    check("motion is isotropic on a non-square grid",
+          dy_world > 1e-3 and abs(dx_world - dy_world) / max(dy_world, 1e-6) < 0.25,
+          f"world dx {dx_world:+.4f} vs dy {dy_world:+.4f}")
+    print()
+
+    # ---- the nib ----
+    print("Nib:")
+    n = Sim(args.res)
+    n.nib(0.5, 0.5, radius=0.02)
+    ink0 = n.nib_ink.read_t.read()[:, :, 0]
+    check("the nib lays down ink", float(ink0.sum()) > 0, f"ink {ink0.sum():.1f}")
+
+    # sharpness: the edge should occupy few cells, unlike a gaussian splat
+    interior = float((ink0 > 0.9).sum())
+    fringe = float(((ink0 > 0.05) & (ink0 < 0.9)).sum())
+    check("the mark has a hard edge", interior > 0 and fringe < interior * 0.8,
+          f"{int(interior)} solid cells vs {int(fringe)} edge cells")
+
+    # a stroke drawn as a capsule must be continuous, not dotted
+    n2 = Sim(args.res)
+    n2.nib(0.7, 0.5, prev=(0.3, 0.5), radius=0.01)
+    row = n2.nib_ink.read_t.read()[:, :, 0]
+    mid = row[row.shape[0] // 2]
+    lit = (mid > 0.5).nonzero()[0]
+    contiguous = len(lit) > 0 and (lit.max() - lit.min() + 1) == len(lit)
+    check("a fast stroke stays unbroken", contiguous,
+          f"{len(lit)} cells spanning {int(lit.max() - lit.min() + 1) if len(lit) else 0}")
+
+    # holding still must soak outward and dry into the paper
+    n3 = Sim(args.res)
+    n3.nib(0.5, 0.5, radius=0.015)
+    before = float((n3.nib_ink.read_t.read()[:, :, 0] > 0.02).sum())
+    for _ in range(240):
+        n3.step_nib(dt, soak=3.0, dry=0.25)
+    wet_after = n3.nib_ink.read_t.read()[:, :, 0]
+    dried = float(n3.bg.read_t.read()[:, :, 3].sum())
+    spread = float((wet_after > 0.02).sum())
+    check("holding still soaks outward", spread > before * 1.2,
+          f"{int(before)} cells -> {int(spread)} cells")
+    check("soaked ink dries into the paper", dried > 0, f"background ink {dried:.1f}")
+    check("the nib is not advected by the fluid (it has no velocity of its own)",
+          bool(np.isfinite(wet_after).all()))
     print()
 
     # ---- determinism ----

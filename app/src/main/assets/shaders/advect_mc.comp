@@ -22,6 +22,7 @@ layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
 uniform vec2  uDstTexel;
 uniform float uDt;
 uniform float uDissipation;
+uniform float uAspect;      // canvas width / height
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
@@ -32,12 +33,12 @@ void main() {
 
     // first order estimate
     vec2 vel  = texture(uVel, uv).xy;
-    vec2 back = uv - uDt * vel;
+    vec2 back = uv - uDt * vec2(vel.x / uAspect, vel.y);
     vec4 phiHat = texture(uSrc, back);
 
     // send it forward again; whatever fails to return is the error
     vec2 velBack = texture(uVel, back).xy;
-    vec2 fwd = back + uDt * velBack;
+    vec2 fwd = back + uDt * vec2(velBack.x / uAspect, velBack.y);
     vec4 phiTilde = texture(uSrc, fwd);
 
     vec4 corrected = phiHat + 0.5 * (texture(uSrc, uv) - phiTilde);

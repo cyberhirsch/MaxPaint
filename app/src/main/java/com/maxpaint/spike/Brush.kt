@@ -8,27 +8,33 @@ package com.maxpaint.spike
  * reshape paint that is already on the canvas, which is what turns marbling
  * and suminagashi into a workflow rather than an accident.
  */
-enum class Brush(val label: String, val carriesPigment: Boolean) {
+enum class Brush(val label: String, val carriesPigment: Boolean, val short: String) {
     /** Eulerian gas: the hero brush. Injects dye and momentum. */
-    GAS("Gas", true),
+    GAS("Gas", true, "gas"),
+
+    /**
+     * A hard-edged pen. Writes to its own field so the fluid never smears it,
+     * and creeps into the paper by capillary action, so holding still blooms.
+     */
+    NIB("Nib", true, "nib"),
 
     /** FLIP particles: paint that pours, drips and splatters. */
-    FLIP("Flip", true),
+    FLIP("Flip", true, "drip"),
 
     /** Shallow-water pigment on paper: bleeds, blooms, darkens at the edges. */
-    WATERCOLOR("Water", true),
+    WATERCOLOR("Water", true, "wash"),
 
     /** Force only. Stirs and combs live paint. */
-    VORTEX("Vortex", false),
+    VORTEX("Vortex", false, "stir"),
 
     /** Lifts pigment and pushes it outward — the alcohol-drop halo. */
-    SOLVENT("Solvent", false),
+    SOLVENT("Solvent", false, "lift"),
 
     /** Local Freeze Now: bakes only what it touches. */
-    FREEZE("Freeze", false),
+    FREEZE("Freeze", false, "set"),
 
     /** The inverse: lifts baked paint back into the simulation. */
-    THAW("Thaw", false);
+    THAW("Thaw", false, "melt");
 
     companion object {
         val labels: List<String> get() = entries.map { it.label }

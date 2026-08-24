@@ -1,0 +1,54 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The nib lays down a hard-edged mark. Unlike the gas brush it writes to its
+// own field, not the dye field, so the fluid never advects it -- a pen line
+// stays a pen line. Softness is deliberately near-binary: the edge is one or
+// two cells wide, no further, which is what makes it read as sharp.
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
+
+uniform vec2  uPoint;
+uniform vec2  uPrev;       // previous sample, so fast strokes stay unbroken
+uniform float uRadius;
+uniform float uAspect;
+uniform float uInk;
+uniform float uHardness;   // 1 = crisp, 0 = soft
+
+// distance from a point to the segment travelled since the last sample
+float segmentDistance(vec2 p, vec2 a, vec2 b) {
+    vec2 ab = b - a;
+    float len2 = dot(ab, ab);
+    float t = len2 > 1e-12 ? clamp(dot(p - a, ab) / len2, 0.0, 1.0) : 0.0;
+    return distance(p, a + ab * t);
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 prev = imageLoad(uSrc, c);
+
+    vec2 uv = (vec2(c) + 0.5) / vec2(sz);
+    vec2 p = vec2(uv.x * uAspect, uv.y);
+    vec2 a = vec2(uPrev.x * uAspect, uPrev.y);
+    vec2 b = vec2(uPoint.x * uAspect, uPoint.y);
+
+    float d = segmentDistance(p, a, b);
+
+    // hard edge: full coverage inside, falling off over a sliver
+    float edge = uRadius * mix(0.6, 0.97, clamp(uHardness, 0.0, 1.0));
+    float cover = 1.0 - smoothstep(edge, uRadius, d);
+
+    if (cover > 0.001) {
+        // ink saturates rather than accumulating without bound, so holding
+        // still darkens to solid and then stops
+        prev.x = max(prev.x, uInk * cover);
+        prev.y = max(prev.y, cover);       // wet mask, drives the soak
+    }
+
+    imageStore(uDst, c, prev);
+}
