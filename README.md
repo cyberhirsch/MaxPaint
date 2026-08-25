@@ -108,6 +108,27 @@ paint that has actually set, so slow baking left them with nothing to grab.
 The nib and watercolor keep their own drying rates — a nib is supposed to soak
 slowly while held, which is the opposite requirement.
 
+### Load, on every tool
+
+Every tool has a **Load** slider. For the pigment brushes it is the opacity of
+the mark — it scales what that medium puts down, verified across gas, nib and
+watercolor. For the tools that deposit nothing it scales how hard they act.
+
+### Smear
+
+A finger through charcoal. The vortex brush pushes the *velocity field*, which
+only moves paint still live in the simulation; pigment that has set is on the
+paper, so the only way to move it is to resample it. Smear warps the background
+(and the wet nib field, when that is in use) along the stroke.
+
+It is **conservative**, which took a second attempt. Blending each cell toward
+the colour behind it leaves the source untouched, so the mark is *copied* forward
+rather than moved — measured at **2.6× the ink** after a single drag. Each cell
+now gives up its own share and takes the share the cell behind it gives up, which
+holds the total: 46.3 → 45.8 across a full smudge.
+
+Presets: *Finger*, *Stump*, *Chamois*, *Long Drag*.
+
 ### Set paint is smearable
 
 The PRD left this as an open question: should baked paint keep a thin "wet skin"
@@ -157,6 +178,7 @@ rather than an accident.
 | **Water** | water + pigment | Shallow-water pigment on paper: bleeds, blooms, darkens at the edges, granulates on the paper grain. |
 | **Vortex** | momentum only | Swirl, push, pinch, or comb. Comb is a marbling rake. Lifts paint that has already set so it can smear it. |
 | **Solvent** | lifts ink | Scales pigment down where it bites and drives the rest outward — the alcohol-drop halo, not an erase. Works on dried paint too, which is most of what it is for. |
+| **Smear** | moves ink | Drags pigment already on the paper, the way a finger moves charcoal dust. Deposits nothing of its own. |
 | **Freeze** | — | Local Freeze Now: bakes only what it touches, so one good vortex can be locked while the rest keeps moving. |
 | **Thaw** | — | The inverse: lifts baked paint back into the simulation to be restirred. |
 

@@ -1,0 +1,71 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Smear: drags pigment that is already on the paper along the stroke, the way
+// a finger or a stump moves charcoal dust. It deposits nothing.
+//
+// This is a warp of the paint itself rather than a force on the fluid. The
+// vortex brush pushes the velocity field, which only moves paint still live in
+// the simulation; charcoal on paper is set, so the only way to move it is to
+// resample it. Each cell under the brush pulls its colour from slightly behind
+// the direction of travel, which drags the mark forward and streaks it out.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform vec2  uPoint;
+uniform vec2  uPrev;
+uniform float uRadius;
+uniform float uAspect;
+uniform float uStrength;   // how much of the pulled colour replaces what is here
+uniform float uReach;      // cap on how far back it pulls, in UV
+
+float segmentDistance(vec2 p, vec2 a, vec2 b) {
+    vec2 ab = b - a;
+    float len2 = dot(ab, ab);
+    float t = len2 > 1e-12 ? clamp(dot(p - a, ab) / len2, 0.0, 1.0) : 0.0;
+    return distance(p, a + ab * t);
+}
+
+// how strongly the brush acts at a world position
+float weightAt(vec2 p, vec2 a, vec2 b) {
+    float d = segmentDistance(p, a, b);
+    return 1.0 - smoothstep(uRadius * 0.35, uRadius, d);
+}
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 here = texelFetch(uSrc, c, 0);
+
+    vec2 uv = (vec2(c) + 0.5) / vec2(sz);
+    vec2 p = vec2(uv.x * uAspect, uv.y);
+    vec2 a = vec2(uPrev.x * uAspect, uPrev.y);
+    vec2 b = vec2(uPoint.x * uAspect, uPoint.y);
+
+    // how far the brush travelled this sample, back in UV space
+    vec2 stepUv = vec2(uPoint.x - uPrev.x, uPoint.y - uPrev.y);
+    float len = length(stepUv);
+    if (len > uReach) stepUv *= uReach / len;
+
+    vec2 srcUv = uv - stepUv;
+    vec2 srcP = vec2(srcUv.x * uAspect, srcUv.y);
+
+    // Conservative transport: this cell gives up its own share and takes the
+    // share the cell behind it gives up. Blending toward the pulled colour
+    // instead would leave the source untouched, so the mark would be COPIED
+    // forward rather than moved -- measured at 2.6x the ink after one drag.
+    float wHere = clamp(weightAt(p, a, b) * uStrength, 0.0, 1.0);
+    float wSrc  = clamp(weightAt(srcP, a, b) * uStrength, 0.0, 1.0);
+
+    if (wHere > 0.002 || wSrc > 0.002) {
+        vec4 pulled = texture(uSrc, srcUv);
+        here = here * (1.0 - wHere) + pulled * wSrc;
+    }
+
+    imageStore(uDst, c, here);
+}

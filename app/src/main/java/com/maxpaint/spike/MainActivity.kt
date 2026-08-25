@@ -268,6 +268,16 @@ class MainActivity : AppCompatActivity() {
                 }))
         }
 
+        // Load is meaningful for every tool: it scales whatever that medium puts
+        // down, or for the tools that deposit nothing, how hard they act.
+        panelBody.addView(slider("Load", (renderer.sim.inkPerStroke * 100).toInt(), 200) { p, l ->
+            renderer.sim.inkPerStroke = p / 100f
+            l.text = String.format(
+                if (selected.carriesPigment) "Load: %.2f  (opacity of the mark)"
+                else "Load: %.2f  (how hard it acts)", p / 100f
+            )
+        })
+
         when (selected) {
             Brush.GAS -> {
                 panelBody.addView(slider("Swirl", renderer.sim.vorticity.toInt(), 60) { p, l ->
@@ -375,6 +385,23 @@ class MainActivity : AppCompatActivity() {
                     renderer.sim.pickup = p / 10f
                     l.text = String.format("Pickup: %.1f  (lifts set paint)", p / 10f)
                 })
+            }
+
+            Brush.SMEAR -> {
+                panelBody.addView(slider("Finger size", (renderer.sim.smearRadius * 1000).toInt(), 200) { p, l ->
+                    renderer.sim.smearRadius = p / 1000f
+                    l.text = String.format("Finger size: %.3f", p / 1000f)
+                })
+                panelBody.addView(slider("Grab", (renderer.sim.smearStrength * 100).toInt(), 100) { p, l ->
+                    renderer.sim.smearStrength = p / 100f
+                    l.text = String.format("Grab: %.2f  (how much it takes with it)", p / 100f)
+                })
+                panelBody.addView(slider("Drag", (renderer.sim.smearReach * 1000).toInt(), 250) { p, l ->
+                    renderer.sim.smearReach = p / 1000f
+                    l.text = String.format("Drag: %.3f  (how far it pulls)", p / 1000f)
+                })
+                panelBody.addView(hint("Moves pigment that is already down. " +
+                    "It adds none of its own."))
             }
 
             Brush.FREEZE, Brush.THAW -> {

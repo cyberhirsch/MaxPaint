@@ -84,6 +84,11 @@ class FluidSim(private val ctx: Context) {
     /** Sustained stirring inflates ink (see README); keep the default gentle. */
     var forceStrength = 1.0f
     var combFrequency = 14f
+    // --- smear ---
+    var smearRadius = 0.05f
+    var smearStrength = 0.85f
+    var smearReach = 0.05f
+
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
 
@@ -145,6 +150,7 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pWet: ComputeProgram
     private lateinit var pNib: ComputeProgram
     private lateinit var pSoak: ComputeProgram
+    private lateinit var pSmear: ComputeProgram
     private lateinit var pPressureFlip: ComputeProgram
     private lateinit var pBlit: ComputeProgram
     private lateinit var pDivergenceFlip: ComputeProgram
@@ -202,6 +208,7 @@ class FluidSim(private val ctx: Context) {
         queryMaxTexture()
         pNib = ComputeProgram(ctx, "shaders/nib.comp")
         pSoak = ComputeProgram(ctx, "shaders/soak.comp")
+        pSmear = ComputeProgram(ctx, "shaders/smear.comp")
         pPressureFlip = ComputeProgram(ctx, "shaders/pressure_flip.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
         pDivergenceFlip = ComputeProgram(ctx, "shaders/divergence_flip.comp")
@@ -343,6 +350,7 @@ class FluidSim(private val ctx: Context) {
         when (brush) {
             Brush.GAS -> splat(u, v, du, dv, r, g, b)
             Brush.NIB -> nib(u, v, prevU, prevV)
+            Brush.SMEAR -> smear(u, v, prevU, prevV)
             Brush.FLIP -> {
                 // a little momentum into the grid too, so the pour interacts
                 // with fluid already on the canvas
@@ -380,6 +388,35 @@ class FluidSim(private val ctx: Context) {
         nibInkField.write.bindImage(1, GLES31.GL_WRITE_ONLY)
         pNib.dispatch(dyeW, dyeH)
         nibInkField.swap()
+    }
+
+    /**
+     * Drags set pigment along the stroke. Warps the background, and the wet nib
+     * field too when it is in use, so a charcoal line and a pen line both smudge.
+     */
+    fun smear(u: Float, v: Float, prevU: Float, prevV: Float) {
+        if (!allocated) return
+
+        pSmear.use()
+        pSmear.set("uPoint", u, v)
+        pSmear.set("uPrev", prevU, prevV)
+        pSmear.set("uRadius", smearRadius)
+        pSmear.set("uAspect", aspect)
+        pSmear.set("uStrength", smearStrength * inkPerStroke)
+        pSmear.set("uReach", smearReach)
+        pSmear.set("uSrc", 0)
+
+        background.read.bindSampler(0)
+        background.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+        pSmear.dispatch(dyeW, dyeH)
+        background.swap()
+
+        if (nibActive) {
+            nibInkField.read.bindSampler(0)
+            nibInkField.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+            pSmear.dispatch(dyeW, dyeH)
+            nibInkField.swap()
+        }
     }
 
     /** Capillary soak plus drying into the background. */
