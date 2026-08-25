@@ -126,6 +126,23 @@ object Presets {
         Preset("Soft Lift") { s -> s.solventBite = 0.75f; s.forceStrength = 0.5f; s.pickup = 1.2f }
     )
 
+    // How a charcoal smudge differs: how wide the finger is, how much it takes
+    // with it, and how far it drags before letting go.
+    private val smear = listOf(
+        Preset("Finger") { s ->
+            s.smearRadius = 0.05f; s.smearStrength = 0.85f; s.smearReach = 0.05f
+        },
+        Preset("Stump") { s ->
+            s.smearRadius = 0.022f; s.smearStrength = 0.95f; s.smearReach = 0.03f
+        },
+        Preset("Chamois") { s ->
+            s.smearRadius = 0.11f; s.smearStrength = 0.55f; s.smearReach = 0.08f
+        },
+        Preset("Long Drag") { s ->
+            s.smearRadius = 0.045f; s.smearStrength = 0.98f; s.smearReach = 0.16f
+        }
+    )
+
     private val none = listOf(Preset("Default") { })
 
     fun forBrush(b: Brush): List<Preset> = when (b) {
@@ -135,6 +152,7 @@ object Presets {
         Brush.WATERCOLOR -> watercolor
         Brush.VORTEX -> vortex
         Brush.SOLVENT -> solvent
+        Brush.SMEAR -> smear
         Brush.FREEZE, Brush.THAW -> none
     }
 }

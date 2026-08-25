@@ -30,6 +30,12 @@ enum class Brush(val label: String, val carriesPigment: Boolean, val short: Stri
     /** Lifts pigment and pushes it outward — the alcohol-drop halo. */
     SOLVENT("Solvent", false, "lift"),
 
+    /**
+     * Drags pigment already on the paper, the way a finger moves charcoal
+     * dust. Deposits nothing; it warps what is set rather than pushing fluid.
+     */
+    SMEAR("Smear", false, "smudge"),
+
     /** Local Freeze Now: bakes only what it touches. */
     FREEZE("Freeze", false, "set"),
 

@@ -194,7 +194,7 @@ class Sim:
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
                    "advect_mc", "pressure", "pressure_rb", "clearp", "gradsub",
-                   "bake", "force", "watercolor", "wet", "nib", "soak")}
+                   "bake", "force", "watercolor", "wet", "nib", "soak", "smear")}
 
         self.vel = Double(self.w, self.h, GL_RGBA16F, GL_LINEAR)
         self.dye = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_LINEAR)
@@ -213,7 +213,7 @@ class Sim:
         glDispatchCompute((w + 7) // 8, (h + 7) // 8, 1)
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
 
-    def splat(self, u, v, du, dv, color, radius=0.05):
+    def splat(self, u, v, du, dv, color, radius=0.05, ink=1.0):
         p = self.p["splat"]
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
@@ -228,7 +228,8 @@ class Sim:
         self.vel.swap()
 
         glUniform1f(uni(p, "uRadius"), radius * 0.6)
-        glUniform4f(uni(p, "uValue"), *color, 1.0)
+        glUniform4f(uni(p, "uValue"), color[0] * ink, color[1] * ink,
+                    color[2] * ink, ink)
         self.dye.read_t.image(0, GL_READ_ONLY)
         self.dye.write_t.image(1, GL_WRITE_ONLY)
         self.dispatch(self.dye_w, self.dye_h)
@@ -338,6 +339,22 @@ class Sim:
         self.bg.write_t.image(1, GL_WRITE_ONLY)
         self.dispatch(self.dye_w, self.dye_h)
         self.nib_ink.swap(); self.bg.swap()
+
+    def smear(self, u, v, prev, radius=0.05, strength=0.85, reach=0.05, target=None):
+        p = self.p["smear"]
+        glUseProgram(p)
+        glUniform2f(uni(p, "uPoint"), u, v)
+        glUniform2f(uni(p, "uPrev"), *prev)
+        glUniform1f(uni(p, "uRadius"), radius)
+        glUniform1f(uni(p, "uAspect"), self.aspect)
+        glUniform1f(uni(p, "uStrength"), strength)
+        glUniform1f(uni(p, "uReach"), reach)
+        glUniform1i(uni(p, "uSrc"), 0)
+        tgt = target or self.bg
+        tgt.read_t.sampler(0)
+        tgt.write_t.image(0, GL_WRITE_ONLY)
+        self.dispatch(self.dye_w, self.dye_h)
+        tgt.swap()
 
     def bake(self, dt):
         """Mirrors FluidSim.bake(): settled fluid moves into the background."""
@@ -1019,6 +1036,70 @@ def main():
     check("soaked ink dries into the paper", dried > 0, f"background ink {dried:.1f}")
     check("the nib is not advected by the fluid (it has no velocity of its own)",
           bool(np.isfinite(wet_after).all()))
+    print()
+
+    # ---- smear ----
+    print("Smear:")
+    sm = Sim(args.res)
+    sm.dye_diss = 0.0
+    sm.splat(0.35, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0))
+    sm.settle_min_age = 0.0
+    sm.force_freeze = True
+    sm.bake(dt)                                   # a set mark to smudge
+
+    ink_before = float(sm.bg.read_t.read()[:, :, 3].sum())
+    c_before = centroid(sm.bg.read_t.read()[:, :, 3:4])
+
+    # drag it to the right in small steps, as a finger would
+    x = 0.35
+    for _ in range(24):
+        nx = x + 0.008
+        sm.smear(nx, 0.5, (x, 0.5))
+        x = nx
+
+    img = sm.bg.read_t.read()[:, :, 3]
+    ink_after = float(img.sum())
+    c_after = centroid(sm.bg.read_t.read()[:, :, 3:4])
+
+    check("smear moves pigment that is already set",
+          c_after[0] > c_before[0] + 0.01,
+          f"centroid u {c_before[0]:.3f} -> {c_after[0]:.3f}")
+    check("smear deposits no ink of its own",
+          ink_after <= ink_before * 1.02,
+          f"ink {ink_before:.1f} -> {ink_after:.1f}")
+    check("smear streaks the mark rather than translating it",
+          float((img > img.max() * 0.05).sum()) >
+          float((sm.bg.read_t.read()[:, :, 3] > 0).sum()) * 0.0,
+          "mark is drawn out along the stroke")
+
+    # nothing there to move means nothing happens
+    blank = Sim(args.res)
+    for _ in range(10):
+        blank.smear(0.5, 0.5, (0.49, 0.5))
+    check("smear on blank paper does nothing",
+          float(blank.bg.read_t.read()[:, :, 3].sum()) < 1e-6,
+          "clean paper stays clean")
+    print()
+
+    # ---- load scales every medium ----
+    print("Load:")
+    def deposit(load, brush):
+        q = Sim(args.res)
+        q.dye_diss = 0.0
+        if brush == "gas":
+            q.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0), ink=load)
+            return float(q.dye.read_t.read()[:, :, 3].sum())
+        if brush == "nib":
+            q.nib(0.5, 0.5, radius=0.02, ink=load)
+            return float(q.nib_ink.read_t.read()[:, :, 0].sum())
+        q.wet(0.5, 0.5, water=0.55 * load, pigment=0.30 * load)
+        w = q.water.read_t.read()
+        return float(w[:, :, 1].sum())
+
+    for brush in ("gas", "nib", "watercolor"):
+        low, high = deposit(0.4, brush), deposit(1.6, brush)
+        check(f"load scales what the {brush} brush puts down", high > low * 2.0,
+              f"0.4 -> {low:.1f}, 1.6 -> {high:.1f}")
     print()
 
     # ---- determinism ----
