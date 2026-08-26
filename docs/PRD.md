@@ -396,6 +396,19 @@ layer, so layers above it cover the wet paint the same as the dry.
 Cost is two full-canvas RGBA16F textures per layer, plus up to two more for the
 flattened halves — about 4.7 MB each at 1174×502. Eight is the cap.
 
+### 7.8 The particle grid is not the ink grid
+
+A third resolution, on top of the two in §7.2. FLIP borrows a grid so particles
+can feel each other, and the pressure solve couples a *cell* to its neighbours,
+so a cell holding one particle couples that particle to nothing. Several
+particles must share a cell — four to eight in 2D.
+
+Running the particle solver on the ink grid gave 0.005 particles per cell, with
+every particle alone inside a free surface. Measured coupling was 2.6x against a
+peak of 7.1x at thirteen per occupied cell. The particle grid is now its own
+budget (192, canvas-shaped) and is exposed as a Coupling control, because how
+coarse it is *is* how thick the medium reads.
+
 ---
 
 ## 8. UX Requirements

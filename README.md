@@ -374,6 +374,71 @@ Measured: interior divergence 99% removed (0.044 → 0.00034), and colliding
 streams now push each other aside instead of passing through — cross-axis spread
 0.0149 without the solve, 0.0837 with.
 
+### The grid was 16x too fine, so no particle ever met another
+
+Comparing against `FLIPsphere_v001.html` in the Experiments repo turned this up,
+and it is the reason the medium still did not look like FLIP after the solver
+itself was made correct.
+
+FLIP is a particle method that borrows a grid so that particles can feel each
+other. The pressure solve couples a **cell** to its neighbours; a cell holding
+one particle therefore couples that particle to nothing. It needs several
+particles per cell — the literature says four to eight in 2D — and MaxPaint was
+running the particle solver on the ink grid:
+
+| | cells | particles in play | per cell |
+|---|---:|---:|---:|
+| ink grid, as shipped | 589,348 | ~3,000 | **0.005** |
+| what FLIP needs | | | 4–8 |
+
+Every particle was alone in its own cell, surrounded by cells the free-surface
+condition marks as air and pins to zero pressure. So each particle was an island
+with a Dirichlet boundary on all four sides, and the projection — the entire
+reason for having a grid — could not transmit anything between them.
+
+Measured directly, by firing two streams head-on and comparing the spread with
+the pressure solve against without it:
+
+| grid | particles per occupied cell | streams pushed apart |
+|---:|---:|---:|
+| 32² | 128 | 1.3x |
+| 64² | 64 | 3.3x |
+| 128² | 24 | 4.1x |
+| **192²** | **13** | **7.1x** |
+| 256² | 8 | 6.0x |
+| 384² | 4 | 4.7x |
+| 512² | 2.5 | 3.6x |
+| 768² (the ink grid) | 1.2 | **2.6x** |
+
+Coupling peaks around eight to thirteen particles per occupied cell and falls
+away on both sides — too coarse and a cell is bigger than the flow, too fine and
+particles stop sharing cells at all. The app was sitting at the bottom right of
+that table.
+
+The particle solver now has **its own grid**, a 192 cell budget shaped to the
+canvas — 292x124 against the ink grid's 1174x502 — with a Coupling slider on the
+brush. Rendering is unaffected: particles are still drawn as point sprites at
+full ink resolution, so only the velocity field got coarser, not the picture.
+
+Sweeps needed scale with grid width, so 20 sweeps on a 1174-wide grid was
+drastically under-solved. On the coarse grid the same 20 removes 92.6% of
+interior divergence and 40 removes 99.1% — so it now runs 40, and still costs
+**8x less** than the under-solved version did (2.9M cell-sweeps a frame against
+23.6M).
+
+Three checks guard it: that the solve couples particles when a cell holds
+several, that it barely couples them at one per cell (the failure this
+replaced), and that the shipped `flipRes` sits inside the band that was measured
+to work.
+
+What did **not** come across from FLIPsphere, having checked: it uses a
+collocated grid with centred differences and no free surface at all, because its
+fluid covers the whole sphere. MaxPaint paints onto blank canvas, so it needs the
+free surface, and the staggered operators were already measured to be what a thin
+free surface requires. Its `uValue` counterpart clears pressure outright each
+frame where MaxPaint keeps 60% — but that is a decayed warm start, not a constant,
+and is fine as it stands.
+
 ### Cohesion is what makes it clump
 
 Removing gravity left nothing to gather the paint. A liquid clumps because
