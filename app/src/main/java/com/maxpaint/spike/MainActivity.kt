@@ -541,7 +541,7 @@ class MainActivity : AppCompatActivity() {
 
         // Load is meaningful for every tool: it scales whatever that medium puts
         // down, or for the tools that deposit nothing, how hard they act.
-        panelBody.addView(slider("Load", (renderer.sim.inkPerStroke * 100).toInt(), 200) { p, l ->
+        panelBody.addView(slider("Load", (renderer.sim.inkPerStroke * 100).toInt(), 400) { p, l ->
             renderer.sim.inkPerStroke = p / 100f
             l.text = String.format(
                 if (selected.carriesPigment) "Load: %.2f  (opacity of the mark)"
@@ -593,12 +593,16 @@ class MainActivity : AppCompatActivity() {
                     onGl { renderer.sim.reshapeFlipGrid(res) }
                     l.text = "Coupling: grid ${res}  (← finer, thicker →)"
                 })
-                panelBody.addView(slider("Density", renderer.sim.flip.particlesPerCell.toInt(), 40) { p, l ->
+                panelBody.addView(slider("Density", renderer.sim.flip.particlesPerCell.toInt(), 120) { p, l ->
                     val d = p.coerceAtLeast(1).toFloat()
                     renderer.sim.flip.particlesPerCell = d
                     val n = renderer.sim.flip.countFor(
                         renderer.sim.splatRadius * 0.5f, renderer.sim.canvasAspect)
                     l.text = "Density: ${d.toInt()}  ($n particles per dab)"
+                })
+                panelBody.addView(slider("Pressure", renderer.sim.flipIterations, 160) { p, l ->
+                    renderer.sim.flipIterations = p.coerceAtLeast(4)
+                    l.text = "Pressure: ${p.coerceAtLeast(4)} sweeps"
                 })
                 panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 50) { p, l ->
                     renderer.sim.flip.cohesion = p.toFloat()

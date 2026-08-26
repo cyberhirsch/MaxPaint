@@ -52,7 +52,7 @@ class FluidSim(private val ctx: Context) {
      * grid the same 20 removes 92.6% of interior divergence and 40 removes
      * 99.1%, at half the cost the under-solved version used to pay.
      */
-    var flipIterations = 40
+    var flipIterations = 60
     /** Below this accumulated mass a cell counts as air, not liquid. */
     var flipMinMass = 0.08f
 
@@ -435,9 +435,15 @@ class FluidSim(private val ctx: Context) {
      * touch event -- which is what it used to be -- makes it depend on how
      * often the digitiser happened to report, so the same stroke drawn twice
      * came out at different weights.
+     *
+     * [DAB_CALIBRATION] is what makes a stroke weigh what it used to. The shape
+     * of the rule is principled; its constant cannot be, because matching the
+     * old per-event meaning would need the event rate that the rule exists to
+     * remove. It is set from a measured stroke: without it a mark on a 2.34
+     * canvas came out 3.7x heavier and saturated to solid black at Load 2.
      */
     val inkPerDab: Float
-        get() = stampSpacing / splatRadius.coerceAtLeast(1e-4f)
+        get() = DAB_CALIBRATION * stampSpacing / splatRadius.coerceAtLeast(1e-4f)
 
     /** Width over height. Stroke geometry has to use the same metric as the shaders. */
     val canvasAspect: Float get() = aspect
@@ -1267,6 +1273,13 @@ class FluidSim(private val ctx: Context) {
     }
 
     companion object {
+        /**
+         * Ink per dab, relative to spacing over radius. Measured: a reference
+         * stroke deposits 658 units of baked ink at this value, against 658 for
+         * the one-splat-per-event behaviour it replaced, and 2271 without it.
+         */
+        const val DAB_CALIBRATION = 0.29f
+
         /** Reduction tile size for [measure]. */
         const val STATS_TILE = 16
 

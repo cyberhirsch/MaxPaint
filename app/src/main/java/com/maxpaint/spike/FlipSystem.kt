@@ -19,7 +19,7 @@ import android.opengl.GLES31
  */
 class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
-    var flipRatio = 0.92f       // 1 = splashy and particle-driven, 0 = viscous
+    var flipRatio = 0.97f       // 1 = splashy and particle-driven, 0 = viscous
     var particleDrag = 0.25f
     /** CFL guard for particles, matching the grid's. */
     var maxSpeed = 4f
@@ -39,7 +39,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
      * particles over more cells, so changing Brush size silently changed how
      * thick the medium behaved. The count is derived from the footprint.
      */
-    var particlesPerCell = 15f
+    var particlesPerCell = 40f
 
     private var buffer = 0
     private var vao = 0
@@ -125,7 +125,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         val cell = kotlin.math.sqrt(aspect.coerceIn(0.2f, 5f)) / gridRes.coerceAtLeast(1)
         val footprint = (Math.PI.toFloat() * radius * radius / (cell * cell))
             .coerceAtLeast(1f)
-        return (particlesPerCell * footprint).toInt().coerceIn(4, 512)
+        return (particlesPerCell * footprint).toInt().coerceIn(4, 2048)
     }
 
     /** Set by the sim when the grid is reshaped; only [countFor] needs it. */
