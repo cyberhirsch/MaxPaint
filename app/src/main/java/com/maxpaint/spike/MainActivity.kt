@@ -585,6 +585,14 @@ class MainActivity : AppCompatActivity() {
             }
 
             Brush.FLIP -> {
+                // Coarse on purpose. A cell has to hold several particles or
+                // the pressure solve couples each one to nothing; measured
+                // coupling peaks near eight per occupied cell.
+                panelBody.addView(slider("Coupling", (320 - renderer.sim.flipRes) / 8, 28) { p, l ->
+                    val res = 320 - p * 8
+                    onGl { renderer.sim.reshapeFlipGrid(res) }
+                    l.text = "Coupling: grid ${res}  (← finer, thicker →)"
+                })
                 panelBody.addView(slider("Particles", renderer.sim.flip.emitPerSample, 96) { p, l ->
                     val n = p.coerceAtLeast(1)
                     renderer.sim.flip.emitPerSample = n

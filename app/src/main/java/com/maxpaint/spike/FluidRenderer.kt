@@ -298,8 +298,9 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         val vram = sim.vramBytes() / (1024.0 * 1024.0)
 
         statsLine = String.format(
-            "%s · %dx%d  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB   layer %d/%d",
+            "%s · %dx%d%s  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB   layer %d/%d",
             sim.brush.label, sim.simW, sim.simH,
+            if (sim.flip.inUse) "  drops ${sim.flipW}x${sim.flipH}" else "",
             if (sim.useRedBlack) "RB-GS" else "Jacobi", sim.pressureIterations,
             if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram,
             sim.activeLayer + 1, sim.layers.size.coerceAtLeast(1)

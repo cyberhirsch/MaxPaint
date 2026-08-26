@@ -9,6 +9,7 @@ shader (ES 3.1 guarantees zero of those).
 """
 import ctypes
 import os
+import re
 import sys
 
 import numpy as np
@@ -386,6 +387,57 @@ def main():
           f"rms divergence {before:.5f} -> {after:.5f} "
           f"({100 * (1 - after / max(before, 1e-9)):.0f}% removed, "
           f"{cells} interior cells)")
+
+    # ---- the grid has to be coarse enough for particles to see each other ----
+    #
+    # FLIP is a particle method that borrows a grid so particles can feel each
+    # other. The pressure solve couples a CELL to its neighbours, so a cell
+    # holding one particle couples that particle to nothing. This measures the
+    # coupling directly: two streams fired head-on, with the solve and without.
+    def coupling(g):
+        def run(project):
+            q = Flip()
+            q.make_grid(g, g)
+            q.emit(0.35, 0.5, 1.4, 0.0, n=CAP // 4, radius=0.03)
+            q.emit(0.65, 0.5, -1.4, 0.0, n=CAP // 4, radius=0.03)
+            for _ in range(45):
+                q.p2g()
+                if project:
+                    q.project(dt, iters=30)
+                q.g2p(dt, drag=0.0, settle_speed=0.0)
+            pp = q.read()
+            lv = pp[:, 6] == 1.0
+            return float(np.std(pp[lv][:, 1])) if lv.sum() else 0.0
+
+        probe = Flip()
+        probe.make_grid(g, g)
+        probe.emit(0.5, 0.5, 0.0, 0.0, n=CAP // 2, radius=0.03)
+        probe.p2g()
+        occupied = int((probe.mass.read()[:, :, 0] > 0.08).sum())
+        off, on = run(False), run(True)
+        return (CAP / 2) / max(occupied, 1), on / max(off, 1e-9)
+
+    dense_per_cell, dense = coupling(192)
+    check("the solve couples particles when a cell holds several of them",
+          dense > 4.0,
+          f"{dense_per_cell:.1f} particles per occupied cell, "
+          f"streams spread {dense:.1f}x wider with the solve")
+
+    # and the failure this replaced: one particle per cell is a spray of
+    # independent points wearing a solver
+    lone_per_cell, lone = coupling(768)
+    check("and barely couples them at one particle per cell",
+          lone < dense * 0.6,
+          f"{lone_per_cell:.1f} per occupied cell gives only {lone:.1f}x")
+
+    # the shipped grid must sit in the band that was measured to work
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "app", "src", "main", "java", "com",
+                            "maxpaint", "spike", "FluidSim.kt")).read()
+    shipped = int(re.search(r"var flipRes = (\d+)", src).group(1))
+    check("the shipped particle grid is in that band",
+          96 <= shipped <= 320, f"flipRes = {shipped}")
+    print()
 
     # and behaviourally: colliding streams must resist passing through each other
     def collide(project):
