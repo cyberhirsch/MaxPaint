@@ -14,6 +14,7 @@ Usage:  python3 tools/verify_solver.py [--res 128] [--steps 60]
 import argparse
 import ctypes
 import os
+import re
 import sys
 
 import numpy as np
@@ -1111,8 +1112,15 @@ def main():
 
     # ---- strokes are paths, not points ----
     print("Stroke interpolation:")
+    # the calibration comes from the shipped source, so the check cannot drift
+    # away from what the app actually does
+    _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "..", "app", "src", "main", "java", "com",
+                             "maxpaint", "spike", "FluidSim.kt")).read()
+    DAB_CALIBRATION = float(re.search(r"DAB_CALIBRATION = ([\d.]+)f", _src).group(1))
 
-    def walk(sim, path, spacing, radius, ink=1.0):
+
+    def walk(sim, path, spacing, radius, ink=1.0, calibration=DAB_CALIBRATION):
         """Mirrors MainActivity.strokeTo: dabs at a fixed spacing along the
         path, with the leftover distance carried across touch events so the
         count follows the path and not the report rate."""
@@ -1130,7 +1138,7 @@ def main():
                 sim.splat(pu + (u - pu) * t, pv + (v - pv) * t,
                           (u - pu) * 12.0 * impulse, (v - pv) * 12.0 * impulse,
                           (0.0, 0.0, 0.0), radius=radius,
-                          ink=ink * spacing / max(radius, 1e-4))
+                          ink=ink * calibration * spacing / max(radius, 1e-4))
                 nxt += spacing
                 stamps += 1
             carry = dist - (nxt - spacing) if stamps < 64 else 0.0
@@ -1199,13 +1207,38 @@ def main():
           abs(whole / max(half, 1e-6) - 2.0) < 0.15,
           f"half the path {half:.1f}, all of it {whole:.1f}")
 
-    # how much heavier the mark now reads, for the Load defaults
-    q = Sim(args.res)
-    for (u, v) in REPORTED[1:]:
-        q.splat(u, v, 0.0, 0.0, (0.0, 0.0, 0.0), radius=RAD, ink=1.0)
-    per_event = float(q.dye.read_t.read()[:, :, 3].sum())
-    print(f"   (one dab per event deposited {per_event:.1f}; "
-          f"the path deposits {fine:.1f}, {fine / max(per_event, 1e-6):.1f}x)")
+    # A stroke must weigh what it used to. This is the check that would have
+    # caught the regression: measured on a WIDE canvas, because the extra dabs
+    # scale with the world length of the path, so a square canvas understates
+    # the change by the aspect ratio and reads as harmless.
+    WIDE = 2.34
+
+    def baked_ink(per_event, calibration=None):
+        q = Sim(args.res, aspect=WIDE)
+        q.vorticity, q.drag, q.bake_enabled = 60.0, 3.0, True
+        path = [(0.15 + 0.7 * k / 20, 0.5 + 0.18 * np.sin(k / 20 * 3.5))
+                for k in range(21)]
+        if per_event:                       # one splat per touch event
+            for (pu, pv), (u, v) in zip(path, path[1:]):
+                q.splat(u, v, (u - pu) * 12, (v - pv) * 12, (0.0, 0.0, 0.0),
+                        radius=RAD, ink=2.0)
+        else:
+            walk(q, path, spacing=RAD * 0.5, radius=RAD, ink=2.0,
+                 calibration=calibration)
+        for _ in range(60):
+            q.step(dt)
+        return float(q.bg.read_t.read()[:, :, 3].sum())
+
+    was = baked_ink(per_event=True)
+    now = baked_ink(per_event=False, calibration=DAB_CALIBRATION)
+    check("a stroke weighs what it did before dabs replaced touch events",
+          abs(now - was) / max(was, 1e-6) < 0.10,
+          f"{was:.1f} baked before, {now:.1f} now")
+
+    uncalibrated = baked_ink(per_event=False, calibration=1.0)
+    check("and without the calibration it does not",
+          uncalibrated > was * 2.0,
+          f"{uncalibrated:.1f}, {uncalibrated / max(was, 1e-6):.1f}x too heavy")
     print()
 
     # ---- layers ----

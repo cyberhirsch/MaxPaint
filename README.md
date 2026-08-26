@@ -170,7 +170,26 @@ rejected outright: the same path reported as 2 events gave 19.6 ink and as 20
 events gave 195.6. **Load is ink per brush-width travelled**, not per event and
 not per dab — the only definition of the three that does not depend on how busy
 the frame was. Measured: 299.4 either way, and half the path deposits half the
-ink. Against the old per-event behaviour the mark reads about 1.5× heavier.
+ink.
+
+**The constant needed calibrating, and the first measurement of it was wrong.**
+The rule is principled but its constant cannot be: matching the old per-event
+meaning would need the event rate the rule exists to remove. It was left at
+spacing over radius, which I measured as 1.5x heavier than before — *on a square
+canvas*. The number of extra dabs scales with the **world** length of the path,
+so on a 2.34 canvas it is 2.34x worse again: 3.7x the ink, and at Load 2 the
+mark saturated to solid black. A square-canvas measurement understates this
+exactly by the aspect ratio, which is why it read as harmless.
+
+`DAB_CALIBRATION` is now 0.29, set so a reference stroke deposits 658 units of
+baked ink against 658 for the behaviour it replaced (2271 without it). The check
+that guards this is measured on a **wide** canvas for the same reason.
+
+The stroke does read lighter than the beaded version at equal ink, because the
+same paint is now spread evenly instead of piled at the points the digitiser
+happened to report — peak grey 112 against 30. That is the fix working, but it
+means Load settings tuned against the beaded mark now come out weak, so the Load
+range goes to 4.0.
 
 ## Undo and redo
 
@@ -458,8 +477,14 @@ cell however coarse the grid was:
 
 Emission is now a **density**: the count comes from how many grid cells the dab
 actually covers, so the number that matters holds while Brush size changes only
-the size of the mark. The slider reads `Density: 15 (98 particles per dab)` and
+the size of the mark. The slider reads `Density: 40 (261 particles per dab)` and
 the FLIP presets carry densities instead of counts.
+
+The defaults then went up across the board, because the medium was still too
+thin in the hand: density 15 → **40** with the slider to 120 and the per-dab cap
+to 2048, pressure 40 → **60** sweeps with its own slider, and the FLIP blend
+0.92 → **0.97**, which is what FLIPsphere runs and is how much of its own motion
+a particle keeps rather than taking the grid's.
 
 A bug turned up next to it: emission scattered its particles in UV while every
 other brush measures its radius in world units, so on a 2.34 canvas a drip dab
