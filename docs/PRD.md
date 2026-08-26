@@ -246,6 +246,11 @@ if schedule allows, since it reuses the bake path.
 - FR-6 Stylus pressure → dye amount and brush radius; tilt → impulse direction
   spread; velocity → momentum injected. Explicit per-brush mapping matrix,
   artist-editable.
+- FR-6a A stroke is a **path, not a list of touch events**: dabs are stamped at a
+  fixed spacing in canvas units, with the leftover distance carried across
+  events, and the batched samples Android reports in each event are all read.
+  Load therefore means ink per brush-width travelled, and the same stroke drawn
+  twice weighs the same regardless of how busy the frame was.
 - FR-7 Multi-touch: 2-finger pan/zoom/rotate on canvas; 2-finger tap =
   Freeze Now; 3-finger swipe left/right = undo/redo (Procreate-compatible
   muscle memory).
@@ -269,10 +274,17 @@ if schedule allows, since it reuses the bake path.
   composing a mark, and for screenshotting.
 
 ### 6.5 Undo
-- FR-17 Undo granularity = one stroke *plus its resulting bake*. Because the sim
-  is stateful, undo is implemented by checkpoint + replay (§7.3), not by
-  inverse operations.
-- FR-18 Minimum 20 undo steps; target 50.
+- FR-17 Undo granularity = one stroke *plus its resulting bake*. Built, but by
+  snapshot rather than checkpoint + replay (§7.3). Replay reproduces the *live*
+  simulation, which undo does not need: what an artist wants back is the paint
+  that set, and only one layer can change during a stroke. Undo restores that
+  layer's pixels and stills the simulation, since anything still live would bake
+  again a moment later and undo the undo.
+- FR-18 Minimum 20 undo steps; target 50. **Built to a memory budget instead**:
+  a snapshot is a whole canvas — 4.7 MB at 1174×502, 15 MB at 2048 detail — so a
+  fixed step count would be a memory cliff on exactly the canvases that can
+  least afford one. 64 MB of history, which is 13 steps at the default detail.
+  Structural layer changes clear it.
 
 ### 6.6 Replay log
 - FR-19 Every input event (position, pressure, tilt, timestamp, brush, params)

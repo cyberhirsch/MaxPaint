@@ -205,6 +205,7 @@ class FluidSim(private val ctx: Context) {
         else velocity.bytes() + dye.bytes() + age.bytes() + water.bytes() +
              layers.sumOf { it.tex.bytes() } +
              (underlay?.bytes() ?: 0L) + (overlay?.bytes() ?: 0L) +
+             historyBytes() +
              flipInk.bytes() + flip.bytes() + nibInkField.bytes() +
              flipVel.bytes() + flipVelOld.bytes() + flipMass.bytes() +
              flipPressure.bytes() + flipDivergence.bytes() +
@@ -337,6 +338,7 @@ class FluidSim(private val ctx: Context) {
 
     fun clear() {
         if (!allocated) return
+        dropHistory()
         velocity.clear(); dye.clear(); age.clear(); water.clear()
         layers.forEach { it.tex.clear() }
         layersDirty = true
@@ -346,6 +348,47 @@ class FluidSim(private val ctx: Context) {
         waterActive = false; nibActive = false
         pressure.clear(); curl.clear(); divergence.clear()
     }
+
+    /**
+     * How far apart stamps sit along a stroke, in the same units the brush
+     * radii use (UV, with x scaled by the canvas aspect).
+     *
+     * The nib and smear draw a capsule from the previous point to this one, so
+     * they join up on their own and only need stamps close enough to follow a
+     * curve. Everything else stamps a round dab. Half a radius apart is what
+     * turns a row of beads into a ribbon: the falloff is exp(-d²/r²), wide
+     * enough that measured coverage never drops below 74% of the peak, and
+     * every dab is a full-canvas pass so closer spacing costs frames for a
+     * mark that is already continuous.
+     */
+    val stampSpacing: Float
+        get() = when (brush) {
+            Brush.NIB, Brush.SMEAR -> 0.02f
+            else -> (splatRadius * 0.5f).coerceAtLeast(0.002f)
+        }
+
+    /**
+     * True when the brush stamps round dabs that have to be strung along the
+     * path. The nib and smear instead draw a capsule from the previous reported
+     * point to this one, which already covers the segment exactly once.
+     */
+    val stampsDabs: Boolean
+        get() = brush != Brush.NIB && brush != Brush.SMEAR
+
+    /**
+     * What one dab carries, as a fraction of the Load slider.
+     *
+     * Load means ink per brush-width travelled. Defining it per dab instead
+     * would make the mark depend on the stamp spacing, and defining it per
+     * touch event -- which is what it used to be -- makes it depend on how
+     * often the digitiser happened to report, so the same stroke drawn twice
+     * came out at different weights.
+     */
+    val inkPerDab: Float
+        get() = stampSpacing / splatRadius.coerceAtLeast(1e-4f)
+
+    /** Width over height. Stroke geometry has to use the same metric as the shaders. */
+    val canvasAspect: Float get() = aspect
 
     /**
      * A stroke sample. Coordinates and delta are in UV space; the brush decides
@@ -941,6 +984,126 @@ class FluidSim(private val ctx: Context) {
         dye.swap(); background.swap(); age.swap()
     }
 
+    // ---------------- undo ----------------
+
+    /**
+     * A stroke's worth of history: the pixels of one layer as they were before
+     * it was touched. Only the active layer can change during a stroke -- bake,
+     * soak, smear and the FLIP retire all write there and nowhere else -- so a
+     * single texture is the whole edit.
+     */
+    private class Snapshot(val layerIndex: Int, val tex: Tex)
+
+    private val undoStack = ArrayDeque<Snapshot>()
+    private val redoStack = ArrayDeque<Snapshot>()
+    private var pendingStroke: Snapshot? = null
+
+    /**
+     * A cap in bytes rather than in steps: a snapshot is a full canvas, and at
+     * 2048 detail that is 15 MB apiece. Counting strokes would be a memory
+     * cliff on exactly the canvases that can least afford one.
+     */
+    private val undoBudgetBytes = 64L * 1024 * 1024
+
+    /**
+     * Snapshots are all the same size, and allocating one at the start of every
+     * stroke is a full-canvas texture create -- 15 MB at 2048 detail -- right at
+     * the moment the pen touches down. Retired ones are kept for reuse instead.
+     */
+    private val snapshotPool = ArrayDeque<Tex>()
+
+    private fun obtainSnapshotTex(): Tex =
+        snapshotPool.removeLastOrNull() ?: Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+
+    private fun recycle(tex: Tex) {
+        if (snapshotPool.size < 4 && tex.width == dyeW && tex.height == dyeH) {
+            snapshotPool.addLast(tex)
+        } else {
+            tex.release()
+        }
+    }
+
+    /** Undo history is real VRAM and belongs in the HUD's total. */
+    fun historyBytes(): Long =
+        undoStack.sumOf { it.tex.bytes() } + redoStack.sumOf { it.tex.bytes() } +
+        snapshotPool.sumOf { it.bytes() } + (pendingStroke?.tex?.bytes() ?: 0L)
+
+    val canUndo get() = undoStack.isNotEmpty()
+    val canRedo get() = redoStack.isNotEmpty()
+
+    fun beginStroke() {
+        if (!allocated) return
+        pendingStroke?.let { recycle(it.tex) }
+        pendingStroke = Snapshot(activeLayer, copyOfLayer())
+    }
+
+    fun endStroke() {
+        val s = pendingStroke ?: return
+        pendingStroke = null
+        undoStack.addLast(s)
+        trim(undoStack)
+        // a new stroke is a new branch of history
+        redoStack.forEach { recycle(it.tex) }
+        redoStack.clear()
+    }
+
+    fun undo(): Boolean = step(undoStack, redoStack)
+
+    fun redo(): Boolean = step(redoStack, undoStack)
+
+    private fun step(from: ArrayDeque<Snapshot>, to: ArrayDeque<Snapshot>): Boolean {
+        if (!allocated) return false
+        val s = from.removeLastOrNull() ?: return false
+        if (s.layerIndex !in layers.indices) {   // the stack moved under it
+            recycle(s.tex)
+            return false
+        }
+        to.addLast(Snapshot(s.layerIndex, copyOfLayer(s.layerIndex)))
+        trim(to)
+        blit(s.tex, layers[s.layerIndex].tex.read)
+        recycle(s.tex)
+        quietLiveFields()
+        layersDirty = true
+        return true
+    }
+
+    /**
+     * Undo restores paint that has set. Anything still live would bake again a
+     * moment later and undo the undo, so the simulation is stilled as well.
+     */
+    private fun quietLiveFields() {
+        velocity.clear(); dye.clear(); age.clear(); water.clear()
+        flipInk.clear(); flip.clear(); nibInkField.clear()
+        flipVel.clear(); flipVelOld.clear(); flipMass.clear()
+        flipPressure.clear(); flipDivergence.clear()
+        pressure.clear(); curl.clear(); divergence.clear()
+        waterActive = false; nibActive = false
+    }
+
+    private fun copyOfLayer(index: Int = activeLayer): Tex {
+        val copy = obtainSnapshotTex()
+        blit(layers[index].tex.read, copy)
+        return copy
+    }
+
+    private fun trim(stack: ArrayDeque<Snapshot>) {
+        var bytes = stack.sumOf { it.tex.bytes() }
+        while (stack.size > 1 && bytes > undoBudgetBytes) {
+            bytes -= stack.first().tex.bytes()
+            recycle(stack.removeFirst().tex)
+        }
+    }
+
+    /**
+     * Structural changes -- a layer added, deleted or reordered -- would leave
+     * every snapshot pointing at the wrong sheet, so history starts over.
+     */
+    fun dropHistory() {
+        pendingStroke?.let { recycle(it.tex) }; pendingStroke = null
+        undoStack.forEach { recycle(it.tex) }; undoStack.clear()
+        redoStack.forEach { recycle(it.tex) }; redoStack.clear()
+    }
+
     // ---------------- layers ----------------
 
     /** Hard cap. Each layer is two full-canvas RGBA16F textures. */
@@ -953,6 +1116,7 @@ class FluidSim(private val ctx: Context) {
         layers.add(activeLayer + 1, fresh)
         activeLayer += 1
         layersDirty = true
+        dropHistory()
         return true
     }
 
@@ -962,6 +1126,7 @@ class FluidSim(private val ctx: Context) {
         layers.removeAt(activeLayer).tex.release()
         activeLayer = activeLayer.coerceAtMost(layers.size - 1)
         layersDirty = true
+        dropHistory()
         return true
     }
 
@@ -973,12 +1138,15 @@ class FluidSim(private val ctx: Context) {
         layers.add(to, l)
         activeLayer = to
         layersDirty = true
+        dropHistory()
         return true
     }
 
     /** Wipes only the layer being painted on, leaving the rest of the stack. */
     fun clearActiveLayer() {
         if (!allocated) return
+        beginStroke()
+        endStroke()
         background.clear()
         dye.clear(); age.clear()
         layersDirty = true
@@ -1024,6 +1192,9 @@ class FluidSim(private val ctx: Context) {
     }
 
     private fun releaseTextures() {
+        dropHistory()
+        snapshotPool.forEach { it.release() }
+        snapshotPool.clear()
         velocity.release(); dye.release(); age.release()
         layers.forEach { it.tex.release() }
         layers.clear()

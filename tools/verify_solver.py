@@ -1109,6 +1109,105 @@ def main():
               f"0.4 -> {low:.1f}, 1.6 -> {high:.1f}")
     print()
 
+    # ---- strokes are paths, not points ----
+    print("Stroke interpolation:")
+
+    def walk(sim, path, spacing, radius, ink=1.0):
+        """Mirrors MainActivity.strokeTo: dabs at a fixed spacing along the
+        path, with the leftover distance carried across touch events so the
+        count follows the path and not the report rate."""
+        carry = spacing            # first dab lands on the touch point
+        for (pu, pv), (u, v) in zip(path, path[1:]):
+            dx, dy = (u - pu) * sim.aspect, v - pv
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist <= 0:
+                continue
+            nxt = spacing - carry
+            impulse = min(1.0, spacing / dist)
+            stamps = 0
+            while nxt <= dist and stamps < 64:
+                t = nxt / dist
+                sim.splat(pu + (u - pu) * t, pv + (v - pv) * t,
+                          (u - pu) * 12.0 * impulse, (v - pv) * 12.0 * impulse,
+                          (0.0, 0.0, 0.0), radius=radius,
+                          ink=ink * spacing / max(radius, 1e-4))
+                nxt += spacing
+                stamps += 1
+            carry = dist - (nxt - spacing) if stamps < 64 else 0.0
+
+    RAD = 0.023          # the brush size in the screenshot that beaded
+    ENDS = [(0.15, 0.5), (0.85, 0.5)]                       # one huge jump
+    REPORTED = [(0.15 + 0.7 * k / 20, 0.5) for k in range(21)]   # as a digitiser reports it
+
+    def coverage(alpha, samples=40):
+        """Lowest ink found along the path, as a fraction of the highest."""
+        h, w = alpha.shape
+        vals = []
+        for k in range(samples):
+            u = 0.15 + (0.85 - 0.15) * (k + 0.5) / samples
+            vals.append(alpha[h // 2, min(w - 1, int(u * w))])
+        return min(vals) / max(max(vals), 1e-6)
+
+    # one splat per event is exactly what the old code did: two events for the
+    # whole sweep, stamped only at the points reported
+    q = Sim(args.res)
+    walk(q, ENDS, spacing=10.0, radius=RAD)          # spacing so large it never subdivides
+    beaded = coverage(q.dye.read_t.read()[:, :, 3])
+    check("sampling only at the reported points leaves gaps",
+          beaded < 0.05, f"thinnest point is {beaded * 100:.1f}% of the peak")
+
+    q = Sim(args.res)
+    walk(q, REPORTED, spacing=RAD * 0.5, radius=RAD)
+    joined = coverage(q.dye.read_t.read()[:, :, 3])
+    check("stamping along the path leaves an unbroken mark",
+          joined > 0.5, f"thinnest point is {joined * 100:.1f}% of the peak")
+
+    # a flick: one event covering a tenth of the canvas, which is about the most
+    # a 120 Hz digitiser will report in one go
+    q = Sim(args.res)
+    walk(q, [(0.15, 0.5), (0.25, 0.5), (0.35, 0.5)], spacing=RAD * 0.5, radius=RAD)
+    a = q.dye.read_t.read()[:, :, 3]
+    h, w = a.shape
+    flick = min(a[h // 2, int(x * w)] for x in np.linspace(0.16, 0.34, 30))
+    check("a flick stays unbroken without hitting the dab cap",
+          flick > 0.5 * a.max(), f"thinnest point is {flick / max(a.max(), 1e-6) * 100:.1f}% of the peak")
+
+    # the same path reported coarsely or finely must paint the same stroke
+    def ink_for(events):
+        q = Sim(args.res)
+        path = [(0.15 + 0.7 * k / events, 0.5) for k in range(events + 1)]
+        walk(q, path, spacing=RAD * 0.3, radius=RAD)
+        return float(q.dye.read_t.read()[:, :, 3].sum())
+
+    coarse, fine = ink_for(2), ink_for(20)
+    check("ink does not depend on how often the digitiser reported",
+          abs(coarse - fine) / max(coarse, 1e-6) < 0.05,
+          f"2 events {coarse:.1f}, 20 events {fine:.1f}")
+
+    # Load means ink per brush-width travelled, so twice the path is twice the
+    # ink -- and the old per-event definition is what made the same stroke come
+    # out at different weights depending on how busy the frame was.
+    def ink_for_length(frac):
+        q = Sim(args.res)
+        q.splat_radius = RAD
+        path = [(0.15, 0.5), (0.15 + 0.7 * frac, 0.5)]
+        walk(q, path, spacing=RAD * 0.5, radius=RAD)
+        return float(q.dye.read_t.read()[:, :, 3].sum())
+
+    half, whole = ink_for_length(0.5), ink_for_length(1.0)
+    check("ink follows the distance travelled",
+          abs(whole / max(half, 1e-6) - 2.0) < 0.15,
+          f"half the path {half:.1f}, all of it {whole:.1f}")
+
+    # how much heavier the mark now reads, for the Load defaults
+    q = Sim(args.res)
+    for (u, v) in REPORTED[1:]:
+        q.splat(u, v, 0.0, 0.0, (0.0, 0.0, 0.0), radius=RAD, ink=1.0)
+    per_event = float(q.dye.read_t.read()[:, :, 3].sum())
+    print(f"   (one dab per event deposited {per_event:.1f}; "
+          f"the path deposits {fine:.1f}, {fine / max(per_event, 1e-6):.1f}x)")
+    print()
+
     # ---- layers ----
     print("Layers:")
     comp = compile_compute("composite.comp")
@@ -1162,6 +1261,68 @@ def main():
     b = over(RED, (0.0, 0.0, 0.0, 0.5))
     check("stacking order changes the result",
           abs(a[0] - b[0]) > 0.05, f"{a[0]:.3f} vs {b[0]:.3f}")
+    print()
+
+    # ---- undo ----
+    print("Undo:")
+    blit_p = compile_compute("blit.comp")
+
+    def copy_of(src):
+        """What FluidSim.copyOfLayer does: a snapshot of one layer's pixels."""
+        dst = Tex(src.w, src.h, GL_RGBA16F, GL_LINEAR)
+        glUseProgram(blit_p)
+        src.sampler(0)
+        glUniform1i(uni(blit_p, "uSrc"), 0)
+        dst.image(0, GL_WRITE_ONLY)
+        glDispatchCompute((dst.w + 7) // 8, (dst.h + 7) // 8, 1)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
+        return dst
+
+    def restore(snap, dst):
+        glUseProgram(blit_p)
+        snap.sampler(0)
+        glUniform1i(uni(blit_p, "uSrc"), 0)
+        dst.image(0, GL_WRITE_ONLY)
+        glDispatchCompute((dst.w + 7) // 8, (dst.h + 7) // 8, 1)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
+
+    q = Sim(args.res)
+    q.bake_enabled = True
+    q.splat(0.3, 0.5, 1.0, 0.0, (0.0, 0.0, 0.0))
+    for _ in range(30):
+        q.step(dt)
+    first = copy_of(q.bg.read_t)          # the canvas as undo would snapshot it
+    before = first.read()
+    check("there is something to undo", float(before[:, :, 3].sum()) > 1.0,
+          f"baked ink {before[:, :, 3].sum():.1f}")
+
+    q.splat(0.7, 0.5, -1.0, 0.0, (0.0, 0.0, 0.0))
+    for _ in range(30):
+        q.step(dt)
+    after_tex = copy_of(q.bg.read_t)
+    after = after_tex.read()
+    check("a second stroke changes the canvas",
+          not np.array_equal(before, after),
+          f"baked ink {before[:, :, 3].sum():.1f} -> {after[:, :, 3].sum():.1f}")
+
+    restore(first, q.bg.read_t)
+    check("undo restores the canvas exactly",
+          bool(np.array_equal(q.bg.read_t.read(), before)),
+          f"max abs diff = {np.abs(q.bg.read_t.read() - before).max():.3e}")
+
+    restore(after_tex, q.bg.read_t)
+    check("redo returns it exactly",
+          bool(np.array_equal(q.bg.read_t.read(), after)),
+          f"max abs diff = {np.abs(q.bg.read_t.read() - after).max():.3e}")
+
+    # a snapshot must not alias the layer it came from, or undo would restore
+    # the state it was meant to replace
+    q.splat(0.5, 0.2, 0.0, 0.0, (0.0, 0.0, 0.0))
+    for _ in range(10):
+        q.step(dt)
+    check("a snapshot is a copy, not a view of the layer",
+          bool(np.array_equal(first.read(), before)),
+          "the snapshot did not follow the layer")
     print()
 
     # ---- determinism ----

@@ -143,6 +143,61 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## A stroke is a path, not a list of points
+
+The gas brush beaded on fast strokes — a row of separate dabs with white
+between them. Two causes, both in the input layer rather than the solver:
+
+1. **One splat per touch event, at the current point.** The previous point was
+   passed along but only used to derive velocity, so the mark was one dab per
+   event and the gap between dabs was however far the finger had travelled. The
+   nib and smear never beaded because they draw a capsule from the previous
+   point, which is the same fix by another name.
+2. **The batched samples were thrown away.** Android packs several positions
+   into each `ACTION_MOVE` and exposes the extras through `historySize`. Reading
+   only the last one discards most of what the digitiser reported and cuts
+   corners across.
+
+Both are fixed. Dabs are stamped at a fixed spacing in canvas units, and the
+leftover distance is **carried across touch events** — without that the spacing
+restarts at every event and the dab count follows the report rate again. Half a
+radius apart is enough: the falloff is `exp(-d²/r²)`, and measured coverage never
+drops below 74% of the peak, while every dab is a full-canvas pass so closer
+spacing costs frames for a mark that is already continuous.
+
+The first attempt shared each *segment's* load between its dabs, which the tests
+rejected outright: the same path reported as 2 events gave 19.6 ink and as 20
+events gave 195.6. **Load is ink per brush-width travelled**, not per event and
+not per dab — the only definition of the three that does not depend on how busy
+the frame was. Measured: 299.4 either way, and half the path deposits half the
+ink. Against the old per-event behaviour the mark reads about 1.5× heavier.
+
+## Undo and redo
+
+`undo` and `redo` sit on the tool rail. Undo is by **snapshot**, not by the
+checkpoint-and-replay the PRD specified. Replay reproduces the live simulation,
+which undo does not need: what an artist wants back is the paint that *set*, and
+only one layer can change during a stroke — bake, soak, smear and the FLIP retire
+all write to the active layer and nowhere else. So one texture is the whole edit.
+
+Undo also stills the simulation. Anything still live would bake again a moment
+later and undo the undo.
+
+The depth is a **memory budget rather than a step count**: a snapshot is a whole
+canvas, 4.7 MB at 1174×502 but 15 MB at 2048 detail, so *n* steps would be a
+memory cliff on exactly the canvases that can least afford one. 64 MB of history,
+which is 13 steps at the default detail and 4 at the largest. Retired snapshots
+are pooled rather than deleted, so a stroke does not begin with a full-canvas
+texture allocation. The HUD's VRAM figure includes all of it.
+
+Structural layer changes — add, delete, reorder — leave every snapshot pointing
+at the wrong sheet, so they clear history. Deleting a layer therefore asks first.
+Wiping a layer is undoable.
+
+Five checks cover it: that the snapshot round-trips bit-identically in both
+directions, and that a snapshot is a copy rather than a view of the layer it came
+from — an alias would restore exactly the state it was meant to replace.
+
 ## Layers, and saving a PNG
 
 Both live on a rail down the **right** edge, mirroring the tool rail: `png`, then
