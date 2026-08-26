@@ -143,6 +143,39 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## Layers, and saving a PNG
+
+Both live on a rail down the **right** edge, mirroring the tool rail: `png`, then
+one small button per layer with the top of the stack at the top of the rail, then
+`+`. Tapping the selected layer again opens its panel — opacity, hide, move up or
+down, wipe that layer alone, delete.
+
+The solver never learned about layers. `background` is now simply whichever layer
+is active, so bake, soak, dry, smear and the FLIP retire all still write to one
+texture and none of them changed. What the display needs is the *rest* of the
+stack, and sampling eight layers per pixel per frame is wasted work when only one
+of them ever changes — so everything below the active layer is flattened into one
+texture and everything above into another, recomposed only when the stack itself
+changes. Painting never dirties them. Display costs two extra texture reads no
+matter how deep the stack is, and skips them when that half is empty.
+
+Live fluid sits between the two halves: paint that has not baked yet belongs to
+the active layer, so a layer above covers wet paint exactly as it covers dry.
+
+Six checks cover the composite operator directly — half-coverage, full occlusion,
+opacity scaling colour and coverage together, zero opacity as a no-op,
+compositing onto blank paper, and that stacking order changes the result.
+
+**PNG** renders the whole stack into an offscreen buffer at *canvas* resolution
+rather than the screen's, so the file is the painting and not the phone's
+viewport, and the debug overlays are forced off so a heat view never lands in the
+saved image. On Android 10 and up MediaStore takes the file into
+`Pictures/MaxPaint` with no permission at all; older devices fall back to the
+app's own Pictures folder if the storage permission was refused, so the painting
+is saved either way and only the gallery listing is lost. Compression runs on its
+own thread — it is slow enough to stutter the canvas from either the GL or the UI
+thread.
+
 ## The canvas grid is not square
 
 The simulation grid takes the shape of the canvas. Picking a resolution N sets a
@@ -525,9 +558,9 @@ python3 tools/compare_solvers.py 128
 
 | Layer | How | Status |
 |---|---|---|
-| GLSL, all 11 shaders | `glslangValidator` against the ES 3.1 spec | passing |
-| Solver behaviour | Executed on a real GLES 3.1 driver (EGL surfaceless + Mesa llvmpipe) | 12/12 checks passing |
-| Kotlin, all 5 sources | `kotlinc` against the real Android 14 framework classes (`org.robolectric:android-all`, from Maven Central) | compiles clean, 23 classes |
+| GLSL, every shader | `glslangValidator` against the ES 3.1 spec | passing |
+| Solver behaviour | Executed on a real GLES 3.1 driver (EGL surfaceless + Mesa llvmpipe) | 49 solver + 14 FLIP checks passing |
+| Kotlin, all sources | `kotlinc` against the real Android 14 framework classes (`org.robolectric:android-all`, from Maven Central) | compiles clean |
 | Resource + manifest packaging | `aapt2` via Gradle, on CI | passing — APK builds clean |
 
 `tools/verify_solver.py` creates a genuine ES 3.1 context and runs the same pass

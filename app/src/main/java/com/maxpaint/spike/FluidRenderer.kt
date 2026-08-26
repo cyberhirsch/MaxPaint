@@ -28,6 +28,10 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var clearRequested = false
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
+    @Volatile var exportRequested = false
+
+    /** Handed the finished frame on the GL thread; saving happens off it. */
+    @Volatile var onExported: ((android.graphics.Bitmap) -> Unit)? = null
 
     @Volatile var statsLine: String = ""
     @Volatile var benchmarkReport: String? = null
@@ -139,6 +143,13 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             touches.clear()
         }
 
+        sim.recomposeLayers()
+
+        if (exportRequested) {
+            exportRequested = false
+            exportPng()
+        }
+
         if (freezeRequested) {
             freezeRequested = false
             sim.freezeNow()
@@ -165,10 +176,14 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         GLES31.glViewport(0, 0, viewW, viewH)
         GLES31.glClearColor(1f, 1f, 1f, 1f)   // paper
         GLES31.glClear(GLES31.GL_COLOR_BUFFER_BIT)
+        drawCanvas(debugView, heatOverlay)
+    }
 
+    /** The composite, drawn into whatever framebuffer is bound. */
+    private fun drawCanvas(view: Int, heat: Boolean) {
         GLES31.glUseProgram(displayProgram)
-        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uDebugView"), debugView)
-        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uHeat"), if (heatOverlay) 1 else 0)
+        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uDebugView"), view)
+        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uHeat"), if (heat) 1 else 0)
         GLES31.glUniform1f(GLES31.glGetUniformLocation(displayProgram, "uSettleSpeed"), sim.settleSpeed)
         sim.dyeTexture.bindSampler(0)
         sim.velocityTexture.bindSampler(1)
@@ -176,6 +191,18 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.waterTexture.bindSampler(3)
         sim.flipTexture.bindSampler(4)
         sim.nibTexture.bindSampler(5)
+
+        val under = sim.underlayTexture
+        val over = sim.overlayTexture
+        under?.bindSampler(6)
+        over?.bindSampler(7)
+        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uHasUnder"), if (under != null) 1 else 0)
+        GLES31.glUniform1i(GLES31.glGetUniformLocation(displayProgram, "uHasOver"), if (over != null) 1 else 0)
+        val active = sim.layers.getOrNull(sim.activeLayer)
+        GLES31.glUniform1f(
+            GLES31.glGetUniformLocation(displayProgram, "uActiveAlpha"),
+            if (active == null || !active.visible) 0f else active.opacity
+        )
         GLES31.glUniform1i(
             GLES31.glGetUniformLocation(displayProgram, "uShowWater"),
             if (sim.waterActive) 1 else 0
@@ -184,6 +211,42 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         GLES31.glBindVertexArray(vao)
         GLES31.glDrawArrays(GLES31.GL_TRIANGLES, 0, 3)
         GLES31.glBindVertexArray(0)
+    }
+
+    /**
+     * Renders the canvas at its own resolution rather than the screen's, so the
+     * saved image is the painting and not the phone's viewport. glReadPixels
+     * hands back rows bottom-up, hence the flip.
+     */
+    private fun exportPng() {
+        val w = sim.dyeW
+        val h = sim.dyeH
+        val target = Tex(w, h, GLES31.GL_RGBA8, GLES31.GL_NEAREST)
+        try {
+            ScratchFbo.bind(target)
+            GLES31.glViewport(0, 0, w, h)
+            GLES31.glClearColor(1f, 1f, 1f, 1f)
+            GLES31.glClear(GLES31.GL_COLOR_BUFFER_BIT)
+            drawCanvas(view = 0, heat = false)   // never export the debug overlays
+
+            val buf = java.nio.ByteBuffer.allocateDirect(w * h * 4)
+                .order(java.nio.ByteOrder.nativeOrder())
+            GLES31.glReadPixels(0, 0, w, h, GLES31.GL_RGBA, GLES31.GL_UNSIGNED_BYTE, buf)
+            buf.rewind()
+
+            val flipped = android.graphics.Bitmap.createBitmap(
+                w, h, android.graphics.Bitmap.Config.ARGB_8888
+            )
+            flipped.copyPixelsFromBuffer(buf)
+            val m = android.graphics.Matrix().apply { postScale(1f, -1f) }
+            val out = android.graphics.Bitmap.createBitmap(flipped, 0, 0, w, h, m, false)
+            if (out !== flipped) flipped.recycle()
+            onExported?.invoke(out)
+        } finally {
+            ScratchFbo.unbind()
+            target.release()
+            GLES31.glViewport(0, 0, viewW, viewH)
+        }
     }
 
     private fun runBenchmark() {
@@ -208,10 +271,11 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         val vram = sim.vramBytes() / (1024.0 * 1024.0)
 
         statsLine = String.format(
-            "%s · %dx%d  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB",
+            "%s · %dx%d  %s x%d\n%.1f fps   %.2f ms (worst %.2f)\nVRAM %.1f MB   layer %d/%d",
             sim.brush.label, sim.simW, sim.simH,
             if (sim.useRedBlack) "RB-GS" else "Jacobi", sim.pressureIterations,
-            if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram
+            if (avg > 0) 1000.0 / avg else 0.0, avg, worst, vram,
+            sim.activeLayer + 1, sim.layers.size.coerceAtLeast(1)
         )
     }
 

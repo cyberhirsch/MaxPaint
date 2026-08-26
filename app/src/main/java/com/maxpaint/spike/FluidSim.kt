@@ -128,7 +128,23 @@ class FluidSim(private val ctx: Context) {
     private lateinit var velocity: DoubleTex
     private lateinit var dye: DoubleTex
     private lateinit var pressure: DoubleTex
-    private lateinit var background: DoubleTex
+    /**
+     * Paint that has set. There is always at least one layer; the active one is
+     * what everything bakes into, so the rest of the solver keeps talking to a
+     * single [DoubleTex] and does not know layers exist.
+     */
+    val layers = ArrayList<Layer>()
+    var activeLayer = 0
+        set(v) { field = v.coerceIn(0, layers.size - 1); layersDirty = true }
+    private val background get() = layers[activeLayer].tex
+
+    /** Set whenever the stack below or above the active layer changes shape. */
+    var layersDirty = true
+
+    // Everything under the active layer, and everything over it, flattened.
+    // Recomposed only when the stack changes, not per frame.
+    private var underlay: DoubleTex? = null
+    private var overlay: DoubleTex? = null
     private lateinit var age: DoubleTex
     private lateinit var curl: Tex
     private lateinit var divergence: Tex
@@ -153,6 +169,7 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pSmear: ComputeProgram
     private lateinit var pPressureFlip: ComputeProgram
     private lateinit var pBlit: ComputeProgram
+    private lateinit var pComposite: ComputeProgram
     private lateinit var pDivergenceFlip: ComputeProgram
     private lateinit var pGradSubFlip: ComputeProgram
     private lateinit var flipVel: DoubleTex
@@ -178,12 +195,16 @@ class FluidSim(private val ctx: Context) {
     val dyeRes get() = simRes * dyeScale
     val dyeTexture get() = dye.read
     val backgroundTexture get() = background.read
+    val underlayTexture get() = underlay?.read
+    val overlayTexture get() = overlay?.read
     val waterTexture get() = water.read
     val velocityTexture get() = velocity.read
 
     fun vramBytes(): Long =
         if (!allocated) 0
-        else velocity.bytes() + dye.bytes() + background.bytes() + age.bytes() + water.bytes() +
+        else velocity.bytes() + dye.bytes() + age.bytes() + water.bytes() +
+             layers.sumOf { it.tex.bytes() } +
+             (underlay?.bytes() ?: 0L) + (overlay?.bytes() ?: 0L) +
              flipInk.bytes() + flip.bytes() + nibInkField.bytes() +
              flipVel.bytes() + flipVelOld.bytes() + flipMass.bytes() +
              flipPressure.bytes() + flipDivergence.bytes() +
@@ -211,6 +232,7 @@ class FluidSim(private val ctx: Context) {
         pSmear = ComputeProgram(ctx, "shaders/smear.comp")
         pPressureFlip = ComputeProgram(ctx, "shaders/pressure_flip.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
+        pComposite = ComputeProgram(ctx, "shaders/composite.comp")
         pDivergenceFlip = ComputeProgram(ctx, "shaders/divergence_flip.comp")
         pGradSubFlip = ComputeProgram(ctx, "shaders/gradsub_flip.comp")
         flip.init()
@@ -278,7 +300,12 @@ class FluidSim(private val ctx: Context) {
         dye = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         // Baked paint lives at dye resolution for the spike. The PRD wants it at
         // full canvas resolution (7.2); that arrives with the document model in M3.
-        background = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        layers.clear()
+        layers.add(Layer("Layer 1", DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)))
+        activeLayer = 0
+        underlay = null
+        overlay = null
+        layersDirty = true
         age = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_NEAREST)
 
 // RGBA32F: watercolor fluxes are small relative to the depth they modify,
@@ -310,7 +337,9 @@ class FluidSim(private val ctx: Context) {
 
     fun clear() {
         if (!allocated) return
-        velocity.clear(); dye.clear(); background.clear(); age.clear(); water.clear()
+        velocity.clear(); dye.clear(); age.clear(); water.clear()
+        layers.forEach { it.tex.clear() }
+        layersDirty = true
         flipInk.clear(); flip.clear(); nibInkField.clear()
         flipVel.clear(); flipVelOld.clear(); flipMass.clear()
         flipPressure.clear(); flipDivergence.clear()
@@ -912,8 +941,94 @@ class FluidSim(private val ctx: Context) {
         dye.swap(); background.swap(); age.swap()
     }
 
+    // ---------------- layers ----------------
+
+    /** Hard cap. Each layer is two full-canvas RGBA16F textures. */
+    val maxLayers = 8
+
+    fun addLayer(): Boolean {
+        if (!allocated || layers.size >= maxLayers) return false
+        val fresh = Layer("Layer ${layers.size + 1}",
+                          DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR))
+        layers.add(activeLayer + 1, fresh)
+        activeLayer += 1
+        layersDirty = true
+        return true
+    }
+
+    /** The last layer is never removed: there is always something to paint on. */
+    fun deleteActiveLayer(): Boolean {
+        if (!allocated || layers.size <= 1) return false
+        layers.removeAt(activeLayer).tex.release()
+        activeLayer = activeLayer.coerceAtMost(layers.size - 1)
+        layersDirty = true
+        return true
+    }
+
+    /** Moves the active layer one step up (+1) or down (-1) the stack. */
+    fun moveActiveLayer(delta: Int): Boolean {
+        val to = activeLayer + delta
+        if (!allocated || to < 0 || to >= layers.size) return false
+        val l = layers.removeAt(activeLayer)
+        layers.add(to, l)
+        activeLayer = to
+        layersDirty = true
+        return true
+    }
+
+    /** Wipes only the layer being painted on, leaving the rest of the stack. */
+    fun clearActiveLayer() {
+        if (!allocated) return
+        background.clear()
+        dye.clear(); age.clear()
+        layersDirty = true
+    }
+
+    /**
+     * Flattens everything under the active layer, and everything over it, into
+     * one texture each. Called only when the stack changed -- an eight-layer
+     * canvas would otherwise cost sixteen full-canvas passes every frame.
+     */
+    fun recomposeLayers() {
+        if (!allocated || !layersDirty) return
+        layersDirty = false
+
+        val below = layers.subList(0, activeLayer).filter { it.visible && it.opacity > 0f }
+        val above = layers.subList(activeLayer + 1, layers.size).filter { it.visible && it.opacity > 0f }
+
+        underlay = flatten(below, underlay)
+        overlay = flatten(above, overlay)
+    }
+
+    /**
+     * Returns a texture holding [group] composited bottom-up, or null when the
+     * group is empty -- an empty stack should not cost VRAM or a sampler read.
+     */
+    private fun flatten(group: List<Layer>, existing: DoubleTex?): DoubleTex? {
+        if (group.isEmpty()) {
+            existing?.release()
+            return null
+        }
+        val target = existing ?: DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        target.read.clear()
+        group.forEach { l ->
+            pComposite.use()
+            target.read.bindSampler(0)
+            l.tex.read.bindSampler(1)
+            target.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+            pComposite.set("uOpacity", l.opacity)
+            pComposite.dispatch(dyeW, dyeH)
+            target.swap()
+        }
+        return target
+    }
+
     private fun releaseTextures() {
-        velocity.release(); dye.release(); background.release(); age.release()
+        velocity.release(); dye.release(); age.release()
+        layers.forEach { it.tex.release() }
+        layers.clear()
+        underlay?.release(); underlay = null
+        overlay?.release(); overlay = null
         water.release(); flipInk.release(); nibInkField.release()
         flipVel.release(); flipVelOld.release(); flipMass.release()
         flipPressure.release(); flipDivergence.release()

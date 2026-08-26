@@ -1,0 +1,24 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// One layer "over" the accumulated stack. Both sides are premultiplied, so the
+// layer's opacity scales colour and coverage together and the usual over
+// operator holds:  dst = src + dst * (1 - src.a)
+
+layout(binding = 0) uniform highp sampler2D uAccum;
+layout(binding = 1) uniform highp sampler2D uLayer;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform float uOpacity;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 dst = texelFetch(uAccum, c, 0);
+    vec4 src = texelFetch(uLayer, c, 0) * uOpacity;
+    imageStore(uDst, c, src + dst * (1.0 - clamp(src.a, 0.0, 1.0)));
+}

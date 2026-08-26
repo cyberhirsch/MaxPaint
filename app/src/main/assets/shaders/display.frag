@@ -14,6 +14,12 @@ layout(binding = 5) uniform highp sampler2D uNib;         // wet nib ink
 uniform int   uDebugView;    // 0 = paint, 1 = velocity
 uniform int   uHeat;         // 1 = tint live fluid by how close it is to setting
 uniform float uSettleSpeed;  // speed below which paint starts to set
+layout(binding = 6) uniform highp sampler2D uUnder;        // layers below the active one, flattened
+layout(binding = 7) uniform highp sampler2D uOver;        // layers above it, flattened
+
+uniform int   uHasUnder;     // 0 = nothing below, do not sample
+uniform int   uHasOver;      // 0 = nothing above
+uniform float uActiveAlpha;  // opacity of the layer being painted on, 0 when hidden
 uniform int   uShowWater;    // 1 = draw wet watercolor pigment and a damp sheen
 
 const vec3 PAPER = vec3(1.0);
@@ -25,12 +31,17 @@ void main() {
         return;
     }
 
-    vec4 baked = texture(uBackground, vUv);
+    vec4 baked = texture(uBackground, vUv) * uActiveAlpha;
     vec4 live  = texture(uDye, vUv);
 
-    // Dye and background are premultiplied, so compositing is a plain "over":
-    // paper first, then baked paint, then the live fluid on top.
-    vec3 col = PAPER * (1.0 - clamp(baked.a, 0.0, 1.0)) + baked.rgb;
+    // Everything is premultiplied, so each step is a plain "over": paper, the
+    // flattened layers below, the layer being painted on, then the live fluid.
+    vec3 col = PAPER;
+    if (uHasUnder == 1) {
+        vec4 under = texture(uUnder, vUv);
+        col = col * (1.0 - clamp(under.a, 0.0, 1.0)) + under.rgb;
+    }
+    col = col * (1.0 - clamp(baked.a, 0.0, 1.0)) + baked.rgb;
 
     if (uShowWater == 1) {
         vec3 w = texture(uWater, vUv).xyz;
@@ -60,6 +71,12 @@ void main() {
     // wet nib ink sits on top of everything, black and opaque at full strength
     float nib = clamp(texture(uNib, vUv).x, 0.0, 1.0);
     col *= (1.0 - nib);
+
+    // layers stacked over the one being painted on cover the wet paint too
+    if (uHasOver == 1) {
+        vec4 over = texture(uOver, vUv);
+        col = col * (1.0 - clamp(over.a, 0.0, 1.0)) + over.rgb;
+    }
 
     fragColor = vec4(col, 1.0);
 }
