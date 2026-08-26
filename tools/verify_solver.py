@@ -134,6 +134,13 @@ class Tex:
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
         glDeleteFramebuffers(1, [fbo])
 
+    def upload(self, arr):
+        """Fill the texture from an (h, w, 4) float array."""
+        glBindTexture(GL_TEXTURE_2D, self.id)
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, self.w, self.h,
+                        GL_RGBA, GL_FLOAT, np.ascontiguousarray(arr, dtype=np.float32))
+        glBindTexture(GL_TEXTURE_2D, 0)
+
     def image(self, unit, access):
         glBindImageTexture(unit, self.id, 0, GL_FALSE, 0, access, self.ifmt)
 
@@ -1100,6 +1107,61 @@ def main():
         low, high = deposit(0.4, brush), deposit(1.6, brush)
         check(f"load scales what the {brush} brush puts down", high > low * 2.0,
               f"0.4 -> {low:.1f}, 1.6 -> {high:.1f}")
+    print()
+
+    # ---- layers ----
+    print("Layers:")
+    comp = compile_compute("composite.comp")
+    LW = LH = 16
+
+    def over(bottom, top, opacity=1.0):
+        """One composite pass: `top` at `opacity` over `bottom`."""
+        acc = Tex(LW, LH, GL_RGBA16F, GL_LINEAR)
+        lay = Tex(LW, LH, GL_RGBA16F, GL_LINEAR)
+        dst = Tex(LW, LH, GL_RGBA16F, GL_LINEAR)
+        acc.upload(np.tile(np.array(bottom, np.float32), (LH, LW, 1)))
+        lay.upload(np.tile(np.array(top, np.float32), (LH, LW, 1)))
+        glUseProgram(comp)
+        acc.sampler(0)
+        lay.sampler(1)
+        dst.image(0, GL_WRITE_ONLY)
+        glUniform1f(uni(comp, "uOpacity"), opacity)
+        glDispatchCompute((LW + 7) // 8, (LH + 7) // 8, 1)
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
+        return dst.read()[LH // 2, LW // 2]
+
+    RED = (1.0, 0.0, 0.0, 1.0)          # premultiplied opaque red
+
+    r = over(RED, (0.0, 0.0, 0.0, 0.5))
+    check("a half-covering layer composites over the one below",
+          abs(r[0] - 0.5) < 0.01 and abs(r[3] - 1.0) < 0.01,
+          f"rgb {r[0]:.3f} alpha {r[3]:.3f}")
+
+    r = over(RED, (0.0, 0.0, 0.0, 1.0))
+    check("an opaque layer hides everything under it",
+          r[0] < 0.01 and abs(r[3] - 1.0) < 0.01,
+          f"rgb {r[0]:.3f} alpha {r[3]:.3f}")
+
+    r = over(RED, (0.0, 0.0, 0.0, 0.5), opacity=0.5)
+    check("layer opacity scales colour and coverage together",
+          abs(r[0] - 0.75) < 0.01 and abs(r[3] - 1.0) < 0.01,
+          f"rgb {r[0]:.3f} alpha {r[3]:.3f}")
+
+    r = over(RED, (0.0, 0.0, 0.0, 0.5), opacity=0.0)
+    check("a layer at zero opacity changes nothing",
+          abs(r[0] - 1.0) < 0.01 and abs(r[3] - 1.0) < 0.01,
+          f"rgb {r[0]:.3f} alpha {r[3]:.3f}")
+
+    r = over((0.0, 0.0, 0.0, 0.0), RED)
+    check("compositing onto blank paper reproduces the layer",
+          abs(r[0] - 1.0) < 0.01 and abs(r[3] - 1.0) < 0.01,
+          f"rgb {r[0]:.3f} alpha {r[3]:.3f}")
+
+    # order is the whole point: red over black must not equal black over red
+    a = over((0.0, 0.0, 0.0, 1.0), (1.0, 0.0, 0.0, 0.5))
+    b = over(RED, (0.0, 0.0, 0.0, 0.5))
+    check("stacking order changes the result",
+          abs(a[0] - b[0]) > 0.05, f"{a[0]:.3f} vs {b[0]:.3f}")
     print()
 
     # ---- determinism ----

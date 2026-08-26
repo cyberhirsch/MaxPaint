@@ -39,6 +39,12 @@ class MainActivity : AppCompatActivity() {
 
     private val toolButtons = HashMap<Brush, Button>()
 
+    private lateinit var layerRail: LinearLayout
+    private lateinit var layerPanel: LinearLayout
+    private lateinit var layerPanelBody: LinearLayout
+    private var layerPanelOpen = false
+    private var lastStack = -1 to -1
+
     private val lastX = HashMap<Int, Float>()
     private val lastY = HashMap<Int, Float>()
     private var twoFingerDownAt = 0L
@@ -63,12 +69,26 @@ class MainActivity : AppCompatActivity() {
         root.addView(buildHud())
         root.addView(buildPanel())
         root.addView(buildRail())
+        root.addView(buildLayerPanel())
+        root.addView(buildLayerRail())
         setContentView(root)
+
+        renderer.onExported = { bitmap ->
+            // compression is slow enough to stutter the canvas; keep it off both
+            // the GL thread and the UI thread
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            Thread {
+                val msg = PngExport.save(applicationContext, bitmap, "maxpaint-$stamp")
+                ui.post { toast(msg) }
+            }.start()
+        }
 
         versionLabel = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName ?: ""
         }.getOrDefault("")
 
+        refreshLayerRail()
         selectTool(Brush.GAS, fromUser = false)
         pollRenderer()
     }
@@ -211,6 +231,168 @@ class MainActivity : AppCompatActivity() {
         }
         if (panelOpen) showToolSettings()
         if (fromUser) toast(b.label)
+    }
+
+    // ---------------- layers, on the right ----------------
+
+    /**
+     * Layer work touches GL objects, so it has to happen on the GL thread. The
+     * rail is redrawn afterwards, once the change has actually been made.
+     */
+    private fun onGl(work: () -> Unit) {
+        glView.queueEvent {
+            work()
+            ui.post { refreshLayerRail() }
+        }
+    }
+
+    private fun buildLayerRail(): View {
+        layerRail = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(120, 0, 0, 0))
+            setPadding(dp(2), dp(2), dp(2), dp(2))
+        }
+
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(layerRail)
+        }
+        val lp = FrameLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT)
+        lp.gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        scroll.layoutParams = lp
+        return scroll
+    }
+
+    /**
+     * Top of the stack sits at the top of the rail, so the buttons read the way
+     * the paint is layered rather than in index order.
+     */
+    private fun refreshLayerRail() {
+        if (!::layerRail.isInitialized) return
+        layerRail.removeAllViews()
+
+        layerRail.addView(toolButton("png") {
+            toast("Saving…")
+            renderer.exportRequested = true
+        })
+        layerRail.addView(divider())
+
+        // snapshot: the stack itself is owned by the GL thread
+        val layers = ArrayList(renderer.sim.layers)
+        val active = renderer.sim.activeLayer
+        for (i in layers.indices.reversed()) {
+            val layer = layers[i]
+            val mark = if (!layer.visible) "·" else "${i + 1}"
+            val btn = toolButton(mark) {
+                if (i == active) toggleLayerPanel() else onGl { renderer.sim.activeLayer = i }
+            }
+            btn.alpha = if (i == active) 1f else 0.55f
+            layerRail.addView(btn)
+        }
+
+        if (layers.size < renderer.sim.maxLayers) {
+            layerRail.addView(toolButton("+") {
+                onGl { renderer.sim.addLayer() }
+            })
+        }
+
+        if (layerPanelOpen) showLayerSettings()
+    }
+
+    private fun buildLayerPanel(): View {
+        layerPanelBody = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val inner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            addView(layerPanelBody)
+        }
+
+        layerPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.argb(205, 16, 16, 20))
+            visibility = View.GONE
+            addView(ScrollView(this@MainActivity).apply { addView(inner) })
+        }
+
+        val lp = FrameLayout.LayoutParams(dp(240), MATCH_PARENT)
+        lp.gravity = Gravity.END
+        lp.rightMargin = dp(46)
+        layerPanel.layoutParams = lp
+        return layerPanel
+    }
+
+    private fun toggleLayerPanel() {
+        layerPanelOpen = !layerPanelOpen
+        layerPanel.visibility = if (layerPanelOpen) View.VISIBLE else View.GONE
+        if (layerPanelOpen) showLayerSettings()
+    }
+
+    private fun showLayerSettings() {
+        val sim = renderer.sim
+        val layer = sim.layers.getOrNull(sim.activeLayer) ?: return
+        layerPanelBody.removeAllViews()
+
+        layerPanelBody.addView(TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(0, 0, 0, dp(6))
+            text = "${layer.name} — tap the layer again to close"
+        })
+
+        layerPanelBody.addView(slider("Opacity", (layer.opacity * 100).toInt(), 100) { p, l ->
+            l.text = "Opacity: $p%"
+            onGl {
+                layer.opacity = p / 100f
+                sim.layersDirty = true
+            }
+        })
+
+        layerPanelBody.addView(rowOfButtons(
+            "hide" to {
+                onGl { layer.visible = !layer.visible; sim.layersDirty = true }
+            },
+            "down" to { onGl { sim.moveActiveLayer(-1) } },
+            "up" to { onGl { sim.moveActiveLayer(1) } }
+        ))
+
+        layerPanelBody.addView(rowOfButtons(
+            "wipe" to { onGl { sim.clearActiveLayer() } },
+            "del" to {
+                if (sim.layers.size <= 1) toast("The last layer stays")
+                else onGl { sim.deleteActiveLayer() }
+            }
+        ))
+
+        layerPanelBody.addView(TextView(this).apply {
+            setTextColor(Color.argb(170, 255, 255, 255))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+            setPadding(0, dp(8), 0, 0)
+            text = "Paint always goes onto the selected layer. " +
+                   "‘png’ saves the whole stack at canvas resolution."
+        })
+    }
+
+    private fun rowOfButtons(vararg items: Pair<String, () -> Unit>): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        items.forEach { (label, action) ->
+            row.addView(Button(this).apply {
+                text = label
+                isAllCaps = false
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                setPadding(0, 0, 0, 0)
+                minWidth = 0
+                minHeight = 0
+                layoutParams = LinearLayout.LayoutParams(dp(62), dp(36)).also {
+                    it.rightMargin = dp(4)
+                }
+                setOnClickListener { action() }
+            })
+        }
+        return row
     }
 
     // ---------------- the settings panel ----------------
@@ -591,6 +773,13 @@ class MainActivity : AppCompatActivity() {
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null
                     showReport(it)
+                }
+                // the stack is built on the GL thread, and reallocating the
+                // canvas rebuilds it, so the rail follows rather than leads
+                val stack = renderer.sim.layers.size to renderer.sim.activeLayer
+                if (stack != lastStack) {
+                    lastStack = stack
+                    refreshLayerRail()
                 }
                 ui.postDelayed(this, 250)
             }

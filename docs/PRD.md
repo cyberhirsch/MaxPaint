@@ -61,10 +61,13 @@ pigment-diffusion) so that "fluid" is a family of media rather than one effect.
   from the FLIP medium. Device rotation likewise does not reshape the canvas —
   the surface takes its shape once. Orientation may matter again at export, for
   the framing of the saved image, and nowhere else.
-- **Multiple layers.** Dropped after review: one canvas with one background
-  layer that paint bakes into. The bake already gives the artist control over
-  what is permanent, which is most of what layers were there to provide, and
-  every layer would otherwise multiply checkpoint memory (§7.3).
+- ~~**Multiple layers.**~~ Reinstated after use. Dropped at review on the
+  argument that the bake already controls what is permanent, but that only
+  covers *when* paint becomes permanent, not *what it sits over* — with one
+  sheet there is no way to work over a finished passage without touching it.
+  Shipped in a form that keeps the solver ignorant of layers: it bakes into the
+  active layer only, and the rest of the stack is flattened above and below it
+  (§7.7). Checkpoint memory (§7.3) is still a concern and caps the stack at 8.
 
 ---
 
@@ -229,11 +232,14 @@ if schedule allows, since it reuses the bake path.
 ### 6.1 Canvas & document
 - FR-1 Canvas sizes: 1K, 2K, 4K square + common aspect ratios. Simulation grid
   resolution is decoupled from canvas resolution (see §7.2).
-- ~~FR-2 Layers~~ — dropped, see Non-Goals. One canvas, one background layer.
-- ~~FR-3 One live layer at a time~~ — moot without layers; the single background
-  layer is always the one the simulation bakes into.
+- FR-2 Layers: up to 8, each with visibility and opacity, reorderable, with
+  per-layer wipe. Built.
+- FR-3 One live layer at a time: the simulation bakes into the active layer and
+  no other. Layers above it composite over the wet paint as well as the dry.
+  Built.
 - FR-4 Export: PNG (with/without alpha), JPEG, and a `.maxpaint` document
-  carrying the replay log.
+  carrying the replay log. PNG is built — saved at canvas resolution rather
+  than the screen's, so the file is the painting and not the viewport.
 - FR-5 Time-lapse export: MP4 of the session, driven by the replay log (§6.6).
 
 ### 6.2 Input
@@ -354,6 +360,29 @@ if schedule allows, since it reuses the bake path.
   well-converged sweep count.
 - Device matrix: Pixel (Mali/Adreno), Samsung (Xclipse/Adreno), one budget
   MediaTek device, one tablet.
+
+### 7.7 Layers
+
+The solver has one background texture and knows nothing about a stack. Layers
+are built around it rather than through it: `background` is simply whichever
+layer is active, so every existing pass — bake, soak, dry, smear, the FLIP
+retire — keeps writing to exactly one texture and needed no change.
+
+Display then needs the rest of the stack. Sampling eight layers per pixel per
+frame is wasteful when only one of them ever changes, so everything below the
+active layer is flattened into one texture and everything above into another,
+recomposed only when the stack itself changes — a layer selected, reordered,
+hidden, or its opacity moved. Painting never dirties them. The display shader
+therefore costs two extra texture reads regardless of stack depth, and both are
+skipped outright when that half of the stack is empty.
+
+Compositing is the premultiplied over operator, `dst = src + dst·(1−src.a)`,
+with layer opacity scaling colour and coverage together. Live fluid sits between
+the two flattened halves: paint that has not yet baked belongs to the active
+layer, so layers above it cover the wet paint the same as the dry.
+
+Cost is two full-canvas RGBA16F textures per layer, plus up to two more for the
+flattened halves — about 4.7 MB each at 1174×502. Eight is the cap.
 
 ---
 
