@@ -30,7 +30,16 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     var settleMinAge = 0.25f
     var pointSize = 5f
     var inkPerParticle = 0.14f
-    var emitPerSample = 32
+    /**
+     * Particles per grid cell of the dab's footprint, not particles per dab.
+     *
+     * Density is what the solve actually responds to -- coupling was measured
+     * to peak between eight and thirteen particles per occupied cell -- and a
+     * fixed count per dab does not hold density: a wider brush spreads the same
+     * particles over more cells, so changing Brush size silently changed how
+     * thick the medium behaved. The count is derived from the footprint.
+     */
+    var particlesPerCell = 15f
 
     private var buffer = 0
     private var vao = 0
@@ -110,9 +119,22 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         seed = 1f
     }
 
-    fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float, inkScale: Float = 1f) {
+    /** How many particles a dab of this radius emits, on the current grid. */
+    fun countFor(radius: Float, aspect: Float): Int {
+        // cells are square in world space, so one number describes both axes
+        val cell = kotlin.math.sqrt(aspect.coerceIn(0.2f, 5f)) / gridRes.coerceAtLeast(1)
+        val footprint = (Math.PI.toFloat() * radius * radius / (cell * cell))
+            .coerceAtLeast(1f)
+        return (particlesPerCell * footprint).toInt().coerceIn(4, 512)
+    }
+
+    /** Set by the sim when the grid is reshaped; only [countFor] needs it. */
+    var gridRes = 192; private set
+
+    fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float,
+             inkScale: Float = 1f, aspect: Float = 1f, perDab: Int = 32) {
         if (buffer == 0) return
-        val count = emitPerSample
+        val count = perDab
 
         pEmit.use()
         GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
@@ -122,6 +144,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pEmit.set("uPoint", u, v)
         pEmit.set("uVel", du, dv)
         pEmit.set("uRadius", radius)
+        pEmit.set("uAspect", aspect)
         pEmit.set("uInk", inkPerParticle * inkScale)
         pEmit.set("uJitterSeed", seed)
         GLES31.glDispatchCompute((count + 63) / 64, 1, 1)
@@ -133,7 +156,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     }
 
     /** Sizes the accumulator to the grid; called when the canvas is allocated. */
-    fun resizeGrid(w: Int, h: Int) {
+    fun resizeGrid(w: Int, h: Int, res: Int = gridRes) {
+        gridRes = res
         val cells = w * h
         if (cells == gridCells && gridBuffer != 0) return
         if (gridBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(gridBuffer), 0)

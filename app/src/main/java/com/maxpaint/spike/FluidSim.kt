@@ -301,7 +301,7 @@ class FluidSim(private val ctx: Context) {
         flipMass = Tex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
         flipPressure = DoubleTex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
         flipDivergence = Tex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
-        flip.resizeGrid(flipW, flipH)
+        flip.resizeGrid(flipW, flipH, flipRes)
         GLUtil.checkError("reshapeFlipGrid($res)")
     }
 
@@ -375,7 +375,7 @@ class FluidSim(private val ctx: Context) {
         flipMass = Tex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
         flipPressure = DoubleTex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
         flipDivergence = Tex(flipW, flipH, GLES31.GL_R32F, GLES31.GL_NEAREST)
-        flip.resizeGrid(flipW, flipH)
+        flip.resizeGrid(flipW, flipH, flipRes)
 
         partialW = (dyeW + STATS_TILE - 1) / STATS_TILE
         partialH = (dyeH + STATS_TILE - 1) / STATS_TILE
@@ -478,7 +478,9 @@ class FluidSim(private val ctx: Context) {
             Brush.FLIP -> {
                 // a little momentum into the grid too, so the pour interacts
                 // with fluid already on the canvas
-                flip.emit(u, v, du, dv, splatRadius * 0.5f, inkPerStroke)
+                val r = splatRadius * 0.5f
+                flip.emit(u, v, du, dv, r, inkPerStroke, aspect,
+                          perDab = flip.countFor(r, aspect))
                 force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
             }
             Brush.WATERCOLOR -> wet(u, v)

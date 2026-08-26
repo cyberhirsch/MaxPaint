@@ -409,6 +409,12 @@ peak of 7.1x at thirteen per occupied cell. The particle grid is now its own
 budget (192, canvas-shaped) and is exposed as a Coupling control, because how
 coarse it is *is* how thick the medium reads.
 
+The same ratio's other half: emission is specified as a **density** — particles
+per cell of the dab's footprint — rather than a count per dab. A fixed count
+does not hold density, so a wider brush spread the same particles thinner and
+Brush size silently changed how the medium behaved (9.6 down to 1.0 per occupied
+cell across the size range).
+
 ---
 
 ## 8. UX Requirements

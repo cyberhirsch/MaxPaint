@@ -593,10 +593,12 @@ class MainActivity : AppCompatActivity() {
                     onGl { renderer.sim.reshapeFlipGrid(res) }
                     l.text = "Coupling: grid ${res}  (← finer, thicker →)"
                 })
-                panelBody.addView(slider("Particles", renderer.sim.flip.emitPerSample, 96) { p, l ->
-                    val n = p.coerceAtLeast(1)
-                    renderer.sim.flip.emitPerSample = n
-                    l.text = "Particles per dab: $n"
+                panelBody.addView(slider("Density", renderer.sim.flip.particlesPerCell.toInt(), 40) { p, l ->
+                    val d = p.coerceAtLeast(1).toFloat()
+                    renderer.sim.flip.particlesPerCell = d
+                    val n = renderer.sim.flip.countFor(
+                        renderer.sim.splatRadius * 0.5f, renderer.sim.canvasAspect)
+                    l.text = "Density: ${d.toInt()}  ($n particles per dab)"
                 })
                 panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 50) { p, l ->
                     renderer.sim.flip.cohesion = p.toFloat()

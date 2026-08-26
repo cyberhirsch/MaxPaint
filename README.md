@@ -439,6 +439,33 @@ free surface requires. Its `uValue` counterpart clears pressure outright each
 frame where MaxPaint keeps 60% — but that is a decayed warm start, not a constant,
 and is fine as it stands.
 
+### Density, not count — and it has to survive the brush-size slider
+
+The other half of the same ratio, and the other thing FLIPsphere gets right: it
+runs a lot of particles. With the coarse grid in place, a real stroke at the old
+default of 32 particles per dab landed at 3.7 per occupied cell — better than
+1.2, still short of the 8–13 where coupling peaks.
+
+Worse, the count was fixed per dab while the footprint was not, so the medium
+thinned as the brush widened and at a wide brush was back to one particle per
+cell however coarse the grid was:
+
+| brush size | fixed 32 per dab | derived from footprint |
+|---:|---:|---:|
+| 0.010 | 9.6 | 5.4 |
+| 0.023 | 3.7 | 9.9 |
+| 0.060 | **1.0** | 12.1 |
+
+Emission is now a **density**: the count comes from how many grid cells the dab
+actually covers, so the number that matters holds while Brush size changes only
+the size of the mark. The slider reads `Density: 15 (98 particles per dab)` and
+the FLIP presets carry densities instead of counts.
+
+A bug turned up next to it: emission scattered its particles in UV while every
+other brush measures its radius in world units, so on a 2.34 canvas a drip dab
+was an ellipse 2.34x wider than tall while claiming to be the same size as the
+gas brush's. It scatters in world units now.
+
 ### Cohesion is what makes it clump
 
 Removing gravity left nothing to gather the paint. A liquid clumps because

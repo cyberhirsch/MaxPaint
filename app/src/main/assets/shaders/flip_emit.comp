@@ -16,6 +16,7 @@ uniform int   uCapacity;
 uniform vec2  uPoint;
 uniform vec2  uVel;
 uniform float uRadius;
+uniform float uAspect;    // width / height
 uniform float uInk;
 uniform float uJitterSeed;
 
@@ -31,7 +32,10 @@ void main() {
     float a = hash(s) * 6.2831853;
     float rr = sqrt(hash(s + 1.7)) * uRadius;
 
-    vec2 pos = uPoint + vec2(cos(a), sin(a)) * rr;
+    // Scatter in WORLD units, not UV. Every other brush measures its radius
+    // with x scaled by the aspect, so scattering in UV made a dab an ellipse
+    // as wide as the canvas is oblong while calling itself the same size.
+    vec2 pos = uPoint + vec2(cos(a) / uAspect, sin(a)) * rr;
     vec2 vel = uVel * (0.7 + 0.6 * hash(s + 3.1));
 
     data[slot * 2]     = vec4(pos, vel);
