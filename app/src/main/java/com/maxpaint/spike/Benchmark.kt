@@ -187,8 +187,10 @@ class ParticleBenchmark(
                 val t = i * 0.013f
                 val u = 0.5f + 0.35f * kotlin.math.sin(t * 2.3f)
                 val v = 0.5f + 0.35f * kotlin.math.sin(t * 1.7f)
-                sim.flip.emit(u, v, 0.4f, 0.2f, sim.splatRadius, 1f)
-                placed += sim.flip.emitPerSample
+                val n = sim.flip.countFor(sim.splatRadius, sim.canvasAspect)
+                sim.flip.emit(u, v, 0.4f, 0.2f, sim.splatRadius, 1f,
+                              sim.canvasAspect, perDab = n)
+                placed += n
                 i++
             }
 

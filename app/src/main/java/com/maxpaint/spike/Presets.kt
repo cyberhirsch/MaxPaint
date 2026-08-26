@@ -58,29 +58,29 @@ object Presets {
         Preset("Wet Paint") { s ->
             s.flip.flipRatio = 0.92f; s.flip.particleDrag = 0.25f
             s.flip.settleSpeed = 0.06f; s.flip.cohesion = 12f
-            s.flip.pointSize = 4f; s.flip.emitPerSample = 32
+            s.flip.pointSize = 4f; s.flip.particlesPerCell = 15f
         },
         Preset("Splatter") { s ->
             s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
             s.flip.settleSpeed = 0.12f; s.flip.cohesion = 4f
-            s.flip.pointSize = 3f; s.flip.emitPerSample = 40
+            s.flip.pointSize = 3f; s.flip.particlesPerCell = 19f
         },
         Preset("Fling") { s ->
             // travels a long way before it stops
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.05f
             s.flip.settleSpeed = 0.03f; s.flip.cohesion = 8f
-            s.flip.pointSize = 4f; s.flip.emitPerSample = 24
+            s.flip.pointSize = 4f; s.flip.particlesPerCell = 11f
         },
         Preset("Honey") { s ->
             s.flip.flipRatio = 0.45f; s.flip.particleDrag = 1.6f
             s.flip.settleSpeed = 0.02f; s.flip.cohesion = 26f
-            s.flip.pointSize = 6f; s.flip.emitPerSample = 40
+            s.flip.pointSize = 6f; s.flip.particlesPerCell = 19f
         },
         Preset("Mercury") { s ->
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.04f
             // very high tension: beads up hard and stays whole
             s.flip.settleSpeed = 0.015f; s.flip.cohesion = 38f
-            s.flip.pointSize = 5f; s.flip.emitPerSample = 48
+            s.flip.pointSize = 5f; s.flip.particlesPerCell = 23f
         }
     )
 

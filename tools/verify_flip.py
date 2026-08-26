@@ -95,7 +95,7 @@ class Flip:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
         return out
 
-    def emit(self, u, v, du, dv, n=64, radius=0.02, ink=0.14):
+    def emit(self, u, v, du, dv, n=64, radius=0.02, ink=0.14, aspect=1.0):
         glUseProgram(self.emit_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1i(uni(self.emit_p, "uHead"), self.head)
@@ -104,6 +104,7 @@ class Flip:
         glUniform2f(uni(self.emit_p, "uPoint"), u, v)
         glUniform2f(uni(self.emit_p, "uVel"), du, dv)
         glUniform1f(uni(self.emit_p, "uRadius"), radius)
+        glUniform1f(uni(self.emit_p, "uAspect"), aspect)
         glUniform1f(uni(self.emit_p, "uInk"), ink)
         glUniform1f(uni(self.emit_p, "uJitterSeed"), self.seed)
         glDispatchCompute((n + 63) // 64, 1, 1)
@@ -429,6 +430,38 @@ def main():
     check("and barely couples them at one particle per cell",
           lone < dense * 0.6,
           f"{lone_per_cell:.1f} per occupied cell gives only {lone:.1f}x")
+
+    # Density must hold as the brush changes size. Coupling responds to
+    # particles per cell, so a fixed count per dab means a wider brush spreads
+    # the same particles thinner and Brush size silently changes how the medium
+    # behaves -- measured 9.6 down to 1.0 per occupied cell over this range.
+    ASPECT, RES, FGW, FGH = 2.34, 192, 292, 124
+    CELL = np.sqrt(ASPECT) / RES
+
+    def per_occupied(brush, fixed=None):
+        r = brush * 0.5
+        n = (fixed if fixed else
+             int(np.clip(15.0 * max(np.pi * r * r / (CELL * CELL), 1.0), 4, 512)))
+        dabs = min(12, max(1, CAP // n))
+        q = Flip()
+        q.make_grid(FGW, FGH)
+        for d in range(dabs):
+            q.emit(0.35 + (d * brush * 0.5) / ASPECT, 0.5, 0.6, 0.0,
+                   n=n, radius=r, aspect=ASPECT)
+        q.p2g()
+        occ = int((q.mass.read()[:, :, 0] > 0.08).sum())
+        return (n * dabs) / max(occ, 1)
+
+    BRUSHES = (0.010, 0.023, 0.060)
+    scaled = [per_occupied(b) for b in BRUSHES]
+    check("particle density holds as the brush changes size",
+          min(scaled) > 4.0 and max(scaled) / min(scaled) < 3.0,
+          " ".join(f"{b:.3f}->{d:.1f}" for b, d in zip(BRUSHES, scaled)))
+
+    fixed = [per_occupied(b, fixed=32) for b in BRUSHES]
+    check("and a fixed count per dab does not",
+          max(fixed) / min(fixed) > max(scaled) / min(scaled) * 1.5,
+          " ".join(f"{b:.3f}->{d:.1f}" for b, d in zip(BRUSHES, fixed)))
 
     # the shipped grid must sit in the band that was measured to work
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
