@@ -47,9 +47,15 @@ class MainActivity : AppCompatActivity() {
 
     private val lastX = HashMap<Int, Float>()
     private val lastY = HashMap<Int, Float>()
+
+    /** Distance walked since the last dab, per pointer. */
+    private val carry = HashMap<Int, Float>()
     private var twoFingerDownAt = 0L
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    /** Bounds the work one touch event can queue. */
+    private val MAX_DABS = 64
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -105,40 +111,32 @@ class MainActivity : AppCompatActivity() {
                 val i = event.actionIndex
                 lastX[event.getPointerId(i)] = event.getX(i)
                 lastY[event.getPointerId(i)] = event.getY(i)
+                // banked in full, so the first dab lands on the touch point
+                // rather than one spacing into the stroke
+                carry[event.getPointerId(i)] = renderer.sim.stampSpacing
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) renderer.queueStrokeBegin()
                 if (event.pointerCount == 2) twoFingerDownAt = System.currentTimeMillis()
             }
 
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
                     val id = event.getPointerId(i)
-                    val x = event.getX(i)
-                    val y = event.getY(i)
-                    val px = lastX[id] ?: x
-                    val py = lastY[id] ?: y
-
-                    // UV space, y flipped: GL textures put v=0 at the bottom
-                    val u = x / w
-                    val v = 1f - y / h
-                    val du = (x - px) / w * 12f
-                    val dv = -(y - py) / h * 12f
-
-                    // Pressure scales how much ink lands; tilt widens the mark.
-                    // A finger reports about 1.0, so touch is unaffected.
-                    val pressure = event.getPressure(i)
-                        .let { if (it <= 0f) 1f else it }
-                        .coerceIn(0.15f, 1.6f)
-                    val tilt = runCatching {
+                    // Tilt widens the mark; it is a property of the pen, not of
+                    // any one sample, so it is set once for the batch.
+                    renderer.tiltSpread = 1f + runCatching {
                         event.getAxisValue(MotionEvent.AXIS_TILT, i)
-                    }.getOrDefault(0f)
-                    renderer.tiltSpread = 1f + tilt.coerceIn(0f, 1.4f) * 0.8f
+                    }.getOrDefault(0f).coerceIn(0f, 1.4f) * 0.8f
 
-                    // the previous sample for THIS pointer, so two fingers are
-                    // never joined into one stroke
-                    renderer.queueSplat(u, v, du, dv, 0f, 0f, 0f, pressure,
-                                        px / w, 1f - py / h)
-
-                    lastX[id] = x
-                    lastY[id] = y
+                    // Android batches several positions into one MOVE event.
+                    // Reading only the last one throws away most of what the
+                    // digitiser reported and corners get cut across.
+                    for (hIdx in 0 until event.historySize) {
+                        strokeTo(id,
+                                 event.getHistoricalX(i, hIdx),
+                                 event.getHistoricalY(i, hIdx),
+                                 event.getHistoricalPressure(i, hIdx), w, h)
+                    }
+                    strokeTo(id, event.getX(i), event.getY(i), event.getPressure(i), w, h)
                 }
             }
 
@@ -155,14 +153,87 @@ class MainActivity : AppCompatActivity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 twoFingerDownAt = 0L
                 releasePointer(event)
+                renderer.queueStrokeEnd()
             }
         }
         return true
     }
 
+    /**
+     * Walks from where this pointer was to where it now is, stamping at a fixed
+     * spacing in canvas units. A stroke is a path, not the handful of points the
+     * digitiser happened to report: sampling per event alone beads the mark, and
+     * the faster the stroke the wider the gaps.
+     */
+    private fun strokeTo(id: Int, x: Float, y: Float, rawPressure: Float,
+                         w: Float, h: Float) {
+        val px = lastX[id] ?: x
+        val py = lastY[id] ?: y
+        lastX[id] = x
+        lastY[id] = y
+
+        // UV space, y flipped: GL textures put v=0 at the bottom
+        val u = x / w
+        val v = 1f - y / h
+        val pu = px / w
+        val pv = 1f - py / h
+
+        // Pressure scales how much ink lands. A finger reports about 1.0, so
+        // touch is unaffected.
+        val pressure = rawPressure
+            .let { if (it <= 0f) 1f else it }
+            .coerceIn(0.15f, 1.6f)
+
+        val sim = renderer.sim
+
+        // The nib and smear draw a capsule across the whole segment, so they
+        // are continuous already and want one call per reported point.
+        if (!sim.stampsDabs) {
+            renderer.queueSplat(u, v, (u - pu) * 12f, (v - pv) * 12f,
+                                0f, 0f, 0f, pressure, pu, pv)
+            return
+        }
+
+        // x is scaled by the aspect so distance matches what the shaders measure
+        val dx = (u - pu) * sim.canvasAspect
+        val dy = v - pv
+        val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+        if (dist <= 0f) return
+
+        val spacing = sim.stampSpacing
+        // Distance carried over from the last segment. Without it the spacing
+        // would restart at every touch event and the dab count -- and so the
+        // weight of the mark -- would follow the report rate again.
+        var next = spacing - (carry[id] ?: 0f)
+
+        // one dab's share of the segment's momentum, so the impulse a segment
+        // delivers is what it was when this was a single splat per event
+        val impulse = (spacing / dist).coerceAtMost(1f)
+        val du = (u - pu) * 12f * impulse
+        val dv = (v - pv) * 12f * impulse
+        val ink = pressure * sim.inkPerDab
+
+        var stamps = 0
+        while (next <= dist && stamps < MAX_DABS) {
+            val t = next / dist
+            val prevT = ((next - spacing) / dist).coerceAtLeast(0f)
+            renderer.queueSplat(
+                pu + (u - pu) * t, pv + (v - pv) * t,
+                du, dv, 0f, 0f, 0f, ink,
+                pu + (u - pu) * prevT, pv + (v - pv) * prevT
+            )
+            next += spacing
+            stamps++
+        }
+        // MAX_DABS caps one absurd jump -- a pointer reappearing across the
+        // canvas. The mark thins there rather than locking up the frame.
+        carry[id] = if (stamps < MAX_DABS) dist - (next - spacing) else 0f
+    }
+
     private fun releasePointer(event: MotionEvent) {
         val id = event.getPointerId(event.actionIndex)
         lastX.remove(id)
+        carry.remove(id)
         lastY.remove(id)
     }
 
@@ -184,6 +255,12 @@ class MainActivity : AppCompatActivity() {
         }
 
         rail.addView(divider())
+        rail.addView(toolButton("undo") {
+            if (renderer.sim.canUndo) renderer.undoRequested = true else toast("Nothing to undo")
+        })
+        rail.addView(toolButton("redo") {
+            if (renderer.sim.canRedo) renderer.redoRequested = true else toast("Nothing to redo")
+        })
         rail.addView(toolButton("set") {
             if (showingGlobal && panelOpen) togglePanel() else showGlobal()
         })
@@ -360,7 +437,7 @@ class MainActivity : AppCompatActivity() {
             "wipe" to { onGl { sim.clearActiveLayer() } },
             "del" to {
                 if (sim.layers.size <= 1) toast("The last layer stays")
-                else onGl { sim.deleteActiveLayer() }
+                else confirmDelete(layer.name)
             }
         ))
 
@@ -369,8 +446,20 @@ class MainActivity : AppCompatActivity() {
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
             setPadding(0, dp(8), 0, 0)
             text = "Paint always goes onto the selected layer. " +
-                   "‘png’ saves the whole stack at canvas resolution."
+                   "‘png’ saves the whole stack at canvas resolution. " +
+                   "Undo covers strokes and wipes; adding, deleting or " +
+                   "reordering layers starts history over."
         })
+    }
+
+    /** Deleting a layer cannot be undone, so it asks first. */
+    private fun confirmDelete(name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete $name?")
+            .setMessage("The paint on it goes with it. This cannot be undone.")
+            .setNegativeButton("Keep", null)
+            .setPositiveButton("Delete") { _, _ -> onGl { renderer.sim.deleteActiveLayer() } }
+            .show()
     }
 
     private fun rowOfButtons(vararg items: Pair<String, () -> Unit>): View {

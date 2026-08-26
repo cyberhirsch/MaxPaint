@@ -29,6 +29,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
     @Volatile var exportRequested = false
+    @Volatile var undoRequested = false
+    @Volatile var redoRequested = false
 
     /** Handed the finished frame on the GL thread; saving happens off it. */
     @Volatile var onExported: ((android.graphics.Bitmap) -> Unit)? = null
@@ -41,9 +43,23 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var appliedDyeScale = -1
     private var unsupported = false
 
-    private class Touch(val u: Float, val v: Float, val du: Float, val dv: Float,
-                        val r: Float, val g: Float, val b: Float, val pressure: Float,
-                        val prevU: Float, val prevV: Float)
+    /**
+     * Stroke boundaries travel in the same queue as the samples rather than as
+     * their own flags: a finger lifting and landing again inside one frame has
+     * to stay two strokes, and two booleans cannot express that.
+     */
+    private class Touch(val kind: Int,
+                        val u: Float = 0f, val v: Float = 0f,
+                        val du: Float = 0f, val dv: Float = 0f,
+                        val r: Float = 0f, val g: Float = 0f, val b: Float = 0f,
+                        val pressure: Float = 1f,
+                        val prevU: Float = 0f, val prevV: Float = 0f) {
+        companion object {
+            const val SAMPLE = 0
+            const val BEGIN = 1
+            const val END = 2
+        }
+    }
 
     private val touches = ConcurrentLinkedQueue<Touch>()
 
@@ -58,8 +74,12 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         r: Float, g: Float, b: Float, pressure: Float = 1f,
         prevU: Float = u, prevV: Float = v
     ) {
-        touches.add(Touch(u, v, du, dv, r, g, b, pressure, prevU, prevV))
+        touches.add(Touch(Touch.SAMPLE, u, v, du, dv, r, g, b, pressure, prevU, prevV))
     }
+
+    fun queueStrokeBegin() = touches.add(Touch(Touch.BEGIN))
+
+    fun queueStrokeEnd() = touches.add(Touch(Touch.END))
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         deviceInfo = "${GLES31.glGetString(GLES31.GL_RENDERER)} / ${GLES31.glGetString(GLES31.GL_VERSION)}"
@@ -161,9 +181,16 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
         while (true) {
             val t = touches.poll() ?: break
-            sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure, tiltSpread,
-                       t.prevU, t.prevV)
+            when (t.kind) {
+                Touch.BEGIN -> sim.beginStroke()
+                Touch.END -> sim.endStroke()
+                else -> sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure,
+                                   tiltSpread, t.prevU, t.prevV)
+            }
         }
+
+        if (undoRequested) { undoRequested = false; sim.undo() }
+        if (redoRequested) { redoRequested = false; sim.redo() }
 
         if (!paused) sim.step(dt)
 
