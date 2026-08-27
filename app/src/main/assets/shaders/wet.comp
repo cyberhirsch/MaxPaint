@@ -13,6 +13,8 @@ layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
 uniform vec2  uPoint;
 uniform float uRadius;
 uniform float uAspect;
+uniform vec2  uAxis;     // unit vector along the contact's long axis, world space
+uniform float uMinor;    // minor over major; 1.0 is a circle
 uniform float uWater;
 uniform float uPigment;
 
@@ -26,7 +28,19 @@ void main() {
     vec2 uv = (vec2(c) + 0.5) / vec2(sz);
     vec2 d = uv - uPoint;
     d.x *= uAspect;
-    float falloff = exp(-dot(d, d) / max(uRadius * uRadius, 1e-8));
+
+    // Into the contact patch's own frame, stretching across its short axis so
+    // one radius describes an ellipse. uAxis (1,0) with uMinor 1 is a circle
+    // and reproduces the round dab exactly.
+    // A zero axis or minor means nobody set them -- an unset uniform is 0, and
+    // a degenerate frame would inflate the dab over the whole canvas. The
+    // failure-safe reading of "no contact reported" is a circle.
+    vec2 ax = dot(uAxis, uAxis) > 0.5 ? uAxis : vec2(1.0, 0.0);
+    float mn = uMinor > 0.05 ? uMinor : 1.0;
+
+    vec2 e = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x)) / mn);
+
+    float falloff = exp(-dot(e, e) / max(uRadius * uRadius, 1e-8));
 
     if (falloff > 0.002) {
         w.x += uWater * falloff;

@@ -134,9 +134,15 @@ class MainActivity : AppCompatActivity() {
                         strokeTo(id,
                                  event.getHistoricalX(i, hIdx),
                                  event.getHistoricalY(i, hIdx),
-                                 event.getHistoricalPressure(i, hIdx), w, h)
+                                 event.getHistoricalPressure(i, hIdx),
+                                 event.getHistoricalTouchMajor(i, hIdx),
+                                 event.getHistoricalTouchMinor(i, hIdx),
+                                 event.getHistoricalOrientation(i, hIdx), w, h)
                     }
-                    strokeTo(id, event.getX(i), event.getY(i), event.getPressure(i), w, h)
+                    strokeTo(id, event.getX(i), event.getY(i), event.getPressure(i),
+                             event.getTouchMajor(i), event.getTouchMinor(i),
+                             event.getOrientation(i), w, h)
+                    if (i == 0) captureTouchReport(event, 0)
                 }
             }
 
@@ -166,6 +172,7 @@ class MainActivity : AppCompatActivity() {
      * the faster the stroke the wider the gaps.
      */
     private fun strokeTo(id: Int, x: Float, y: Float, rawPressure: Float,
+                         touchMajor: Float, touchMinor: Float, orientation: Float,
                          w: Float, h: Float) {
         val px = lastX[id] ?: x
         val py = lastY[id] ?: y
@@ -186,11 +193,22 @@ class MainActivity : AppCompatActivity() {
 
         val sim = renderer.sim
 
+        // The contact patch, in world units. World y spans 1.0 over the view's
+        // height, and the canvas is shown at its own aspect, so one pixel is
+        // 1/h of a world unit along either axis.
+        val major = (touchMajor / h).coerceAtLeast(0f)
+        val minor = (touchMinor / h).coerceIn(0f, major)
+        // getOrientation is clockwise from vertical; canvas v runs the other
+        // way from screen y, which turns (sin, -cos) into (sin, cos)
+        val angle = kotlin.math.atan2(
+            kotlin.math.cos(orientation), kotlin.math.sin(orientation)
+        )
+
         // The nib and smear draw a capsule across the whole segment, so they
         // are continuous already and want one call per reported point.
         if (!sim.stampsDabs) {
             renderer.queueSplat(u, v, (u - pu) * 12f, (v - pv) * 12f,
-                                0f, 0f, 0f, pressure, pu, pv)
+                                0f, 0f, 0f, pressure, pu, pv, major, minor, angle)
             return
         }
 
@@ -228,6 +246,75 @@ class MainActivity : AppCompatActivity() {
         // MAX_DABS caps one absurd jump -- a pointer reappearing across the
         // canvas. The mark thins there rather than locking up the frame.
         carry[id] = if (stamps < MAX_DABS) dist - (next - spacing) else 0f
+    }
+
+    // ---------------- what the digitiser actually reports ----------------
+
+    @Volatile private var touchReport = "touch: nothing yet"
+    private var showTouch = false
+
+    /**
+     * Reads every per-pointer axis Android exposes. Which of them carry a real
+     * signal is device-specific and not worth guessing at: on most capacitive
+     * panels pressure is derived from contact area, so the two are one signal
+     * wearing two names, and plenty of devices report a constant for both.
+     */
+    private fun captureTouchReport(event: MotionEvent, i: Int) {
+        if (!showTouch) return
+        val tool = when (event.getToolType(i)) {
+            MotionEvent.TOOL_TYPE_FINGER -> "finger"
+            MotionEvent.TOOL_TYPE_STYLUS -> "stylus"
+            MotionEvent.TOOL_TYPE_ERASER -> "eraser"
+            MotionEvent.TOOL_TYPE_MOUSE -> "mouse"
+            else -> "unknown"
+        }
+        val major = event.getTouchMajor(i)
+        val minor = event.getTouchMinor(i)
+        touchReport = buildString {
+            append("touch  $tool\n")
+            append(String.format("  pressure %.3f   size %.3f\n",
+                                 event.getPressure(i), event.getSize(i)))
+            append(String.format("  touch  %.1f x %.1f px   ratio %.2f\n",
+                                 major, minor,
+                                 if (major > 0f) minor / major else 1f))
+            append(String.format("  tool   %.1f x %.1f px\n",
+                                 event.getToolMajor(i), event.getToolMinor(i)))
+            append(String.format("  orientation %.2f rad   tilt %.2f rad",
+                                 event.getOrientation(i),
+                                 event.getAxisValue(MotionEvent.AXIS_TILT, i)))
+        }
+    }
+
+    /** What the driver claims to support, as opposed to what it sends. */
+    private fun deviceAxisReport(): String {
+        val axes = listOf(
+            "pressure" to MotionEvent.AXIS_PRESSURE,
+            "size" to MotionEvent.AXIS_SIZE,
+            "touchMajor" to MotionEvent.AXIS_TOUCH_MAJOR,
+            "touchMinor" to MotionEvent.AXIS_TOUCH_MINOR,
+            "toolMajor" to MotionEvent.AXIS_TOOL_MAJOR,
+            "toolMinor" to MotionEvent.AXIS_TOOL_MINOR,
+            "orientation" to MotionEvent.AXIS_ORIENTATION,
+            "tilt" to MotionEvent.AXIS_TILT,
+            "distance" to MotionEvent.AXIS_DISTANCE
+        )
+        val out = StringBuilder()
+        for (id in android.view.InputDevice.getDeviceIds()) {
+            val dev = android.view.InputDevice.getDevice(id) ?: continue
+            val touch = dev.sources and
+                android.view.InputDevice.SOURCE_CLASS_POINTER != 0
+            if (!touch) continue
+            out.append("${dev.name}\n")
+            axes.forEach { (label, axis) ->
+                val r = dev.getMotionRange(axis)
+                out.append(
+                    if (r == null) "  $label: not reported\n"
+                    else String.format("  %s: %.2f..%.2f  res %.3f\n",
+                                       label, r.min, r.max, r.resolution)
+                )
+            }
+        }
+        return if (out.isEmpty()) "No pointer device reported any axes." else out.toString()
     }
 
     private fun releasePointer(event: MotionEvent) {
@@ -771,6 +858,33 @@ class MainActivity : AppCompatActivity() {
                 .show()
         })
         panelBody.addView(row2)
+
+        panelBody.addView(divider())
+        panelBody.addView(hint("The finger touching the glass"))
+        panelBody.addView(slider("Contact shape",
+                                 (renderer.sim.contactShapeAmount * 100).toInt(), 100) { p, l ->
+            renderer.sim.contactShapeAmount = p / 100f
+            l.text = "Contact shape: $p%  (dab ovals to the finger)"
+        })
+        panelBody.addView(slider("Contact size",
+                                 (renderer.sim.contactSizeAmount * 100).toInt(), 100) { p, l ->
+            renderer.sim.contactSizeAmount = p / 100f
+            l.text = "Contact size: $p%" +
+                if (p == 0) "  (Brush size only)" else "  (overrides Brush size)"
+        })
+
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row3.addView(button("Touch") { b ->
+            showTouch = !showTouch
+            b.text = if (showTouch) "Hide" else "Touch"
+            if (showTouch) toast("Paint to see what the digitiser reports")
+        })
+        row3.addView(button("Axes") { showReport(deviceAxisReport()) })
+        panelBody.addView(row3)
+        panelBody.addView(hint("‘Touch’ prints the live per-sample values in the " +
+            "HUD; ‘Axes’ lists what this device claims to support. Contact size " +
+            "is off by default because it is in device-calibrated units — check " +
+            "the readout first."))
     }
 
     // ---------------- small widgets ----------------
@@ -877,6 +991,7 @@ class MainActivity : AppCompatActivity() {
                 hud.text = buildString {
                     if (versionLabel.isNotEmpty()) append(versionLabel).append('\n')
                     append(renderer.statsLine)
+                    if (showTouch) append('\n').append(touchReport)
                 }
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null

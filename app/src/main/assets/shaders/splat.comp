@@ -10,6 +10,8 @@ uniform vec2  uPoint;    // UV
 uniform vec4  uValue;    // amount to add at the centre
 uniform float uRadius;   // in UV units
 uniform float uAspect;   // width / height
+uniform vec2  uAxis;     // unit vector along the contact's long axis, world space
+uniform float uMinor;    // minor over major; 1.0 is a circle
 uniform int   uMode;     // 0 = add (paint), 1 = lerp toward uValue (reset age),
                          // 2 = scale down (solvent lifting pigment)
 
@@ -24,7 +26,18 @@ void main() {
     vec2 d = uv - uPoint;
     d.x *= uAspect;
 
-    float falloff = exp(-dot(d, d) / max(uRadius * uRadius, 1e-8));
+    // Into the contact patch's own frame, stretching across its short axis so
+    // one radius describes an ellipse. uAxis (1,0) with uMinor 1 is a circle
+    // and reproduces the round dab exactly.
+    // A zero axis or minor means nobody set them -- an unset uniform is 0, and
+    // a degenerate frame would inflate the dab over the whole canvas. The
+    // failure-safe reading of "no contact reported" is a circle.
+    vec2 ax = dot(uAxis, uAxis) > 0.5 ? uAxis : vec2(1.0, 0.0);
+    float mn = uMinor > 0.05 ? uMinor : 1.0;
+
+    vec2 e = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x)) / mn);
+
+    float falloff = exp(-dot(e, e) / max(uRadius * uRadius, 1e-8));
 
     vec4 result;
     if (uMode == 1) {

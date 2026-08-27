@@ -137,7 +137,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     var gridRes = 192; private set
 
     fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float,
-             inkScale: Float = 1f, aspect: Float = 1f, perDab: Int = 32) {
+             inkScale: Float = 1f, aspect: Float = 1f, perDab: Int = 32,
+             axisX: Float = 1f, axisY: Float = 0f, minor: Float = 1f) {
         if (buffer == 0) return
         val count = perDab
 
@@ -150,6 +151,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pEmit.set("uVel", du, dv)
         pEmit.set("uRadius", radius)
         pEmit.set("uAspect", aspect)
+        pEmit.set("uAxis", axisX, axisY)
+        pEmit.set("uMinor", minor)
         pEmit.set("uInk", inkPerParticle * inkScale)
         pEmit.set("uJitterSeed", seed)
         GLES31.glDispatchCompute((count + 63) / 64, 1, 1)
