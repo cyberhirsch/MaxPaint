@@ -636,15 +636,39 @@ class MainActivity : AppCompatActivity() {
             )
         })
 
+        // Nib and smear carry their own size controls; everything else drives
+        // the shared footprint, and every one of them needs its own.
+        if (selected != Brush.NIB && selected != Brush.SMEAR) {
+            panelBody.addView(slider("Brush size",
+                                     (renderer.sim.splatRadius * 1000).toInt(), 100) { p, l ->
+                renderer.sim.splatRadius = p / 1000f
+                l.text = String.format("Brush size: %.3f", p / 1000f)
+            })
+            panelBody.addView(slider("Contact shape",
+                                     (renderer.sim.contactShapeAmount * 100).toInt(), 100) { p, l ->
+                renderer.sim.contactShapeAmount = p / 100f
+                l.text = "Contact shape: $p%  (dab ovals to the finger)"
+            })
+            panelBody.addView(slider("Contact size",
+                                     (renderer.sim.contactSizeAmount * 100).toInt(), 100) { p, l ->
+                renderer.sim.contactSizeAmount = p / 100f
+                // Say what is actually being measured, so a slider that
+                // appears to do nothing can be told apart from a device that
+                // reports nothing. Refreshes whenever the panel is reopened.
+                val measured = renderer.sim.contactMajor * 0.5f
+                l.text = "Contact size: $p%  " + when {
+                    measured <= 0f -> "(no contact reported yet)"
+                    else -> String.format("(finger %.3f · brush %.3f)",
+                                          measured, renderer.sim.splatRadius)
+                }
+            })
+        }
+
         when (selected) {
             Brush.GAS -> {
                 panelBody.addView(slider("Swirl", renderer.sim.vorticity.toInt(), 60) { p, l ->
                     renderer.sim.vorticity = p.toFloat()
                     l.text = "Swirl: $p"
-                })
-                panelBody.addView(slider("Brush size", (renderer.sim.splatRadius * 1000).toInt(), 100) { p, l ->
-                    renderer.sim.splatRadius = p / 1000f
-                    l.text = String.format("Brush size: %.3f", p / 1000f)
                 })
             }
 
@@ -860,18 +884,7 @@ class MainActivity : AppCompatActivity() {
         panelBody.addView(row2)
 
         panelBody.addView(divider())
-        panelBody.addView(hint("The finger touching the glass"))
-        panelBody.addView(slider("Contact shape",
-                                 (renderer.sim.contactShapeAmount * 100).toInt(), 100) { p, l ->
-            renderer.sim.contactShapeAmount = p / 100f
-            l.text = "Contact shape: $p%  (dab ovals to the finger)"
-        })
-        panelBody.addView(slider("Contact size",
-                                 (renderer.sim.contactSizeAmount * 100).toInt(), 100) { p, l ->
-            renderer.sim.contactSizeAmount = p / 100f
-            l.text = "Contact size: $p%" +
-                if (p == 0) "  (Brush size only)" else "  (overrides Brush size)"
-        })
+        panelBody.addView(hint("What the digitiser reports"))
 
         val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row3.addView(button("Touch") { b ->
