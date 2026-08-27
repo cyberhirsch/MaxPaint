@@ -395,6 +395,16 @@ def main():
     # other. The pressure solve couples a CELL to its neighbours, so a cell
     # holding one particle couples that particle to nothing. This measures the
     # coupling directly: two streams fired head-on, with the solve and without.
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "..", "app", "src", "main", "java", "com",
+                            "maxpaint", "spike", "FluidSim.kt")).read()
+    shipped_res = int(re.search(r"var flipRes = (\d+)", src).group(1))
+    flip_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "app", "src", "main", "java", "com",
+                                 "maxpaint", "spike", "FlipSystem.kt")).read()
+    shipped_density = float(
+        re.search(r"var particlesPerCell = ([\d.]+)f", flip_src).group(1))
+
     def coupling(g):
         def run(project):
             q = Flip()
@@ -435,13 +445,19 @@ def main():
     # particles per cell, so a fixed count per dab means a wider brush spreads
     # the same particles thinner and Brush size silently changes how the medium
     # behaves -- measured 9.6 down to 1.0 per occupied cell over this range.
-    ASPECT, RES, FGW, FGH = 2.34, 192, 292, 124
+    # shaped from the shipped values, so the check follows the app rather than
+    # a snapshot of what the app used to be
+    ASPECT = 2.34
+    RES = shipped_res
+    FGW = int(RES * np.sqrt(ASPECT)) // 2 * 2
+    FGH = int(RES / np.sqrt(ASPECT)) // 2 * 2
     CELL = np.sqrt(ASPECT) / RES
 
     def per_occupied(brush, fixed=None):
         r = brush * 0.5
         n = (fixed if fixed else
-             int(np.clip(15.0 * max(np.pi * r * r / (CELL * CELL), 1.0), 4, 512)))
+             int(np.clip(shipped_density * max(np.pi * r * r / (CELL * CELL), 1.0),
+                         4, 2048)))
         dabs = min(12, max(1, CAP // n))
         q = Flip()
         q.make_grid(FGW, FGH)
@@ -464,12 +480,8 @@ def main():
           " ".join(f"{b:.3f}->{d:.1f}" for b, d in zip(BRUSHES, fixed)))
 
     # the shipped grid must sit in the band that was measured to work
-    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "app", "src", "main", "java", "com",
-                            "maxpaint", "spike", "FluidSim.kt")).read()
-    shipped = int(re.search(r"var flipRes = (\d+)", src).group(1))
     check("the shipped particle grid is in that band",
-          96 <= shipped <= 320, f"flipRes = {shipped}")
+          96 <= shipped_res <= 320, f"flipRes = {shipped_res}")
     print()
 
     # and behaviourally: colliding streams must resist passing through each other

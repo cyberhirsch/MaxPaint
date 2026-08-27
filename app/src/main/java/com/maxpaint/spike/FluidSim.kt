@@ -22,8 +22,8 @@ class FluidSim(private val ctx: Context) {
 
     // ---- tunables (driven by the UI) ----
     /** The resolution the artist picks: a cell budget, not a side length. */
-    var simRes = 768; private set
-    var dyeScale = 1; private set
+    var simRes = 512; private set
+    var dyeScale = 2; private set
 
     /**
      * The grid matches the canvas aspect rather than being square, so a circle
@@ -39,11 +39,11 @@ class FluidSim(private val ctx: Context) {
      *  See tools/compare_solvers.py for the measurement. */
     var useRedBlack = true
     var vorticity = 22f      // Smoke, the default preset
-    var velocityDrag = 3.0f      // "drag" from the PRD; higher = paint sets sooner
+    var velocityDrag = 0f        // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
     var splatRadius = 0.02f
     /** Coverage deposited per stroke sample, before pressure scales it. */
-    var inkPerStroke = 1.0f
+    var inkPerStroke = 3.47f
     var velocityGain = 1.0f
     /** Sweeps for the particle grid's own projection. */
     /**
@@ -52,7 +52,7 @@ class FluidSim(private val ctx: Context) {
      * grid the same 20 removes 92.6% of interior divergence and 40 removes
      * 99.1%, at half the cost the under-solved version used to pay.
      */
-    var flipIterations = 60
+    var flipIterations = 160
     /** Below this accumulated mass a cell counts as air, not liquid. */
     var flipMinMass = 0.08f
 
@@ -75,10 +75,10 @@ class FluidSim(private val ctx: Context) {
     /** How fast settled dye transfers to the background, per second. Maximum
      *  by default: paint should become permanent early, which is also what
      *  gives the force brushes something to pick up. */
-    var bakeRate = 10f
+    var bakeRate = 3.9f
     /** "Hold": seconds paint must stay live before it may bake at all. Zero by
      *  default; any hold directly contradicts baking early. */
-    var settleMinAge = 0f
+    var settleMinAge = 1.2f
     /** Set by Freeze Now; consumed on the next step. */
     @Volatile var freezeRequested = false
     /** Set by global Thaw; consumed on the next step. */
@@ -193,7 +193,7 @@ class FluidSim(private val ctx: Context) {
      * A cell about the size of a brush dab is what that works out to, and it
      * is also 16x fewer cells for the pressure solve to sweep.
      */
-    var flipRes = 192; private set
+    var flipRes = 160; private set
     var flipW = 1; private set
     var flipH = 1; private set
 

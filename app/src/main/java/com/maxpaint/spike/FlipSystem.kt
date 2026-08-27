@@ -19,16 +19,16 @@ import android.opengl.GLES31
  */
 class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
-    var flipRatio = 0.97f       // 1 = splashy and particle-driven, 0 = viscous
+    var flipRatio = 0.26f       // 1 = splashy and particle-driven, 0 = viscous
     var particleDrag = 0.25f
     /** CFL guard for particles, matching the grid's. */
     var maxSpeed = 4f
     /** Surface tension. With no gravity, this is what gathers paint into
      *  droplets rather than letting it disperse. */
-    var cohesion = 12f
+    var cohesion = 1f
     var settleSpeed = 0.06f
     var settleMinAge = 0.25f
-    var pointSize = 5f
+    var pointSize = 3f
     var inkPerParticle = 0.14f
     /**
      * Particles per grid cell of the dab's footprint, not particles per dab.
@@ -39,7 +39,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
      * particles over more cells, so changing Brush size silently changed how
      * thick the medium behaved. The count is derived from the footprint.
      */
-    var particlesPerCell = 40f
+    var particlesPerCell = 120f
 
     private var buffer = 0
     private var vao = 0
