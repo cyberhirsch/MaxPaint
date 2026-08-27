@@ -18,8 +18,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var viewH = 1
 
     /** Set from the UI thread; applied on the GL thread at the top of the next frame. */
-    @Volatile var pendingSimRes: Int = 768
-    @Volatile var pendingDyeScale: Int = 1
+    @Volatile var pendingSimRes: Int = 512
+    @Volatile var pendingDyeScale: Int = 2
     @Volatile var debugView = 0
     @Volatile var heatOverlay = false
     @Volatile var paused = false

@@ -481,10 +481,34 @@ the size of the mark. The slider reads `Density: 40 (261 particles per dab)` and
 the FLIP presets carry densities instead of counts.
 
 The defaults then went up across the board, because the medium was still too
-thin in the hand: density 15 → **40** with the slider to 120 and the per-dab cap
-to 2048, pressure 40 → **60** sweeps with its own slider, and the FLIP blend
-0.92 → **0.97**, which is what FLIPsphere runs and is how much of its own motion
-a particle keeps rather than taking the grid's.
+thin in the hand, and then again to the settings that came back from an actual
+session with it:
+
+| | was | now |
+|---|---:|---:|
+| Detail / Ink detail | 768, 1x | **512, 2x** |
+| Drag | 3.0 | **0** |
+| Set speed / Hold | 10, 0 s | **3.9, 1.20 s** |
+| Load | 1.0 | **3.47** |
+| Particle grid | 192 | **160** (244×104) |
+| Density | 15 | **120** |
+| Particle pressure | 40 | **160** sweeps |
+| FLIP blend | 0.92 | **0.26** |
+| Cohesion | 12 | **1** |
+
+Two of those are worth explaining because they run against what the measurements
+above suggested. **Density 120** puts 42–60 particles in every occupied cell,
+far past the 8–13 where the grid sweep peaked — but that sweep varied the *grid*
+at a fixed particle count, so its high-density rows were all too-coarse grids. Re-measured
+at a fixed good grid, coupling is flat to better from 5 up to 60 per cell
+(1.99x, 2.12x, 3.80x, 3.61x at 4.9, 18, 33, 60), so 120 is not past a cliff,
+only more expensive. And the **FLIP blend at 0.26** is nearly pure PIC, the
+opposite end from FLIPsphere's 0.97: particles take the grid's velocity instead
+of keeping their own, which is what makes the paint read as a thick body rather
+than a spray. The slider is there for both.
+
+The `Wet Paint` preset carries the same values, since it is the one the panel
+opens on and it would otherwise undo the defaults the first time it was picked.
 
 A bug turned up next to it: emission scattered its particles in UV while every
 other brush measures its radius in world units, so on a 2.34 canvas a drip dab

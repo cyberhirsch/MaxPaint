@@ -192,8 +192,9 @@ class Sim:
         self.res, self.dye_res, self.iters = res, res * dye_scale, iters
         self.use_rb = use_rb
         self.vorticity, self.drag, self.dye_diss = 22.0, 0.12, 0.05
-        # M1 bake parameters, matching FluidSim.kt
-        # mirrors FluidSim: paint sets early
+        # M1 bake parameters. NOT the app's defaults: those are the settings
+        # the artist landed on and they move, while these are held fixed so a
+        # bake check measures the operator rather than the current taste.
         self.settle_speed, self.bake_rate, self.settle_min_age = 0.6, 10.0, 0.0
         self.bake_enabled = False   # opt in, so solver tests stay isolated
         self.maccormack = False   # matches FluidSim default
