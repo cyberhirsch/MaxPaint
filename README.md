@@ -143,6 +143,19 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## Every brush has its own size
+
+`splatRadius` was one shared field driving gas, drip, wash, stir, lift, set and
+melt — with a Brush size slider on the gas panel and nowhere else. So setting
+the gas brush silently resized six other tools, and there was no way to size a
+drip at all. ("Drop size" on the drip panel is the particle *sprite*, not the
+dab.)
+
+Size is now stored per brush, behind an accessor that returns whichever brush is
+painting, so every reader in the solver is unchanged — they all wanted the active
+brush's size, which is what they were finally given. The slider appears on every
+panel whose brush has a footprint; nib and smear keep their own controls.
+
 ## The finger, not a point
 
 Android reports rather more about a touch than a coordinate. Per pointer, and
@@ -174,6 +187,12 @@ squash their footprint across the contact's short axis and turn it to lie along
 the long one, so a fingertip rolled onto its side makes an oval mark angled the
 way the finger is. Pixels convert to world units through the view height, since
 world y spans 1.0 over it.
+
+Both controls live on the brush panel, under Brush size, because that is the
+thing they modify — they were in global settings at first and were simply not
+found. The Contact size label prints what was last measured
+(`finger 0.031 · brush 0.023`), so a slider that appears to do nothing can be
+told apart from a device that reports nothing.
 
 Two controls, defaulted differently on purpose. **Contact shape** is on at 100%:
 a ratio is dimensionless and bounded, so a device that only reports circles

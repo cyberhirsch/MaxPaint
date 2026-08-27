@@ -41,7 +41,19 @@ class FluidSim(private val ctx: Context) {
     var vorticity = 22f      // Smoke, the default preset
     var velocityDrag = 0f        // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
-    var splatRadius = 0.02f
+    /**
+     * Footprint size, per brush. It used to be one shared field with a slider
+     * only on the gas panel, so setting the gas brush silently resized the
+     * drip, the wash and both force brushes -- a drip is not a puff of gas and
+     * has no business inheriting its size.
+     *
+     * The accessor keeps every reader in the solver unchanged: they all want
+     * the size of whichever brush is painting, which is what they now get.
+     */
+    private val brushSize = FloatArray(Brush.entries.size) { 0.02f }
+    var splatRadius: Float
+        get() = brushSize[brush.ordinal]
+        set(v) { brushSize[brush.ordinal] = v }
 
     // ---- the contact patch ----
     //
