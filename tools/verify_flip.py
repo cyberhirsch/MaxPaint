@@ -389,6 +389,43 @@ def main():
           f"({100 * (1 - after / max(before, 1e-9)):.0f}% removed, "
           f"{cells} interior cells)")
 
+    # Motion inheritance runs past 100%, where it extrapolates beyond pure FLIP
+    # rather than blending toward it: vel = gNew + r*(v - gOld). That is the
+    # noisy end of an already noisy scheme, so the top of the slider has to be
+    # shown to stay bounded rather than assumed to.
+    def at_setting(pct):
+        g = Flip()
+        g.make_grid(244, 104)
+        g.emit(0.5, 0.5, 1.5, 0.0, n=CAP // 2, radius=0.03, aspect=2.34)
+        for _ in range(60):
+            g.step(dt, flip_ratio=pct / 100.0, drag=0.6)
+        q = g.read()
+        m = q[:, 6] == 1.0
+        if not m.sum():
+            return dict(finite=True, vmax=0.0, spread=0.0, live=0)
+        v = q[m][:, 2:4]
+        return dict(finite=bool(np.isfinite(q[m]).all()),
+                    vmax=float(np.linalg.norm(v, axis=1).max()),
+                    spread=float(q[m][:, 0].std()), live=int(m.sum()))
+
+    top = at_setting(150)
+    check("the top of the motion-inheritance slider stays bounded",
+          top["finite"] and top["vmax"] < 5.0,
+          f"peak speed {top['vmax']:.3f}, all finite")
+
+    lively, tame = at_setting(120), at_setting(40)
+    check("inheriting more motion makes the paint livelier",
+          lively["spread"] > tame["spread"] * 1.5,
+          f"spread {tame['spread']:.4f} at 40%, {lively['spread']:.4f} at 120%")
+
+    # honest about where it stops being useful: extrapolation oscillates, and
+    # a particle whose velocity swings through zero reads as settled and bakes
+    check("but past that it starts settling paint prematurely",
+          at_setting(150)["live"] < lively["live"] // 4,
+          f"{lively['live']} particles still live at 120%, "
+          f"{at_setting(150)['live']} at 150%")
+    print()
+
     # ---- the grid has to be coarse enough for particles to see each other ----
     #
     # FLIP is a particle method that borrows a grid so particles can feel each

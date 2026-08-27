@@ -56,7 +56,7 @@ object Presets {
     // paint and how abruptly drag stops it.
     private val flip = listOf(
         Preset("Wet Paint") { s ->
-            s.flip.flipRatio = 0.26f; s.flip.particleDrag = 0.25f
+            s.flip.flipRatio = 0.6f; s.flip.particleDrag = 0.25f
             s.flip.settleSpeed = 0.06f; s.flip.cohesion = 1f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 120f
         },

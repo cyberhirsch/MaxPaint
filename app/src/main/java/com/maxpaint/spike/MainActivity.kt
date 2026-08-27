@@ -608,9 +608,14 @@ class MainActivity : AppCompatActivity() {
                     renderer.sim.flip.cohesion = p.toFloat()
                     l.text = "Cohesion: $p  (beads up →)"
                 })
-                panelBody.addView(slider("Splashy", (renderer.sim.flip.flipRatio * 100).toInt(), 100) { p, l ->
+                panelBody.addView(slider("Motion inheritance",
+                                         (renderer.sim.flip.flipRatio * 100).toInt(), 150) { p, l ->
                     renderer.sim.flip.flipRatio = p / 100f
-                    l.text = String.format("Splashy: %.2f  (← viscous)", p / 100f)
+                    l.text = "Motion inheritance: $p%" + when {
+                        p == 0 -> "  (takes the grid's)"
+                        p >= 100 -> "  (keeps its own)"
+                        else -> ""
+                    }
                 })
                 panelBody.addView(slider("Drop size", (renderer.sim.flip.pointSize * 2).toInt(), 32) { p, l ->
                     renderer.sim.flip.pointSize = p / 2f

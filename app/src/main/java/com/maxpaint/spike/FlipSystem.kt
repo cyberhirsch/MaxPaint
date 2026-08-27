@@ -19,7 +19,12 @@ import android.opengl.GLES31
  */
 class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
-    var flipRatio = 0.26f       // 1 = splashy and particle-driven, 0 = viscous
+    /**
+     * How much of its own motion a particle keeps rather than taking the
+     * grid's. 0 is pure PIC, 1 is pure FLIP; above 1 it extrapolates, keeping
+     * more than all of it, which is livelier and closer to unstable.
+     */
+    var flipRatio = 0.6f
     var particleDrag = 0.25f
     /** CFL guard for particles, matching the grid's. */
     var maxSpeed = 4f
