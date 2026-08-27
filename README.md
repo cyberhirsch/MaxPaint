@@ -493,7 +493,7 @@ session with it:
 | Particle grid | 192 | **160** (244×104) |
 | Density | 15 | **120** |
 | Particle pressure | 40 | **160** sweeps |
-| FLIP blend | 0.92 | **0.26** |
+| Motion inheritance | 0.92 | **60%** |
 | Cohesion | 12 | **1** |
 
 Two of those are worth explaining because they run against what the measurements
@@ -502,10 +502,20 @@ far past the 8–13 where the grid sweep peaked — but that sweep varied the *g
 at a fixed particle count, so its high-density rows were all too-coarse grids. Re-measured
 at a fixed good grid, coupling is flat to better from 5 up to 60 per cell
 (1.99x, 2.12x, 3.80x, 3.61x at 4.9, 18, 33, 60), so 120 is not past a cliff,
-only more expensive. And the **FLIP blend at 0.26** is nearly pure PIC, the
-opposite end from FLIPsphere's 0.97: particles take the grid's velocity instead
-of keeping their own, which is what makes the paint read as a thick body rather
-than a spray. The slider is there for both.
+only more expensive. The FLIP blend is now the **Motion inheritance** slider, 0–150%, default 60%.
+It is how much of its own motion a particle keeps instead of taking the grid's:
+0 is pure PIC, 100% pure FLIP, and above that it *extrapolates* —
+`vel = gNew + r·(v − gOld)` — keeping more than all of it. Pure PIC reads as a
+thick body, pure FLIP as a lively spray; the interesting settings are between.
+
+Past 100% is the noisy end of an already noisy scheme, so it is measured rather
+than assumed. Nothing goes non-finite anywhere on the range and peak speed stays
+inside the CFL clamp, but it stops being useful before the top: paint is
+markedly livelier at 120% (spread 0.216 against 0.021 at 40%), while at 150% the
+extrapolation oscillates enough that velocity swings through zero, reads as
+settled, and bakes — 1487 particles still live at 120%, **9** at 150%. Three
+checks record exactly that, including the last one, so the useful ceiling is a
+measured fact rather than folklore.
 
 The `Wet Paint` preset carries the same values, since it is the one the panel
 opens on and it would otherwise undo the defaults the first time it was picked.

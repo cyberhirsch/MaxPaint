@@ -58,7 +58,11 @@ void main() {
 
     vec2 pic  = gNew;
     vec2 flip = vel + (gNew - gOld);
-    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
+    // Past 1.0 this extrapolates beyond pure FLIP: vel = gNew + r*(v - gOld),
+    // so the particle's disagreement with the grid is amplified rather than
+    // merely kept. That is the noisy end of an already noisy scheme, which is
+    // why the CFL clamp below is not optional at these settings.
+    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.5));
 
     // Cohesion. With no gravity there is nothing to gather the paint, so
     // without this it simply disperses and never reads as liquid. Pulling each
