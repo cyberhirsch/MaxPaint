@@ -68,6 +68,10 @@ pigment-diffusion) so that "fluid" is a family of media rather than one effect.
   Shipped in a form that keeps the solver ignorant of layers: it bakes into the
   active layer only, and the rest of the stack is flattened above and below it
   (§7.7). Checkpoint memory (§7.3) is still a concern and caps the stack at 8.
+- **iPad / iOS, for now.** Deferred rather than ruled out; see §7.9. The device
+  that would be tested on is an M1, so it is capability that is not the
+  obstacle. Two things are: the solver is still moving, and a port costs the
+  headless harness that has caught nearly every real bug so far.
 
 ---
 
@@ -414,6 +418,47 @@ per cell of the dab's footprint — rather than a count per dab. A fixed count
 does not hold density, so a wider brush spread the same particles thinner and
 Brush size silently changed how the medium behaved (9.6 down to 1.0 per occupied
 cell across the size range).
+
+### 7.9 Keeping an iPad port cheap
+
+Deferred, not refused. Recorded here because the decisions that make a port
+expensive are made months before anyone attempts one.
+
+**Why not yet.** The solver is still changing — what Load means changed twice in
+one week — and forking to a second platform doubles the surface while the design
+is unsettled. It also costs the verification harness: that runs the real shaders
+headlessly because Mesa provides a genuine GLES 3.1 driver, and neither Metal
+nor WGSL has an equivalent available here (no macOS, no software Vulkan driver,
+and the bundled headless Chromium does not expose `navigator.gpu`). Nearly every
+real bug in this project was caught by that harness, so losing it is the actual
+cost, not the porting work.
+
+**What the target would be.** The test device is an iPad Pro 11" 3rd gen — an
+M1, 120 Hz, Apple Pencil 2. WebGPU first, since it is one codebase for iPad,
+Android and desktop; native Metal only if that earns it. Metal would be the
+better result — and would *undo* work rather than adding it, since the ES 3.1
+constraints this design is shaped around do not exist there.
+
+**Rules that keep the cost down, worth honouring meanwhile:**
+
+- **The UI layer is the throwaway one.** `MainActivity` is Android Views end to
+  end and would be rewritten wholesale; `FluidSim` and `FlipSystem` hold the
+  logic and should keep holding it. Nothing about how paint behaves belongs in
+  the activity.
+- **Mark the ES 3.1 workarounds as workarounds**, because a port deletes them:
+  the rgba16f ping-pong exists only because read-write images are illegal for
+  that format, and the fixed-point integer atomics in the FLIP scatter exist
+  only because ES 3.1 has no float atomics. Metal and WGSL have both.
+- **Input is already abstracted the right way.** The contact patch is carried as
+  major, minor and angle in world units, which degrades correctly everywhere: an
+  iPad finger reports one radius, so minor equals major and the dab is round; an
+  Apple Pencil reports no patch at all but real force and tilt, which the
+  existing pressure and tilt paths already take.
+- **`coalescedTouches` is `historySize` under another name.** The bug that beaded
+  every stroke — reading only the last position of a batched event — is waiting
+  in exactly the same form on iOS, and matters more at 120 Hz.
+- **Keep platform I/O at the edges.** `PngExport` is already a separate file with
+  no solver knowledge; anything else touching the OS should follow it there.
 
 ---
 
