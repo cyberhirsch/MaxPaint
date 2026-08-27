@@ -42,6 +42,31 @@ class FluidSim(private val ctx: Context) {
     var velocityDrag = 0f        // "drag" from the PRD; higher = paint sets sooner
     var dyeDissipation = 0.05f
     var splatRadius = 0.02f
+
+    // ---- the contact patch ----
+    //
+    // What the digitiser reports about the finger actually touching the glass,
+    // in world units, for the sample being drawn. Zero means the device told us
+    // nothing and every brush stays round.
+    var contactMajor = 0f
+    var contactMinor = 0f
+    /** Direction of the long axis, radians, in canvas space. */
+    var contactAngle = 0f
+
+    /**
+     * How much the measured patch replaces the Brush size slider. Off by
+     * default: the measurement is in device-calibrated absolute units, and a
+     * panel that reports a constant would quietly turn Brush size into a
+     * no-op. The diagnostic says whether this device reports anything usable.
+     */
+    var contactSizeAmount = 0f
+
+    /**
+     * How much the measured patch ovals the dab. On by default, because a ratio
+     * is dimensionless and bounded: a device that reports circles simply keeps
+     * the mark round rather than getting it wrong.
+     */
+    var contactShapeAmount = 1f
     /** Coverage deposited per stroke sample, before pressure scales it. */
     var inkPerStroke = 3.47f
     var velocityGain = 1.0f
@@ -463,7 +488,7 @@ class FluidSim(private val ctx: Context) {
         // FR-6: pressure sets how much ink lands, tilt widens the footprint.
         val baseRadius = splatRadius
         val baseInk = inkPerStroke
-        splatRadius = baseRadius * tiltSpread
+        splatRadius = contactRadius(baseRadius * tiltSpread)
         inkPerStroke = baseInk * pressure
         try {
             strokeInner(u, v, du, dv, r, g, b, prevU, prevV)
@@ -471,6 +496,37 @@ class FluidSim(private val ctx: Context) {
             splatRadius = baseRadius
             inkPerStroke = baseInk
         }
+    }
+
+    /**
+     * The dab's long radius, blending the brush setting toward the measured
+     * contact. Clamped to a band around the setting so a device reporting
+     * nonsense -- or nothing but a constant -- cannot produce a mark unrelated
+     * to the size that was asked for.
+     */
+    private fun contactRadius(base: Float): Float {
+        if (contactMajor <= 0f || contactSizeAmount <= 0f) return base
+        val measured = contactMajor * 0.5f
+        val blended = base * (1f - contactSizeAmount) + measured * contactSizeAmount
+        return blended.coerceIn(base * 0.25f, base * 4f)
+    }
+
+    /** Minor over major, blended by [contactShapeAmount]. 1.0 is a circle. */
+    val contactMinorRatio: Float
+        get() {
+            if (contactMajor <= 0f || contactShapeAmount <= 0f) return 1f
+            val ratio = (contactMinor / contactMajor).coerceIn(0.15f, 1f)
+            return 1f * (1f - contactShapeAmount) + ratio * contactShapeAmount
+        }
+
+    /** Unit vector along the long axis, world space. */
+    val contactAxisX: Float get() = kotlin.math.cos(contactAngle)
+    val contactAxisY: Float get() = kotlin.math.sin(contactAngle)
+
+    /** Every footprint pass takes the same three, so they are set in one place. */
+    private fun setContact(p: ComputeProgram) {
+        p.set("uAxis", contactAxisX, contactAxisY)
+        p.set("uMinor", contactMinorRatio)
     }
 
     private fun strokeInner(
@@ -486,7 +542,9 @@ class FluidSim(private val ctx: Context) {
                 // with fluid already on the canvas
                 val r = splatRadius * 0.5f
                 flip.emit(u, v, du, dv, r, inkPerStroke, aspect,
-                          perDab = flip.countFor(r, aspect))
+                          perDab = flip.countFor(r, aspect),
+                          axisX = contactAxisX, axisY = contactAxisY,
+                          minor = contactMinorRatio)
                 force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
             }
             Brush.WATERCOLOR -> wet(u, v)
@@ -580,6 +638,7 @@ class FluidSim(private val ctx: Context) {
         pWet.set("uPoint", u, v)
         pWet.set("uRadius", splatRadius)
         pWet.set("uAspect", aspect)
+        setContact(pWet)
         pWet.set("uWater", wcLoadWater * inkPerStroke)
         pWet.set("uPigment", wcLoadPigment * inkPerStroke)
         water.read.bindImage(0, GLES31.GL_READ_ONLY)
@@ -730,6 +789,7 @@ class FluidSim(private val ctx: Context) {
         pSplat.use()
         pSplat.set("uPoint", u, v)
         pSplat.set("uAspect", aspect)
+        setContact(pSplat)
         pSplat.set("uRadius", splatRadius)
         pSplat.set("uMode", 2)
         pSplat.set("uValue", solventBite, 0f, 0f, 0f)
@@ -750,6 +810,7 @@ class FluidSim(private val ctx: Context) {
         pSplat.use()
         pSplat.set("uPoint", u, v)
         pSplat.set("uAspect", aspect)
+        setContact(pSplat)
         pSplat.set("uMode", 0)
 
         // velocity

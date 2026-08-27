@@ -143,6 +143,59 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## The finger, not a point
+
+Android reports rather more about a touch than a coordinate. Per pointer, and
+through the batched historical samples too:
+
+| | |
+|---|---|
+| `getTouchMajor` / `getTouchMinor` | the axes of the **contact patch** ellipse, in device surface units |
+| `getToolMajor` / `getToolMinor` | the size of the tool itself, rather than the part touching |
+| `getOrientation` | that ellipse's angle, radians clockwise from vertical |
+| `getSize` | contact area, normalised against the largest the panel can sense |
+| `getPressure` | normalised so 1.0 is a normal touch; may exceed it |
+| `getToolType` | finger / stylus / eraser / mouse |
+| `AXIS_TILT`, `AXIS_DISTANCE` | stylus tilt from perpendicular, hover height |
+
+How much of that carries a real signal is device-specific and not worth
+guessing. On most capacitive panels **pressure is derived from contact area**,
+so the two are one signal wearing two names, and plenty of devices report a
+constant for both. Some report `touchMajor == touchMinor` — an area dressed as
+an ellipse. A stylus inverts it: pressure is genuine, contact size is not.
+
+So the app both **reports** and **uses** it. `Touch` in settings prints the live
+per-sample values in the HUD; `Axes` lists what the driver claims to support,
+via `InputDevice.getMotionRange`, which is a different question from what it
+actually sends.
+
+The dab then takes that shape. Gas, watercolor and the particle emitter all
+squash their footprint across the contact's short axis and turn it to lie along
+the long one, so a fingertip rolled onto its side makes an oval mark angled the
+way the finger is. Pixels convert to world units through the view height, since
+world y spans 1.0 over it.
+
+Two controls, defaulted differently on purpose. **Contact shape** is on at 100%:
+a ratio is dimensionless and bounded, so a device that only reports circles
+simply keeps the mark round rather than getting it wrong. **Contact size** is off:
+it is in device-calibrated absolute units, and on a panel reporting a constant it
+would quietly turn the Brush size slider into a no-op. Even when it is on, the
+radius is clamped to a quarter to four times the setting, so a miscalibrated
+device cannot produce a mark unrelated to the size that was asked for.
+
+Building it turned up the failure mode worth guarding: an **unset uniform is
+zero**, and a zero minor axis inflates the dab across the entire canvas. Both
+suites went red at once — the sort of bug that would have been a black screen on
+some code path months later. The shaders now read a degenerate frame as "no
+contact reported" and fall back to a circle, which is the failure-safe meaning.
+
+Nine checks: that a round contact reproduces the old dab **bit-identically**,
+that a flattened one is elliptical, that turning it swaps the axes, that a
+diagonal lands between the two, that an ellipse deposits less ink than a round
+dab of the same length, and the same shape/turn pair again for the particle
+emitter, which squashes a scatter disc rather than transforming a distance and
+so needs its own coverage.
+
 ## A stroke is a path, not a list of points
 
 The gas brush beaded on fast strokes — a row of separate dabs with white

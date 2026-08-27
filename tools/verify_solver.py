@@ -222,11 +222,14 @@ class Sim:
         glDispatchCompute((w + 7) // 8, (h + 7) // 8, 1)
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT)
 
-    def splat(self, u, v, du, dv, color, radius=0.05, ink=1.0):
+    def splat(self, u, v, du, dv, color, radius=0.05, ink=1.0,
+              axis=(1.0, 0.0), minor=1.0):
         p = self.p["splat"]
         glUseProgram(p)
         glUniform2f(uni(p, "uPoint"), u, v)
         glUniform1f(uni(p, "uAspect"), self.aspect)
+        glUniform2f(uni(p, "uAxis"), axis[0], axis[1])
+        glUniform1f(uni(p, "uMinor"), minor)
         glUniform1i(uni(p, "uMode"), 0)
 
         glUniform1f(uni(p, "uRadius"), radius)
@@ -1240,6 +1243,59 @@ def main():
     check("and without the calibration it does not",
           uncalibrated > was * 2.0,
           f"{uncalibrated:.1f}, {uncalibrated / max(was, 1e-6):.1f}x too heavy")
+    print()
+
+    # ---- the contact patch ----
+    #
+    # The digitiser reports the ellipse the finger makes on the glass. A dab
+    # that takes that shape has to actually be that shape, and -- more
+    # importantly -- has to be exactly the old round dab when the device says
+    # the contact is round, since most panels do.
+    print("Contact shape:")
+
+    def dab(axis=(1.0, 0.0), minor=1.0):
+        q = Sim(args.res)
+        q.splat(0.5, 0.5, 0.0, 0.0, (0.0, 0.0, 0.0), radius=0.12, ink=1.0,
+                axis=axis, minor=minor)
+        return q.dye.read_t.read()[:, :, 3]
+
+    round_dab = dab()
+    check("a round contact reproduces the round dab exactly",
+          bool(np.array_equal(round_dab, dab(axis=(1.0, 0.0), minor=1.0))),
+          "bit-identical")
+
+    def extent(a, thresh=0.05):
+        """Width and height of the mark, in cells."""
+        m = a > a.max() * thresh
+        ys, xs = np.nonzero(m)
+        return (xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) if m.any() else (0, 0)
+
+    rw, rh = extent(round_dab)
+    check("the round dab is round", abs(rw - rh) <= max(2, rw // 10),
+          f"{rw} x {rh} cells")
+
+    flat = dab(minor=0.35)
+    fw, fh = extent(flat)
+    check("a flattened contact makes an elliptical dab", fh < rh * 0.6 and fw >= rw * 0.9,
+          f"{fw} x {fh} cells against {rw} x {rh} round")
+
+    # turned onto its side, the same ellipse must swap its axes
+    turned = dab(axis=(0.0, 1.0), minor=0.35)
+    tw, th = extent(turned)
+    check("and turning the contact turns the dab",
+          abs(tw - fh) <= 2 and abs(th - fw) <= 2,
+          f"{tw} x {th} against {fw} x {fh} unturned")
+
+    # 45 degrees: neither axis-aligned extent should match either of the above
+    diag = dab(axis=(0.7071, 0.7071), minor=0.35)
+    dw, dh = extent(diag)
+    check("a diagonal contact lands between the two",
+          fh < dh < fw and fh < dw < fw,
+          f"{dw} x {dh}, between {fh} and {fw}")
+
+    check("an elliptical dab deposits less ink than a round one of the same length",
+          flat.sum() < round_dab.sum() * 0.7,
+          f"{flat.sum():.1f} against {round_dab.sum():.1f}")
     print()
 
     # ---- layers ----

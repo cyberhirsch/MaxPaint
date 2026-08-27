@@ -95,7 +95,8 @@ class Flip:
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
         return out
 
-    def emit(self, u, v, du, dv, n=64, radius=0.02, ink=0.14, aspect=1.0):
+    def emit(self, u, v, du, dv, n=64, radius=0.02, ink=0.14, aspect=1.0,
+             axis=(1.0, 0.0), minor=1.0):
         glUseProgram(self.emit_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1i(uni(self.emit_p, "uHead"), self.head)
@@ -105,6 +106,8 @@ class Flip:
         glUniform2f(uni(self.emit_p, "uVel"), du, dv)
         glUniform1f(uni(self.emit_p, "uRadius"), radius)
         glUniform1f(uni(self.emit_p, "uAspect"), aspect)
+        glUniform2f(uni(self.emit_p, "uAxis"), axis[0], axis[1])
+        glUniform1f(uni(self.emit_p, "uMinor"), minor)
         glUniform1f(uni(self.emit_p, "uInk"), ink)
         glUniform1f(uni(self.emit_p, "uJitterSeed"), self.seed)
         glDispatchCompute((n + 63) // 64, 1, 1)
@@ -424,6 +427,35 @@ def main():
           at_setting(150)["live"] < lively["live"] // 4,
           f"{lively['live']} particles still live at 120%, "
           f"{at_setting(150)['live']} at 150%")
+    print()
+
+    # ---- the contact patch reaches the particles too ----
+    #
+    # A different implementation from the falloff brushes: the scatter disc is
+    # squashed and turned rather than a distance being transformed, so it needs
+    # its own coverage.
+    print("Contact shape:")
+
+    def cloud(axis=(1.0, 0.0), minor=1.0):
+        q = Flip()
+        q.emit(0.5, 0.5, 0.0, 0.0, n=CAP // 2, radius=0.05, axis=axis, minor=minor)
+        pp = q.read()
+        m = pp[:, 6] == 1.0
+        return float(pp[m][:, 0].std()), float(pp[m][:, 1].std())
+
+    rx, ry = cloud()
+    check("a round contact scatters particles in a disc",
+          abs(rx - ry) < rx * 0.15, f"spread {rx:.4f} x {ry:.4f}")
+
+    fx, fy = cloud(minor=0.3)
+    check("a flattened contact scatters them in an ellipse",
+          fy < ry * 0.5 and abs(fx - rx) < rx * 0.15,
+          f"spread {fx:.4f} x {fy:.4f} against {rx:.4f} x {ry:.4f} round")
+
+    tx, ty = cloud(axis=(0.0, 1.0), minor=0.3)
+    check("and turning the contact turns the cloud",
+          abs(tx - fy) < fy * 0.25 and abs(ty - fx) < fx * 0.25,
+          f"spread {tx:.4f} x {ty:.4f} against {fx:.4f} x {fy:.4f} unturned")
     print()
 
     # ---- the grid has to be coarse enough for particles to see each other ----
