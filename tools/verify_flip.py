@@ -154,7 +154,8 @@ class Flip:
         glDispatchCompute((self.gw + 7) // 8, (self.gh + 7) // 8, 1)
         self._bar()
 
-    def project(self, dt, iters=20, min_mass=0.08):
+    def project(self, dt, iters=20, min_mass=0.08,
+                rest=0.0, compression=0.0, cap=0.0):
         glUseProgram(self.blit_p)
         glUniform1i(uni(self.blit_p, "uSrc"), 0)
         self.vel.read_t.sampler(0)
@@ -163,8 +164,12 @@ class Flip:
         self._bar()
 
         glUseProgram(self.div_p)
+        glUniform1f(uni(self.div_p, "uRest"), rest)
+        glUniform1f(uni(self.div_p, "uCompression"), compression)
+        glUniform1f(uni(self.div_p, "uCap"), cap)
         self.vel.read_t.image(0, GL_READ_ONLY)
         self.div.image(1, GL_WRITE_ONLY)
+        self.mass.image(2, GL_READ_ONLY)
         glDispatchCompute((self.gw + 7) // 8, (self.gh + 7) // 8, 1)
         self._bar()
 
@@ -427,6 +432,74 @@ def main():
           at_setting(150)["live"] < lively["live"] // 4,
           f"{lively['live']} particles still live at 120%, "
           f"{at_setting(150)['live']} at 150%")
+    print()
+
+    # ---- pouring ----
+    #
+    # Emission is otherwise per dab and dabs only happen on movement, so a still
+    # finger put down nothing at all. A pour runs on the clock instead: hold and
+    # a volume builds, drag and its own momentum throws it.
+    print("Pour:")
+
+    PER, DENSITY = 96, 51.0
+
+    def poured(frames, throw=False, compression=0.01):
+        q = Flip()
+        q.make_grid(244, 104)
+        for _ in range(frames):
+            q.emit(0.5, 0.5, 0.0, 0.0, n=PER, radius=0.02, aspect=2.34)
+            q.p2g()
+            q.project(dt, iters=60, rest=DENSITY * 0.5,
+                      compression=compression, cap=DENSITY * 2)
+            q.g2p(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.15)
+        built = frames * PER            # the volume, before anything is thrown
+        if throw:
+            # a drag across it: dabs carrying momentum, as a stroke makes
+            for k in range(8):
+                q.emit(0.5 + 0.01 * k, 0.5, 2.2, 0.0, n=PER // 2,
+                       radius=0.02, aspect=2.34)
+                q.p2g()
+                q.project(dt, iters=60, rest=DENSITY * 0.5,
+                          compression=compression, cap=DENSITY * 2)
+                q.g2p(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.15)
+        else:
+            for _ in range(8):
+                q.p2g()
+                q.project(dt, iters=60, rest=DENSITY * 0.5,
+                          compression=compression, cap=DENSITY * 2)
+                q.g2p(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.15)
+        pp = q.read()
+        live = pp[:, 6] == 1.0
+        cells = int((q.mass.read()[:, :, 0] > 0.08).sum())
+        # only the particles that were poured, never the ones the drag added
+        orig = np.zeros(len(pp), dtype=bool)
+        orig[:built] = True
+        vol = pp[orig & live]
+        return dict(cells=cells, live=int(live.sum()),
+                    peak=float(q.mass.read()[:, :, 0].max()),
+                    spread=float(vol[:, 0].std()) if len(vol) else 0.0)
+
+    short, long_ = poured(6), poured(24)
+    check("holding still keeps putting paint down",
+          long_["live"] > short["live"] * 3,
+          f"{short['live']} particles after 6 frames, {long_['live']} after 24")
+
+    check("and it spreads into a volume rather than stacking on one spot",
+          long_["cells"] > short["cells"] * 3.0,
+          f"{short['cells']} cells occupied, then {long_['cells']}")
+
+    # the term that makes that happen, and what the medium does without it
+    packed = poured(24, compression=0.0)
+    check("without a cell pushing back, the same paint just piles up",
+          packed["cells"] < long_["cells"] * 0.4 and packed["peak"] > long_["peak"] * 2,
+          f"{packed['cells']} cells at density {packed['peak']:.0f}, "
+          f"against {long_['cells']} at {long_['peak']:.0f}")
+
+    still, thrown = poured(24), poured(24, throw=True)
+    check("a drag throws the volume that was poured, not just the new paint",
+          thrown["spread"] > still["spread"] * 1.3,
+          f"the poured particles spread {still['spread']:.4f} left alone, "
+          f"{thrown['spread']:.4f} when dragged through")
     print()
 
     # ---- the contact patch reaches the particles too ----

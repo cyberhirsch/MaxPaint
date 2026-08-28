@@ -74,67 +74,14 @@ class FluidSim(private val ctx: Context) {
      */
     var contactSize = 0f
 
-    /** What the device is actually giving us, which decides what can be done with it. */
-    enum class ContactSource {
-        /** Nothing at all: no axis carried a value. */
-        NONE,
-        /** An axis carries a value, but the same one every time. */
-        CONSTANT,
-        /** A normalised area that varies: usable, but only relative to the brush. */
-        NORMALISED,
-        /** An actual length: the mark can be the size of the finger. */
-        MEASURED
-    }
-
-    // Presence is not the same as usefulness. Plenty of panels report a
-    // pressure or a size that never moves, which would leave Fingerprint
-    // scaling everything by a constant -- worse than doing nothing, because it
-    // looks like it is working. So the spread actually observed is what decides.
-    private var seenMin = Float.MAX_VALUE
-    private var seenMax = -Float.MAX_VALUE
-    private var seenCount = 0
-
-    /** Called for every sample, before the brush uses any of it. */
-    fun observeContact() {
-        val v = if (contactMajor > 0f) contactMajor else contactSize
-        if (v <= 0f) return
-        if (v < seenMin) seenMin = v
-        if (v > seenMax) seenMax = v
-        if (seenCount < 10_000) seenCount++
-    }
-
-    /** How far the signal has moved, relative to its own scale. */
-    val contactSpread: Float
-        get() = if (seenCount == 0 || seenMax <= 0f) 0f
-                else (seenMax - seenMin) / seenMax
-
-    fun forgetContactObservations() {
-        seenMin = Float.MAX_VALUE; seenMax = -Float.MAX_VALUE; seenCount = 0
-    }
-
-    val contactSource: ContactSource
-        get() {
-            val any = contactMajor > 0f || contactSize > 0f
-            if (!any) return ContactSource.NONE
-            // needs enough samples to have moved, and to have actually moved
-            if (seenCount > 40 && contactSpread < 0.02f) return ContactSource.CONSTANT
-            return if (contactMajor > 0f) ContactSource.MEASURED
-                   else ContactSource.NORMALISED
-        }
-
     /**
-     * Fingerprint mode: the mark is the size of the finger, and Brush size
-     * stops applying. Off by default, because the measurement is in
-     * device-calibrated absolute units and a panel that reports a constant
-     * would turn the mark into a fixed size with no way to change it. The
-     * Probe brush says whether this device reports anything usable.
-     */
-    var fingerprint = false
-
-    /**
-     * How much the measured patch ovals the dab. On by default, because a ratio
-     * is dimensionless and bounded: a device that reports circles simply keeps
-     * the mark round rather than getting it wrong.
+     * Dormant. The digitiser on the device this was built against reports no
+     * contact geometry at all -- not touchMajor, not size, not a pressure that
+     * varies -- so every brush stays round and the controls that drove this
+     * were removed rather than left inert. The plumbing and its checks stay:
+     * the shaders read a degenerate frame as a circle, so this costs nothing
+     * while it is unused, and PRD 7.9 wants exactly this shape of input for a
+     * device that does report it.
      */
     var contactShapeAmount = 1f
     /** Coverage deposited per stroke sample, before pressure scales it. */
@@ -271,7 +218,6 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pPressureFlip: ComputeProgram
     private lateinit var pBlit: ComputeProgram
     private lateinit var pComposite: ComputeProgram
-    private lateinit var pProbe: ComputeProgram
     private lateinit var pDivergenceFlip: ComputeProgram
     private lateinit var pGradSubFlip: ComputeProgram
     /**
@@ -355,7 +301,6 @@ class FluidSim(private val ctx: Context) {
         pPressureFlip = ComputeProgram(ctx, "shaders/pressure_flip.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
         pComposite = ComputeProgram(ctx, "shaders/composite.comp")
-        pProbe = ComputeProgram(ctx, "shaders/probe.comp")
         pDivergenceFlip = ComputeProgram(ctx, "shaders/divergence_flip.comp")
         pGradSubFlip = ComputeProgram(ctx, "shaders/gradsub_flip.comp")
         flip.init()
@@ -512,7 +457,7 @@ class FluidSim(private val ctx: Context) {
      */
     val stampSpacing: Float
         get() = when (brush) {
-            Brush.NIB, Brush.SMEAR, Brush.PROBE -> 0.02f
+            Brush.NIB, Brush.SMEAR -> 0.02f
             else -> (splatRadius * 0.5f).coerceAtLeast(0.002f)
         }
 
@@ -522,7 +467,7 @@ class FluidSim(private val ctx: Context) {
      * point to this one, which already covers the segment exactly once.
      */
     val stampsDabs: Boolean
-        get() = brush != Brush.NIB && brush != Brush.SMEAR && brush != Brush.PROBE
+        get() = brush != Brush.NIB && brush != Brush.SMEAR
 
     /**
      * What one dab carries, as a fraction of the Load slider.
@@ -560,7 +505,7 @@ class FluidSim(private val ctx: Context) {
         // FR-6: pressure sets how much ink lands, tilt widens the footprint.
         val baseRadius = splatRadius
         val baseInk = inkPerStroke
-        splatRadius = contactRadius(baseRadius * tiltSpread)
+        splatRadius = baseRadius * tiltSpread
         inkPerStroke = baseInk * pressure
         try {
             strokeInner(u, v, du, dv, r, g, b, prevU, prevV)
@@ -577,20 +522,6 @@ class FluidSim(private val ctx: Context) {
      * wide enough to be honest and narrow enough that a device reporting
      * nonsense cannot fill the canvas.
      */
-    private fun contactRadius(base: Float): Float {
-        if (!fingerprint) return base
-        return when (contactSource) {
-            // a real length: the mark is the size of the finger
-            ContactSource.MEASURED -> (contactMajor * 0.5f).coerceIn(0.002f, 0.2f)
-            // only a normalised area, so the honest reading is a size relative
-            // to the brush rather than an absolute one -- a light touch is half
-            // the setting, a flat finger twice it
-            ContactSource.NORMALISED -> base * (0.5f + 1.5f * contactSize)
-            // a signal that never moves is not a signal
-            ContactSource.CONSTANT, ContactSource.NONE -> base
-        }
-    }
-
     /** Minor over major, blended by [contactShapeAmount]. 1.0 is a circle. */
     val contactMinorRatio: Float
         get() {
@@ -634,7 +565,6 @@ class FluidSim(private val ctx: Context) {
                 force(u, v, du, dv, forceMode.code, forceStrength)
             }
             Brush.SOLVENT -> solvent(u, v)
-            Brush.PROBE -> probe(u, v)
             Brush.FREEZE -> transfer(1f / 60f, force = true, thaw = false, maskAt = u to v)
             Brush.THAW -> transfer(1f / 60f, force = false, thaw = true, maskAt = u to v)
         }
@@ -795,8 +725,14 @@ class FluidSim(private val ctx: Context) {
     private fun projectFlipGrid(dt: Float) {
         // consistent operators here: a thin free surface needs them
         pDivergenceFlip.use()
+        // rest density follows the emission density, so raising Density does
+        // not silently turn the medium compressible
+        pDivergenceFlip.set("uRest", flip.particlesPerCell * 0.5f)
+        pDivergenceFlip.set("uCompression", flip.compression)
+        pDivergenceFlip.set("uCap", flip.particlesPerCell * 2f)
         flipVel.read.bindImage(0, GLES31.GL_READ_ONLY)
         flipDivergence.bindImage(1, GLES31.GL_WRITE_ONLY)
+        flipMass.bindImage(2, GLES31.GL_READ_ONLY)
         pDivergenceFlip.dispatch(flipW, flipH)
 
         pClear.use()
@@ -885,34 +821,36 @@ class FluidSim(private val ctx: Context) {
     }
 
     /**
-     * Marks the reported contact patch onto the permanent layer. Reads the raw
-     * measurement rather than anything the size controls have done to it, since
-     * the point is to see what the device actually said.
+     * Paint that keeps coming while the finger is still.
+     *
+     * Emission otherwise happens per dab, and dabs only happen when the pointer
+     * moves, so holding still put down nothing at all. A pour is the opposite:
+     * hold and a volume builds up, then drag and its own momentum throws it --
+     * the splash comes from the gesture rather than from the emitter.
+     *
+     * Rate is per second, so it does not follow the frame rate.
      */
-    fun probe(u: Float, v: Float) {
-        if (!allocated) return
-        pProbe.use()
-        pProbe.set("uPoint", u, v)
-        pProbe.set("uAspect", aspect)
-        pProbe.set("uRadius", when (contactSource) {
-            ContactSource.MEASURED -> contactMajor * 0.5f
-            ContactSource.NORMALISED -> splatRadius * (0.5f + 1.5f * contactSize)
-            ContactSource.CONSTANT, ContactSource.NONE -> 0f
-        })
-        // filled for a real measurement, an outline for one merely derived from
-        // a normalised area: the mark says which it is without any text
-        pProbe.set("uOutline", if (contactSource == ContactSource.NORMALISED) 1 else 0)
-        pProbe.set("uAxis", contactAxisX, contactAxisY)
-        pProbe.set("uMinor",
-                   if (contactMajor > 0f) (contactMinor / contactMajor).coerceIn(0.05f, 1f)
-                   else 1f)
-        pProbe.set("uDot", 0.0025f)
-        background.read.bindImage(0, GLES31.GL_READ_ONLY)
-        background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
-        pProbe.dispatch(dyeW, dyeH)
-        background.swap()
-        layersDirty = true
+    fun pour(u: Float, v: Float, dt: Float) {
+        // the pour belongs to the particle medium; every other brush is
+        // event-driven and a still finger should leave it alone
+        if (!allocated || brush != Brush.FLIP || flip.flowRate <= 0f) return
+        pourDebt += flip.flowRate * dt
+        val dabs = pourDebt.toInt()
+        if (dabs <= 0) return
+        pourDebt -= dabs.toFloat()
+        val r = splatRadius * 0.5f
+        val perDab = flip.countFor(r, aspect)
+        repeat(dabs.coerceAtMost(8)) {
+            // no velocity of its own: it is a puddle, not a jet
+            flip.emit(u, v, 0f, 0f, r, inkPerStroke, aspect, perDab,
+                      contactAxisX, contactAxisY, contactMinorRatio)
+        }
     }
+
+    /** Fractional dabs carried between frames, so a slow pour still pours. */
+    private var pourDebt = 0f
+
+    fun endPour() { pourDebt = 0f }
 
     /** Inject momentum and colour. Coordinates and delta are in UV space. */
     fun splat(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {

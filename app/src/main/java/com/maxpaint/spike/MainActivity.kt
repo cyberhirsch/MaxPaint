@@ -114,7 +114,10 @@ class MainActivity : AppCompatActivity() {
                 // banked in full, so the first dab lands on the touch point
                 // rather than one spacing into the stroke
                 carry[event.getPointerId(i)] = renderer.sim.stampSpacing
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) renderer.queueStrokeBegin()
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    renderer.queueStrokeBegin()
+                    hold(event.getX(i), event.getY(i), w, h)
+                }
                 if (event.pointerCount == 2) twoFingerDownAt = System.currentTimeMillis()
             }
 
@@ -134,19 +137,11 @@ class MainActivity : AppCompatActivity() {
                         strokeTo(id,
                                  event.getHistoricalX(i, hIdx),
                                  event.getHistoricalY(i, hIdx),
-                                 event.getHistoricalPressure(i, hIdx),
-                                 event.getHistoricalTouchMajor(i, hIdx),
-                                 event.getHistoricalTouchMinor(i, hIdx),
-                                 event.getHistoricalToolMajor(i, hIdx),
-                                 event.getHistoricalToolMinor(i, hIdx),
-                                 event.getHistoricalSize(i, hIdx),
-                                 event.getHistoricalOrientation(i, hIdx), w, h)
+                                 event.getHistoricalPressure(i, hIdx), w, h)
                     }
-                    strokeTo(id, event.getX(i), event.getY(i), event.getPressure(i),
-                             event.getTouchMajor(i), event.getTouchMinor(i),
-                             event.getToolMajor(i), event.getToolMinor(i),
-                             event.getSize(i), event.getOrientation(i), w, h)
-                    if (i == 0) captureTouchReport(event, 0)
+                    strokeTo(id, event.getX(i), event.getY(i),
+                             event.getPressure(i), w, h)
+                    if (i == 0) hold(event.getX(i), event.getY(i), w, h)
                 }
             }
 
@@ -163,6 +158,8 @@ class MainActivity : AppCompatActivity() {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 twoFingerDownAt = 0L
                 releasePointer(event)
+                renderer.holding = false
+                renderer.sim.endPour()
                 renderer.queueStrokeEnd()
             }
         }
@@ -176,9 +173,6 @@ class MainActivity : AppCompatActivity() {
      * the faster the stroke the wider the gaps.
      */
     private fun strokeTo(id: Int, x: Float, y: Float, rawPressure: Float,
-                         touchMajor: Float, touchMinor: Float,
-                         toolMajor: Float, toolMinor: Float,
-                         rawSize: Float, orientation: Float,
                          w: Float, h: Float) {
         val px = lastX[id] ?: x
         val py = lastY[id] ?: y
@@ -199,38 +193,11 @@ class MainActivity : AppCompatActivity() {
 
         val sim = renderer.sim
 
-        // Which of these a driver populates varies, and reading only the first
-        // meant a device that reports the others looked like it reported
-        // nothing. touchMajor is the contact patch and the one worth having;
-        // toolMajor is the whole finger, close enough; getSize is the oldest
-        // and most widely supported, but it is normalised rather than a length,
-        // so it cannot become a world measurement -- it is carried separately.
-        //
-        // World y spans 1.0 over the view's height, so one pixel is 1/h of a
-        // world unit along either axis.
-        var major = (touchMajor / h).coerceAtLeast(0f)
-        var minor = (touchMinor / h).coerceIn(0f, major)
-        if (major <= 0f) {
-            major = (toolMajor / h).coerceAtLeast(0f)
-            minor = (toolMinor / h).coerceIn(0f, major)
-        }
-        // Last resort, and on a capacitive panel not really a fallback at all:
-        // pressure there IS the contact area, reported under another name. It
-        // is used only when nothing else carried a value, and the sim discards
-        // it anyway if it turns out never to move.
-        val size = if (rawSize > 0f) rawSize.coerceIn(0f, 1f)
-                   else (rawPressure / 1.6f).coerceIn(0f, 1f)
-        // getOrientation is clockwise from vertical; canvas v runs the other
-        // way from screen y, which turns (sin, -cos) into (sin, cos)
-        val angle = kotlin.math.atan2(
-            kotlin.math.cos(orientation), kotlin.math.sin(orientation)
-        )
-
         // The nib and smear draw a capsule across the whole segment, so they
         // are continuous already and want one call per reported point.
         if (!sim.stampsDabs) {
             renderer.queueSplat(u, v, (u - pu) * 12f, (v - pv) * 12f,
-                                0f, 0f, 0f, pressure, pu, pv, major, minor, angle, size)
+                                0f, 0f, 0f, pressure, pu, pv)
             return
         }
 
@@ -270,83 +237,11 @@ class MainActivity : AppCompatActivity() {
         carry[id] = if (stamps < MAX_DABS) dist - (next - spacing) else 0f
     }
 
-    // ---------------- what the digitiser actually reports ----------------
-
-    @Volatile private var touchReport = "touch: nothing yet"
-    private var showTouch = false
-
-    /**
-     * Reads every per-pointer axis Android exposes. Which of them carry a real
-     * signal is device-specific and not worth guessing at: on most capacitive
-     * panels pressure is derived from contact area, so the two are one signal
-     * wearing two names, and plenty of devices report a constant for both.
-     */
-    private fun captureTouchReport(event: MotionEvent, i: Int) {
-        if (!showTouch && selected != Brush.PROBE) return
-        val tool = when (event.getToolType(i)) {
-            MotionEvent.TOOL_TYPE_FINGER -> "finger"
-            MotionEvent.TOOL_TYPE_STYLUS -> "stylus"
-            MotionEvent.TOOL_TYPE_ERASER -> "eraser"
-            MotionEvent.TOOL_TYPE_MOUSE -> "mouse"
-            else -> "unknown"
-        }
-        val major = event.getTouchMajor(i)
-        val minor = event.getTouchMinor(i)
-        touchReport = buildString {
-            append("touch  $tool\n")
-            append(String.format("  pressure %.3f   size %.3f\n",
-                                 event.getPressure(i), event.getSize(i)))
-            append(String.format("  touch  %.1f x %.1f px   ratio %.2f\n",
-                                 major, minor,
-                                 if (major > 0f) minor / major else 1f))
-            append(String.format("  tool   %.1f x %.1f px\n",
-                                 event.getToolMajor(i), event.getToolMinor(i)))
-            append(String.format("  orientation %.2f rad   tilt %.2f rad\n",
-                                 event.getOrientation(i),
-                                 event.getAxisValue(MotionEvent.AXIS_TILT, i)))
-            // the verdict, so the raw numbers do not have to be interpreted
-            append("  -> " + when (renderer.sim.contactSource) {
-                FluidSim.ContactSource.MEASURED -> "a measured patch; Fingerprint works"
-                FluidSim.ContactSource.NORMALISED -> String.format(
-                    "area only, varying %.0f%%; Fingerprint scales the brush",
-                    renderer.sim.contactSpread * 100)
-                FluidSim.ContactSource.CONSTANT ->
-                    "a constant, not a measurement; Fingerprint cannot use it"
-                FluidSim.ContactSource.NONE -> "nothing reported"
-            })
-        }
-    }
-
-    /** What the driver claims to support, as opposed to what it sends. */
-    private fun deviceAxisReport(): String {
-        val axes = listOf(
-            "pressure" to MotionEvent.AXIS_PRESSURE,
-            "size" to MotionEvent.AXIS_SIZE,
-            "touchMajor" to MotionEvent.AXIS_TOUCH_MAJOR,
-            "touchMinor" to MotionEvent.AXIS_TOUCH_MINOR,
-            "toolMajor" to MotionEvent.AXIS_TOOL_MAJOR,
-            "toolMinor" to MotionEvent.AXIS_TOOL_MINOR,
-            "orientation" to MotionEvent.AXIS_ORIENTATION,
-            "tilt" to MotionEvent.AXIS_TILT,
-            "distance" to MotionEvent.AXIS_DISTANCE
-        )
-        val out = StringBuilder()
-        for (id in android.view.InputDevice.getDeviceIds()) {
-            val dev = android.view.InputDevice.getDevice(id) ?: continue
-            val touch = dev.sources and
-                android.view.InputDevice.SOURCE_CLASS_POINTER != 0
-            if (!touch) continue
-            out.append("${dev.name}\n")
-            axes.forEach { (label, axis) ->
-                val r = dev.getMotionRange(axis)
-                out.append(
-                    if (r == null) "  $label: not reported\n"
-                    else String.format("  %s: %.2f..%.2f  res %.3f\n",
-                                       label, r.min, r.max, r.resolution)
-                )
-            }
-        }
-        return if (out.isEmpty()) "No pointer device reported any axes." else out.toString()
+    /** The point paint pours from while a finger rests there. */
+    private fun hold(x: Float, y: Float, w: Float, h: Float) {
+        renderer.heldU = x / w
+        renderer.heldV = 1f - y / h
+        renderer.holding = true
     }
 
     private fun releasePointer(event: MotionEvent) {
@@ -680,36 +575,11 @@ class MainActivity : AppCompatActivity() {
         // Nib and smear carry their own size controls; everything else drives
         // the shared footprint, and every one of them needs its own.
         if (selected != Brush.NIB && selected != Brush.SMEAR) {
-            val fp = renderer.sim.fingerprint
             panelBody.addView(slider("Brush size",
-                                     (renderer.sim.splatRadius * 1000).toInt(), 100,
-                                     enabled = !fp) { p, l ->
-                if (!fp) renderer.sim.splatRadius = p / 1000f
-                l.text = String.format("Brush size: %.3f", p / 1000f) +
-                    if (fp) "  (Fingerprint is on)" else ""
+                                     (renderer.sim.splatRadius * 1000).toInt(), 100) { p, l ->
+                renderer.sim.splatRadius = p / 1000f
+                l.text = String.format("Brush size: %.3f", p / 1000f)
             })
-            panelBody.addView(slider("Contact shape",
-                                     (renderer.sim.contactShapeAmount * 100).toInt(), 100) { p, l ->
-                renderer.sim.contactShapeAmount = p / 100f
-                l.text = "Contact shape: $p%  (dab ovals to the finger)"
-            })
-            panelBody.addView(hint(when (renderer.sim.contactSource) {
-                FluidSim.ContactSource.MEASURED -> String.format(
-                    "This device measures the contact: %.3f against a Brush size " +
-                    "of %.3f. Fingerprint uses it directly.",
-                    renderer.sim.contactMajor * 0.5f, renderer.sim.splatRadius)
-                FluidSim.ContactSource.NORMALISED -> String.format(
-                    "This device reports contact area but not its size (%.2f of " +
-                    "full scale, varying by %.0f%%). Fingerprint scales Brush " +
-                    "size by it, from half to double.",
-                    renderer.sim.contactSize, renderer.sim.contactSpread * 100)
-                FluidSim.ContactSource.CONSTANT ->
-                    "This device reports a contact value, but the same one every " +
-                    "sample — it is not measuring anything. Fingerprint can do " +
-                    "nothing with it."
-                FluidSim.ContactSource.NONE ->
-                    "No contact reported yet — paint, then reopen this."
-            }))
         }
 
         when (selected) {
@@ -747,23 +617,42 @@ class MainActivity : AppCompatActivity() {
                 // Coarse on purpose. A cell has to hold several particles or
                 // the pressure solve couples each one to nothing; measured
                 // coupling peaks near eight per occupied cell.
-                panelBody.addView(slider("Coupling", (320 - renderer.sim.flipRes) / 8, 28) { p, l ->
-                    val res = 320 - p * 8
+                panelBody.addView(slider("Flow", renderer.sim.flip.flowRate.toInt(), 40) { p, l ->
+                    renderer.sim.flip.flowRate = p.toFloat()
+                    l.text = if (p == 0) "Flow: 0  (a still finger paints nothing)"
+                             else "Flow: $p dabs/s held  " +
+                                  "(~${p * renderer.sim.flip.countFor(
+                                      renderer.sim.splatRadius * 0.5f,
+                                      renderer.sim.canvasAspect) / 1000}k particles/s)"
+                })
+                panelBody.addView(slider("Volume",
+                                         (renderer.sim.flip.compression * 1000).toInt(), 100) { p, l ->
+                    renderer.sim.flip.compression = p / 1000f
+                    l.text = if (p == 0) "Volume: 0  (paint stacks where it lands)"
+                             else String.format("Volume: %.3f  (a full cell pushes back)", p / 1000f)
+                })
+                panelBody.addView(slider("Travel",
+                                         (renderer.sim.flip.particleDrag * 50).toInt(), 200) { p, l ->
+                    renderer.sim.flip.particleDrag = p / 50f
+                    l.text = String.format("Travel: %.2f drag  (← flies further)", p / 50f)
+                })
+                panelBody.addView(slider("Coupling", (512 - renderer.sim.flipRes) / 8, 56) { p, l ->
+                    val res = 512 - p * 8
                     onGl { renderer.sim.reshapeFlipGrid(res) }
                     l.text = "Coupling: grid ${res}  (← finer, thicker →)"
                 })
-                panelBody.addView(slider("Density", renderer.sim.flip.particlesPerCell.toInt(), 120) { p, l ->
+                panelBody.addView(slider("Density", renderer.sim.flip.particlesPerCell.toInt(), 400) { p, l ->
                     val d = p.coerceAtLeast(1).toFloat()
                     renderer.sim.flip.particlesPerCell = d
                     val n = renderer.sim.flip.countFor(
                         renderer.sim.splatRadius * 0.5f, renderer.sim.canvasAspect)
                     l.text = "Density: ${d.toInt()}  ($n particles per dab)"
                 })
-                panelBody.addView(slider("Pressure", renderer.sim.flipIterations, 160) { p, l ->
+                panelBody.addView(slider("Pressure", renderer.sim.flipIterations, 500) { p, l ->
                     renderer.sim.flipIterations = p.coerceAtLeast(4)
                     l.text = "Pressure: ${p.coerceAtLeast(4)} sweeps"
                 })
-                panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 50) { p, l ->
+                panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 200) { p, l ->
                     renderer.sim.flip.cohesion = p.toFloat()
                     l.text = "Cohesion: $p  (beads up →)"
                 })
@@ -776,7 +665,7 @@ class MainActivity : AppCompatActivity() {
                         else -> ""
                     }
                 })
-                panelBody.addView(slider("Drop size", (renderer.sim.flip.pointSize * 2).toInt(), 32) { p, l ->
+                panelBody.addView(slider("Drop size", (renderer.sim.flip.pointSize * 2).toInt(), 96) { p, l ->
                     renderer.sim.flip.pointSize = p / 2f
                     l.text = String.format("Drop size: %.1f px", p / 2f)
                 })
@@ -858,15 +747,6 @@ class MainActivity : AppCompatActivity() {
                     (if (selected == Brush.FREEZE) "set" else "lift") + " just that area."))
             }
 
-            Brush.PROBE -> {
-                panelBody.addView(hint("Leaves a fingerprint: the contact patch " +
-                    "the digitiser reported, filled, at the size and shape and " +
-                    "angle the paint brushes are handed. Hard-edged on purpose, " +
-                    "so the size can be read straight off the canvas.\n\n" +
-                    "A trail of small dots instead means this device reports no " +
-                    "contact geometry at all, and Fingerprint has nothing to " +
-                    "work with."))
-            }
         }
 
         panelBody.addView(divider())
@@ -941,29 +821,7 @@ class MainActivity : AppCompatActivity() {
         })
         panelBody.addView(row2)
 
-        panelBody.addView(divider())
-        panelBody.addView(hint("What the digitiser reports"))
-        panelBody.addView(checkbox("Fingerprint — the mark is the size of the finger",
-                                   renderer.sim.fingerprint) { on ->
-            renderer.sim.fingerprint = on
-            toast(if (on) "Brush size is now the contact area" else "Brush size is back")
-        })
-        panelBody.addView(hint("With this on, Brush size stops applying and the " +
-            "footprint is whatever the panel reports touching it. The Probe " +
-            "brush draws that patch, so you can see whether there is one."))
 
-        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        row3.addView(button("Touch") { b ->
-            showTouch = !showTouch
-            b.text = if (showTouch) "Hide" else "Touch"
-            if (showTouch) toast("Paint to see what the digitiser reports")
-        })
-        row3.addView(button("Axes") { showReport(deviceAxisReport()) })
-        panelBody.addView(row3)
-        panelBody.addView(hint("‘Touch’ prints the live per-sample values in the " +
-            "HUD; ‘Axes’ lists what this device claims to support. Contact size " +
-            "is off by default because it is in device-calibrated units — check " +
-            "the readout first."))
     }
 
     // ---------------- small widgets ----------------
@@ -1075,9 +933,6 @@ class MainActivity : AppCompatActivity() {
                 hud.text = buildString {
                     if (versionLabel.isNotEmpty()) append(versionLabel).append('\n')
                     append(renderer.statsLine)
-                    if (showTouch || selected == Brush.PROBE) {
-                        append('\n').append(touchReport)
-                    }
                 }
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null

@@ -203,8 +203,7 @@ class Sim:
         self.p = {n: compile_compute(f"{n}.comp") for n in
                   ("advect", "splat", "curl", "vorticity", "divergence",
                    "advect_mc", "pressure", "pressure_rb", "clearp", "gradsub",
-                   "bake", "force", "watercolor", "wet", "nib", "soak", "smear",
-                   "probe")}
+                   "bake", "force", "watercolor", "wet", "nib", "soak", "smear")}
 
         self.vel = Double(self.w, self.h, GL_RGBA16F, GL_LINEAR)
         self.dye = Double(self.dye_w, self.dye_h, GL_RGBA16F, GL_LINEAR)
@@ -1297,80 +1296,6 @@ def main():
     check("an elliptical dab deposits less ink than a round one of the same length",
           flat.sum() < round_dab.sum() * 0.7,
           f"{flat.sum():.1f} against {round_dab.sum():.1f}")
-    print()
-
-    # ---- the probe brush ----
-    #
-    # A diagnostic is only worth having if its two states cannot be confused,
-    # since the whole point is to tell "the control does nothing" apart from
-    # "the device reports nothing".
-    print("Probe:")
-
-    def probe(radius, axis=(1.0, 0.0), minor=1.0, outline=0):
-        q = Sim(args.res)
-        p = q.p["probe"]
-        glUseProgram(p)
-        glUniform2f(uni(p, "uPoint"), 0.5, 0.5)
-        glUniform1f(uni(p, "uAspect"), q.aspect)
-        glUniform1f(uni(p, "uRadius"), radius)
-        glUniform2f(uni(p, "uAxis"), axis[0], axis[1])
-        glUniform1f(uni(p, "uMinor"), minor)
-        glUniform1f(uni(p, "uDot"), 0.01)
-        glUniform1i(uni(p, "uOutline"), outline)
-        q.bg.read_t.image(0, GL_READ_ONLY)
-        q.bg.write_t.image(1, GL_WRITE_ONLY)
-        q.dispatch(q.dye_w, q.dye_h)
-        q.bg.swap()
-        return q.bg.read_t.read()[:, :, 3]
-
-    def span(a, thresh=0.3):
-        m = a > thresh
-        ys, xs = np.nonzero(m)
-        return (xs.max() - xs.min() + 1, ys.max() - ys.min() + 1) if m.any() else (0, 0)
-
-    nothing = probe(0.0)
-    nw, nh = span(nothing)
-    check("with nothing reported the probe draws only the touch point",
-          0 < nw <= 8 and 0 < nh <= 8, f"mark is {nw} x {nh} cells")
-
-    reported = probe(0.10)
-    rw, rh = span(reported)
-    check("with a contact reported it leaves a print of it",
-          rw > nw * 3 and rh > nh * 3, f"{rw} x {rh} cells against {nw} x {nh}")
-
-    check("the print is filled, not an outline",
-          reported[reported.shape[0] // 2, reported.shape[1] // 2] > 0.9,
-          f"centre reads {reported[reported.shape[0] // 2, reported.shape[1] // 2]:.2f}")
-
-    edge = reported[reported.shape[0] // 2, :]
-    on = np.nonzero(edge > 0.5)[0]
-    check("and has a definite edge, so its size can be read off the canvas",
-          float((edge[on[0]:on[-1] + 1] > 0.9).mean()) > 0.9,
-          "the print is solid across its width")
-
-    flat = probe(0.10, minor=0.3)
-    fw, fh = span(flat)
-    check("the print takes the reported shape", fh < rh * 0.55 and fw >= rw * 0.9,
-          f"{fw} x {fh} against {rw} x {rh} round")
-
-    turned = probe(0.10, axis=(0.0, 1.0), minor=0.3)
-    tw, th = span(turned)
-    check("and its reported orientation", abs(tw - fh) <= 3 and abs(th - fw) <= 3,
-          f"{tw} x {th} against {fw} x {fh} unturned")
-
-    # the size it draws has to be the size that was reported, or it lies
-    scale = span(probe(0.05))[0] / max(rw, 1)
-    check("the print is drawn at the size that was reported",
-          abs(scale - 0.5) < 0.12, f"half the radius drew {scale:.2f} of the width")
-
-    # a size derived from a normalised area is not a measurement, and must not
-    # look like one: same extent, hollow centre
-    derived = probe(0.10, outline=1)
-    dw, dh = span(derived)
-    mid = derived.shape[0] // 2, derived.shape[1] // 2
-    check("a derived size draws an outline, not a print",
-          derived[mid] < 0.3 and abs(dw - rw) <= 2 and abs(dh - rh) <= 2,
-          f"{dw} x {dh}, centre reads {derived[mid]:.2f}")
     print()
 
     # ---- layers ----
