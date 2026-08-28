@@ -11,10 +11,10 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // and angle the paint brushes are being handed. A hard edge on purpose -- a
 // soft one would make the size a matter of opinion.
 //
-// The two failure modes stay distinguishable without any text. A bare dot is
-// drawn at the touch point when nothing was reported; a full print when
-// something was. A trail of dots means this device reports no contact geometry
-// and Fingerprint has nothing to work with.
+// Three answers, three marks, no text to read:
+//   a filled print -- the driver reported an actual contact patch
+//   an outline     -- only a normalised area, so this size is derived, not measured
+//   a bare dot     -- nothing at all, and Fingerprint has nothing to work with
 
 layout(rgba16f, binding = 0) readonly  uniform highp image2D uSrc;
 layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
@@ -25,6 +25,7 @@ uniform vec2  uAxis;     // unit vector along the long axis
 uniform float uMinor;    // minor over major
 uniform float uAspect;
 uniform float uDot;      // radius of the centre dot, world units
+uniform int   uOutline;  // 1 = derived from a normalised area, so draw a rim
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
@@ -47,7 +48,12 @@ void main() {
         // and its size can be read off the canvas.
         float r = length(e) / uRadius;
         float aa = 0.03;
-        ink = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+        if (uOutline == 1) {
+            float w = max(0.12, 0.004 / uRadius);   // stays visible when small
+            ink = 1.0 - smoothstep(w * 0.5, w, abs(r - 1.0));
+        } else {
+            ink = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+        }
     } else {
         // nothing reported: just the point that was touched
         ink = 1.0 - smoothstep(uDot * 0.6, uDot, length(d));

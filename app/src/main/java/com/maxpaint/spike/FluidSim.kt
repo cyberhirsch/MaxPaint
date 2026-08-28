@@ -66,6 +66,25 @@ class FluidSim(private val ctx: Context) {
     var contactAngle = 0f
 
     /**
+     * The normalised 0..1 contact area, which is a different thing from
+     * [contactMajor] and has to stay separate. It is the oldest and most widely
+     * reported of the touch axes, but it is scaled against a device-specific
+     * maximum rather than being a length, so it can drive a size relative to
+     * the brush and never an absolute one.
+     */
+    var contactSize = 0f
+
+    /** What the device is actually giving us, which decides what can be done with it. */
+    enum class ContactSource { NONE, MEASURED, NORMALISED }
+
+    val contactSource: ContactSource
+        get() = when {
+            contactMajor > 0f -> ContactSource.MEASURED
+            contactSize > 0f -> ContactSource.NORMALISED
+            else -> ContactSource.NONE
+        }
+
+    /**
      * Fingerprint mode: the mark is the size of the finger, and Brush size
      * stops applying. Off by default, because the measurement is in
      * device-calibrated absolute units and a panel that reports a constant
@@ -521,8 +540,16 @@ class FluidSim(private val ctx: Context) {
      * nonsense cannot fill the canvas.
      */
     private fun contactRadius(base: Float): Float {
-        if (!fingerprint || contactMajor <= 0f) return base
-        return (contactMajor * 0.5f).coerceIn(0.002f, 0.2f)
+        if (!fingerprint) return base
+        return when (contactSource) {
+            // a real length: the mark is the size of the finger
+            ContactSource.MEASURED -> (contactMajor * 0.5f).coerceIn(0.002f, 0.2f)
+            // only a normalised area, so the honest reading is a size relative
+            // to the brush rather than an absolute one -- a light touch is half
+            // the setting, a flat finger twice it
+            ContactSource.NORMALISED -> base * (0.5f + 1.5f * contactSize)
+            ContactSource.NONE -> base
+        }
     }
 
     /** Minor over major, blended by [contactShapeAmount]. 1.0 is a circle. */
@@ -828,7 +855,14 @@ class FluidSim(private val ctx: Context) {
         pProbe.use()
         pProbe.set("uPoint", u, v)
         pProbe.set("uAspect", aspect)
-        pProbe.set("uRadius", contactMajor * 0.5f)
+        pProbe.set("uRadius", when (contactSource) {
+            ContactSource.MEASURED -> contactMajor * 0.5f
+            ContactSource.NORMALISED -> splatRadius * (0.5f + 1.5f * contactSize)
+            ContactSource.NONE -> 0f
+        })
+        // filled for a real measurement, an outline for one merely derived from
+        // a normalised area: the mark says which it is without any text
+        pProbe.set("uOutline", if (contactSource == ContactSource.NORMALISED) 1 else 0)
         pProbe.set("uAxis", contactAxisX, contactAxisY)
         pProbe.set("uMinor",
                    if (contactMajor > 0f) (contactMinor / contactMajor).coerceIn(0.05f, 1f)
