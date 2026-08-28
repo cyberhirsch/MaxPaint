@@ -153,6 +153,6 @@ object Presets {
         Brush.VORTEX -> vortex
         Brush.SOLVENT -> solvent
         Brush.SMEAR -> smear
-        Brush.FREEZE, Brush.THAW -> none
+        Brush.FREEZE, Brush.THAW, Brush.PROBE -> none
     }
 }
