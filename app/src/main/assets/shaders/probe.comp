@@ -7,11 +7,14 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // the permanent layer directly, so a stroke leaves a readable record of every
 // sample.
 //
-// Two marks, so the two failure modes can be told apart without any text:
-//   a centre dot is ALWAYS drawn, at the touch point
-//   the ellipse ring is drawn only when a contact was actually reported
-// Dot alone means the device reports no contact geometry. Dot inside a ring
-// means it does, and the ring is the shape and size being used.
+// It leaves a fingerprint: the reported patch, filled, at the size and shape
+// and angle the paint brushes are being handed. A hard edge on purpose -- a
+// soft one would make the size a matter of opinion.
+//
+// The two failure modes stay distinguishable without any text. A bare dot is
+// drawn at the touch point when nothing was reported; a full print when
+// something was. A trail of dots means this device reports no contact geometry
+// and Fingerprint has nothing to work with.
 
 layout(rgba16f, binding = 0) readonly  uniform highp image2D uSrc;
 layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
@@ -33,23 +36,21 @@ void main() {
     vec2 d = uv - uPoint;
     d.x *= uAspect;
 
-    // the touch point itself, always
-    float ink = 1.0 - smoothstep(uDot * 0.6, uDot, length(d));
-
+    float ink;
     if (uRadius > 0.0) {
         vec2 ax = dot(uAxis, uAxis) > 0.5 ? uAxis : vec2(1.0, 0.0);
         float mn = uMinor > 0.05 ? uMinor : 1.0;
         vec2 e = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x)) / mn);
 
-        // 1.0 exactly on the boundary of the reported ellipse
+        // 1.0 exactly on the boundary of the reported ellipse. Only the last
+        // fraction of a cell is feathered, so the print has a definite edge
+        // and its size can be read off the canvas.
         float r = length(e) / uRadius;
-        float w = max(0.10, 0.004 / uRadius);   // stays visible at small sizes
-        ink = max(ink, 1.0 - smoothstep(w * 0.5, w, abs(r - 1.0)));
-
-        // a tick along the long axis, so the reported orientation is legible
-        float along = abs(e.x) / uRadius;
-        float across = abs(e.y) / uRadius;
-        if (along < 1.0 && across < w * 0.6) ink = max(ink, 0.7);
+        float aa = 0.03;
+        ink = 1.0 - smoothstep(1.0 - aa, 1.0, r);
+    } else {
+        // nothing reported: just the point that was touched
+        ink = 1.0 - smoothstep(uDot * 0.6, uDot, length(d));
     }
 
     // premultiplied black over whatever is there
