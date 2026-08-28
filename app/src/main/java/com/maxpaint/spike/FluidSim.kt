@@ -75,13 +75,51 @@ class FluidSim(private val ctx: Context) {
     var contactSize = 0f
 
     /** What the device is actually giving us, which decides what can be done with it. */
-    enum class ContactSource { NONE, MEASURED, NORMALISED }
+    enum class ContactSource {
+        /** Nothing at all: no axis carried a value. */
+        NONE,
+        /** An axis carries a value, but the same one every time. */
+        CONSTANT,
+        /** A normalised area that varies: usable, but only relative to the brush. */
+        NORMALISED,
+        /** An actual length: the mark can be the size of the finger. */
+        MEASURED
+    }
+
+    // Presence is not the same as usefulness. Plenty of panels report a
+    // pressure or a size that never moves, which would leave Fingerprint
+    // scaling everything by a constant -- worse than doing nothing, because it
+    // looks like it is working. So the spread actually observed is what decides.
+    private var seenMin = Float.MAX_VALUE
+    private var seenMax = -Float.MAX_VALUE
+    private var seenCount = 0
+
+    /** Called for every sample, before the brush uses any of it. */
+    fun observeContact() {
+        val v = if (contactMajor > 0f) contactMajor else contactSize
+        if (v <= 0f) return
+        if (v < seenMin) seenMin = v
+        if (v > seenMax) seenMax = v
+        if (seenCount < 10_000) seenCount++
+    }
+
+    /** How far the signal has moved, relative to its own scale. */
+    val contactSpread: Float
+        get() = if (seenCount == 0 || seenMax <= 0f) 0f
+                else (seenMax - seenMin) / seenMax
+
+    fun forgetContactObservations() {
+        seenMin = Float.MAX_VALUE; seenMax = -Float.MAX_VALUE; seenCount = 0
+    }
 
     val contactSource: ContactSource
-        get() = when {
-            contactMajor > 0f -> ContactSource.MEASURED
-            contactSize > 0f -> ContactSource.NORMALISED
-            else -> ContactSource.NONE
+        get() {
+            val any = contactMajor > 0f || contactSize > 0f
+            if (!any) return ContactSource.NONE
+            // needs enough samples to have moved, and to have actually moved
+            if (seenCount > 40 && contactSpread < 0.02f) return ContactSource.CONSTANT
+            return if (contactMajor > 0f) ContactSource.MEASURED
+                   else ContactSource.NORMALISED
         }
 
     /**
@@ -548,7 +586,8 @@ class FluidSim(private val ctx: Context) {
             // to the brush rather than an absolute one -- a light touch is half
             // the setting, a flat finger twice it
             ContactSource.NORMALISED -> base * (0.5f + 1.5f * contactSize)
-            ContactSource.NONE -> base
+            // a signal that never moves is not a signal
+            ContactSource.CONSTANT, ContactSource.NONE -> base
         }
     }
 
@@ -858,7 +897,7 @@ class FluidSim(private val ctx: Context) {
         pProbe.set("uRadius", when (contactSource) {
             ContactSource.MEASURED -> contactMajor * 0.5f
             ContactSource.NORMALISED -> splatRadius * (0.5f + 1.5f * contactSize)
-            ContactSource.NONE -> 0f
+            ContactSource.CONSTANT, ContactSource.NONE -> 0f
         })
         // filled for a real measurement, an outline for one merely derived from
         // a normalised area: the mark says which it is without any text

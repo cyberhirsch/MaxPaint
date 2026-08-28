@@ -199,6 +199,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
                     sim.contactMinor = t.minor
                     sim.contactAngle = t.angle
                     sim.contactSize = t.size
+                    sim.observeContact()
                     sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure,
                                tiltSpread, t.prevU, t.prevV)
                 }

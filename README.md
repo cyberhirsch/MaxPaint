@@ -223,12 +223,28 @@ outcomes are genuinely different, so the probe draws three different marks:
 |---|---|---|
 | a filled print | an actual contact patch | use it directly — the mark is the size of the finger |
 | an outline | only a normalised area | scale Brush size by it, half to double |
-| a bare dot | nothing | nothing; that half of the feature is dead here |
+| a bare dot | nothing, or the same value every sample | nothing; that half of the feature is dead here |
 
 `size` is normalised against a device-specific maximum rather than being a
 length, so it *cannot* become a world measurement — which is why it is carried
 as a separate signal and drives a relative size rather than an absolute one.
 Pretending otherwise would have been the easy mistake.
+
+There is a last tier below that, and on a capacitive panel it is barely a
+fallback: **pressure there is the contact area** reported under another name. It is
+read only when nothing else carried a value.
+
+**Presence is not usefulness**, which is the trap all of this was walking toward.
+Plenty of panels report a pressure or a size that never moves, and scaling every
+mark by a constant is worse than doing nothing because it looks like it is
+working. So the decision is made on the spread actually observed rather than on
+which API returned non-zero: a signal that has not moved by 2% over forty samples
+is reported as a constant, and treated as no signal at all. The probe draws dots
+for it, and the panel says why.
+
+Selecting Probe turns the readout on by itself, so the diagnosis is one action:
+pick the brush, paint, and the HUD prints every axis plus the verdict —
+`-> a constant, not a measurement; Fingerprint cannot use it`.
 
 Eight checks hold it to that: nothing reported draws a 2-cell dot where a contact
 draws a 26-cell print, the print is filled rather than an outline and solid right

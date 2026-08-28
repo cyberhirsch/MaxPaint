@@ -214,7 +214,12 @@ class MainActivity : AppCompatActivity() {
             major = (toolMajor / h).coerceAtLeast(0f)
             minor = (toolMinor / h).coerceIn(0f, major)
         }
-        val size = rawSize.coerceIn(0f, 1f)
+        // Last resort, and on a capacitive panel not really a fallback at all:
+        // pressure there IS the contact area, reported under another name. It
+        // is used only when nothing else carried a value, and the sim discards
+        // it anyway if it turns out never to move.
+        val size = if (rawSize > 0f) rawSize.coerceIn(0f, 1f)
+                   else (rawPressure / 1.6f).coerceIn(0f, 1f)
         // getOrientation is clockwise from vertical; canvas v runs the other
         // way from screen y, which turns (sin, -cos) into (sin, cos)
         val angle = kotlin.math.atan2(
@@ -277,7 +282,7 @@ class MainActivity : AppCompatActivity() {
      * wearing two names, and plenty of devices report a constant for both.
      */
     private fun captureTouchReport(event: MotionEvent, i: Int) {
-        if (!showTouch) return
+        if (!showTouch && selected != Brush.PROBE) return
         val tool = when (event.getToolType(i)) {
             MotionEvent.TOOL_TYPE_FINGER -> "finger"
             MotionEvent.TOOL_TYPE_STYLUS -> "stylus"
@@ -296,9 +301,19 @@ class MainActivity : AppCompatActivity() {
                                  if (major > 0f) minor / major else 1f))
             append(String.format("  tool   %.1f x %.1f px\n",
                                  event.getToolMajor(i), event.getToolMinor(i)))
-            append(String.format("  orientation %.2f rad   tilt %.2f rad",
+            append(String.format("  orientation %.2f rad   tilt %.2f rad\n",
                                  event.getOrientation(i),
                                  event.getAxisValue(MotionEvent.AXIS_TILT, i)))
+            // the verdict, so the raw numbers do not have to be interpreted
+            append("  -> " + when (renderer.sim.contactSource) {
+                FluidSim.ContactSource.MEASURED -> "a measured patch; Fingerprint works"
+                FluidSim.ContactSource.NORMALISED -> String.format(
+                    "area only, varying %.0f%%; Fingerprint scales the brush",
+                    renderer.sim.contactSpread * 100)
+                FluidSim.ContactSource.CONSTANT ->
+                    "a constant, not a measurement; Fingerprint cannot use it"
+                FluidSim.ContactSource.NONE -> "nothing reported"
+            })
         }
     }
 
@@ -685,8 +700,13 @@ class MainActivity : AppCompatActivity() {
                     renderer.sim.contactMajor * 0.5f, renderer.sim.splatRadius)
                 FluidSim.ContactSource.NORMALISED -> String.format(
                     "This device reports contact area but not its size (%.2f of " +
-                    "full scale). Fingerprint scales Brush size by it instead, " +
-                    "from half to double.", renderer.sim.contactSize)
+                    "full scale, varying by %.0f%%). Fingerprint scales Brush " +
+                    "size by it, from half to double.",
+                    renderer.sim.contactSize, renderer.sim.contactSpread * 100)
+                FluidSim.ContactSource.CONSTANT ->
+                    "This device reports a contact value, but the same one every " +
+                    "sample — it is not measuring anything. Fingerprint can do " +
+                    "nothing with it."
                 FluidSim.ContactSource.NONE ->
                     "No contact reported yet — paint, then reopen this."
             }))
@@ -1055,7 +1075,9 @@ class MainActivity : AppCompatActivity() {
                 hud.text = buildString {
                     if (versionLabel.isNotEmpty()) append(versionLabel).append('\n')
                     append(renderer.statsLine)
-                    if (showTouch) append('\n').append(touchReport)
+                    if (showTouch || selected == Brush.PROBE) {
+                        append('\n').append(touchReport)
+                    }
                 }
                 renderer.benchmarkReport?.let {
                     renderer.benchmarkReport = null
