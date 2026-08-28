@@ -204,20 +204,22 @@ enough that nonsense cannot fill the canvas.
 ### The Probe brush
 
 Whether any of this does anything depends on hardware nobody can inspect from
-here, so there is a brush that answers it. Probe draws the reported contact patch
-straight onto the layer: **a dot at the touch point, always**, and a ring around
-it at the reported ellipse with a tick along its long axis, **only when a contact
-was reported**.
+here, so there is a brush that answers it. Probe **leaves a fingerprint**: the
+reported contact patch, filled, at the size and shape and angle the paint brushes
+are being handed. The edge is hard on purpose — a soft one would make the size a
+matter of opinion, and reading the size off the canvas is the whole job.
 
-Dot alone means the panel reports no contact geometry and Fingerprint has nothing
-to work with. Dot inside a ring means it does, and the ring is exactly the size
-and shape the brushes are being handed. No numbers to read, and the two answers
-cannot be confused — which is the only property a diagnostic really needs.
+When nothing is reported it draws a small dot at the touch point instead. So a
+trail of dots means the panel reports no contact geometry and Fingerprint has
+nothing to work with; a trail of prints means it does. No numbers to read, and
+the two answers cannot be confused — which is the only property a diagnostic
+really needs.
 
-Six checks hold it to that: that nothing reported draws a 2-cell dot and a
-contact draws a 28-cell ring, that the ring is a ring rather than a disc, that it
-takes the reported shape and orientation, and that halving the reported radius
-halves the ring — a diagnostic that draws the wrong size is worse than none.
+Seven checks hold it to that: nothing reported draws a 2-cell dot where a contact
+draws a 26-cell print, the print is filled rather than an outline and solid right
+across its width, it takes the reported shape and orientation, and halving the
+reported radius halves the print. A diagnostic that draws the wrong size is worse
+than no diagnostic.
 
 Building it turned up the failure mode worth guarding: an **unset uniform is
 zero**, and a zero minor axis inflates the dab across the entire canvas. Both

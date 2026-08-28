@@ -818,13 +818,13 @@ class MainActivity : AppCompatActivity() {
             }
 
             Brush.PROBE -> {
-                panelBody.addView(hint("Draws the contact patch the digitiser " +
-                    "reported, straight onto the layer. A dot marks the touch " +
-                    "point and is always drawn; the ring around it is the " +
-                    "reported ellipse, with a tick along its long axis.\n\n" +
-                    "Dot alone means this device reports no contact geometry, " +
-                    "so Fingerprint has nothing to work with. Dot inside a ring " +
-                    "means it does, and the ring is the size and shape being used."))
+                panelBody.addView(hint("Leaves a fingerprint: the contact patch " +
+                    "the digitiser reported, filled, at the size and shape and " +
+                    "angle the paint brushes are handed. Hard-edged on purpose, " +
+                    "so the size can be read straight off the canvas.\n\n" +
+                    "A trail of small dots instead means this device reports no " +
+                    "contact geometry at all, and Fingerprint has nothing to " +
+                    "work with."))
             }
         }
 

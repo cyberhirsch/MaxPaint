@@ -1334,16 +1334,22 @@ def main():
 
     reported = probe(0.10)
     rw, rh = span(reported)
-    check("with a contact reported it draws a ring around that point",
+    check("with a contact reported it leaves a print of it",
           rw > nw * 3 and rh > nh * 3, f"{rw} x {rh} cells against {nw} x {nh}")
 
-    check("the ring is a ring, not a disc",
-          reported[reported.shape[0] // 2, reported.shape[1] // 4] < 0.3,
-          "the inside is clear")
+    check("the print is filled, not an outline",
+          reported[reported.shape[0] // 2, reported.shape[1] // 2] > 0.9,
+          f"centre reads {reported[reported.shape[0] // 2, reported.shape[1] // 2]:.2f}")
+
+    edge = reported[reported.shape[0] // 2, :]
+    on = np.nonzero(edge > 0.5)[0]
+    check("and has a definite edge, so its size can be read off the canvas",
+          float((edge[on[0]:on[-1] + 1] > 0.9).mean()) > 0.9,
+          "the print is solid across its width")
 
     flat = probe(0.10, minor=0.3)
     fw, fh = span(flat)
-    check("the ring takes the reported shape", fh < rh * 0.55 and fw >= rw * 0.9,
+    check("the print takes the reported shape", fh < rh * 0.55 and fw >= rw * 0.9,
           f"{fw} x {fh} against {rw} x {rh} round")
 
     turned = probe(0.10, axis=(0.0, 1.0), minor=0.3)
@@ -1353,7 +1359,7 @@ def main():
 
     # the size it draws has to be the size that was reported, or it lies
     scale = span(probe(0.05))[0] / max(rw, 1)
-    check("the ring is drawn at the size that was reported",
+    check("the print is drawn at the size that was reported",
           abs(scale - 0.5) < 0.12, f"half the radius drew {scale:.2f} of the width")
     print()
 
