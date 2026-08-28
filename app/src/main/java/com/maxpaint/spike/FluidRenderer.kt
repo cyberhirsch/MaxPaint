@@ -58,7 +58,10 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
                         // during a stroke, so it cannot ride on the renderer
                         // as tilt does and still describe the right dab
                         val major: Float = 0f, val minor: Float = 0f,
-                        val angle: Float = 0f) {
+                        val angle: Float = 0f,
+                        // normalised 0..1, the fallback where no driver
+                        // reports an actual length
+                        val size: Float = 0f) {
         companion object {
             const val SAMPLE = 0
             const val BEGIN = 1
@@ -78,10 +81,10 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         u: Float, v: Float, du: Float, dv: Float,
         r: Float, g: Float, b: Float, pressure: Float = 1f,
         prevU: Float = u, prevV: Float = v,
-        major: Float = 0f, minor: Float = 0f, angle: Float = 0f
+        major: Float = 0f, minor: Float = 0f, angle: Float = 0f, size: Float = 0f
     ) {
         touches.add(Touch(Touch.SAMPLE, u, v, du, dv, r, g, b, pressure,
-                          prevU, prevV, major, minor, angle))
+                          prevU, prevV, major, minor, angle, size))
     }
 
     fun queueStrokeBegin() = touches.add(Touch(Touch.BEGIN))
@@ -195,6 +198,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
                     sim.contactMajor = t.major
                     sim.contactMinor = t.minor
                     sim.contactAngle = t.angle
+                    sim.contactSize = t.size
                     sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure,
                                tiltSpread, t.prevU, t.prevV)
                 }

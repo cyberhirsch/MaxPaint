@@ -137,11 +137,15 @@ class MainActivity : AppCompatActivity() {
                                  event.getHistoricalPressure(i, hIdx),
                                  event.getHistoricalTouchMajor(i, hIdx),
                                  event.getHistoricalTouchMinor(i, hIdx),
+                                 event.getHistoricalToolMajor(i, hIdx),
+                                 event.getHistoricalToolMinor(i, hIdx),
+                                 event.getHistoricalSize(i, hIdx),
                                  event.getHistoricalOrientation(i, hIdx), w, h)
                     }
                     strokeTo(id, event.getX(i), event.getY(i), event.getPressure(i),
                              event.getTouchMajor(i), event.getTouchMinor(i),
-                             event.getOrientation(i), w, h)
+                             event.getToolMajor(i), event.getToolMinor(i),
+                             event.getSize(i), event.getOrientation(i), w, h)
                     if (i == 0) captureTouchReport(event, 0)
                 }
             }
@@ -172,7 +176,9 @@ class MainActivity : AppCompatActivity() {
      * the faster the stroke the wider the gaps.
      */
     private fun strokeTo(id: Int, x: Float, y: Float, rawPressure: Float,
-                         touchMajor: Float, touchMinor: Float, orientation: Float,
+                         touchMajor: Float, touchMinor: Float,
+                         toolMajor: Float, toolMinor: Float,
+                         rawSize: Float, orientation: Float,
                          w: Float, h: Float) {
         val px = lastX[id] ?: x
         val py = lastY[id] ?: y
@@ -193,11 +199,22 @@ class MainActivity : AppCompatActivity() {
 
         val sim = renderer.sim
 
-        // The contact patch, in world units. World y spans 1.0 over the view's
-        // height, and the canvas is shown at its own aspect, so one pixel is
-        // 1/h of a world unit along either axis.
-        val major = (touchMajor / h).coerceAtLeast(0f)
-        val minor = (touchMinor / h).coerceIn(0f, major)
+        // Which of these a driver populates varies, and reading only the first
+        // meant a device that reports the others looked like it reported
+        // nothing. touchMajor is the contact patch and the one worth having;
+        // toolMajor is the whole finger, close enough; getSize is the oldest
+        // and most widely supported, but it is normalised rather than a length,
+        // so it cannot become a world measurement -- it is carried separately.
+        //
+        // World y spans 1.0 over the view's height, so one pixel is 1/h of a
+        // world unit along either axis.
+        var major = (touchMajor / h).coerceAtLeast(0f)
+        var minor = (touchMinor / h).coerceIn(0f, major)
+        if (major <= 0f) {
+            major = (toolMajor / h).coerceAtLeast(0f)
+            minor = (toolMinor / h).coerceIn(0f, major)
+        }
+        val size = rawSize.coerceIn(0f, 1f)
         // getOrientation is clockwise from vertical; canvas v runs the other
         // way from screen y, which turns (sin, -cos) into (sin, cos)
         val angle = kotlin.math.atan2(
@@ -208,7 +225,7 @@ class MainActivity : AppCompatActivity() {
         // are continuous already and want one call per reported point.
         if (!sim.stampsDabs) {
             renderer.queueSplat(u, v, (u - pu) * 12f, (v - pv) * 12f,
-                                0f, 0f, 0f, pressure, pu, pv, major, minor, angle)
+                                0f, 0f, 0f, pressure, pu, pv, major, minor, angle, size)
             return
         }
 
@@ -661,14 +678,18 @@ class MainActivity : AppCompatActivity() {
                 renderer.sim.contactShapeAmount = p / 100f
                 l.text = "Contact shape: $p%  (dab ovals to the finger)"
             })
-            panelBody.addView(hint(
-                // so a control that appears to do nothing can be told apart
-                // from a device that reports nothing
-                renderer.sim.contactMajor.let {
-                    if (it <= 0f) "No contact size reported yet — paint, then reopen this."
-                    else String.format("Finger measures %.3f; Brush size is %.3f.",
-                                       it * 0.5f, renderer.sim.splatRadius)
-                }))
+            panelBody.addView(hint(when (renderer.sim.contactSource) {
+                FluidSim.ContactSource.MEASURED -> String.format(
+                    "This device measures the contact: %.3f against a Brush size " +
+                    "of %.3f. Fingerprint uses it directly.",
+                    renderer.sim.contactMajor * 0.5f, renderer.sim.splatRadius)
+                FluidSim.ContactSource.NORMALISED -> String.format(
+                    "This device reports contact area but not its size (%.2f of " +
+                    "full scale). Fingerprint scales Brush size by it instead, " +
+                    "from half to double.", renderer.sim.contactSize)
+                FluidSim.ContactSource.NONE ->
+                    "No contact reported yet — paint, then reopen this."
+            }))
         }
 
         when (selected) {

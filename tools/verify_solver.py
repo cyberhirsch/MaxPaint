@@ -1306,7 +1306,7 @@ def main():
     # "the device reports nothing".
     print("Probe:")
 
-    def probe(radius, axis=(1.0, 0.0), minor=1.0):
+    def probe(radius, axis=(1.0, 0.0), minor=1.0, outline=0):
         q = Sim(args.res)
         p = q.p["probe"]
         glUseProgram(p)
@@ -1316,6 +1316,7 @@ def main():
         glUniform2f(uni(p, "uAxis"), axis[0], axis[1])
         glUniform1f(uni(p, "uMinor"), minor)
         glUniform1f(uni(p, "uDot"), 0.01)
+        glUniform1i(uni(p, "uOutline"), outline)
         q.bg.read_t.image(0, GL_READ_ONLY)
         q.bg.write_t.image(1, GL_WRITE_ONLY)
         q.dispatch(q.dye_w, q.dye_h)
@@ -1361,6 +1362,15 @@ def main():
     scale = span(probe(0.05))[0] / max(rw, 1)
     check("the print is drawn at the size that was reported",
           abs(scale - 0.5) < 0.12, f"half the radius drew {scale:.2f} of the width")
+
+    # a size derived from a normalised area is not a measurement, and must not
+    # look like one: same extent, hollow centre
+    derived = probe(0.10, outline=1)
+    dw, dh = span(derived)
+    mid = derived.shape[0] // 2, derived.shape[1] // 2
+    check("a derived size draws an outline, not a print",
+          derived[mid] < 0.3 and abs(dw - rw) <= 2 and abs(dh - rh) <= 2,
+          f"{dw} x {dh}, centre reads {derived[mid]:.2f}")
     print()
 
     # ---- layers ----

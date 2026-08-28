@@ -209,17 +209,33 @@ reported contact patch, filled, at the size and shape and angle the paint brushe
 are being handed. The edge is hard on purpose — a soft one would make the size a
 matter of opinion, and reading the size off the canvas is the whole job.
 
-When nothing is reported it draws a small dot at the touch point instead. So a
-trail of dots means the panel reports no contact geometry and Fingerprint has
-nothing to work with; a trail of prints means it does. No numbers to read, and
-the two answers cannot be confused — which is the only property a diagnostic
-really needs.
+On the first device it was pointed at, it drew dots — nothing reported. That
+turned out to be **the diagnostic working and the capture being wrong**:
+`getTouchMajor` is the newer API and plenty of drivers never populate it, while
+`getSize` is the oldest of the touch axes and the most widely supported. Reading
+only the first made a device that reports the others look like it reported
+nothing.
 
-Seven checks hold it to that: nothing reported draws a 2-cell dot where a contact
+The capture now falls through `touchMajor` → `toolMajor` → `size`, and the three
+outcomes are genuinely different, so the probe draws three different marks:
+
+| the mark | what the driver gave | what Fingerprint can do |
+|---|---|---|
+| a filled print | an actual contact patch | use it directly — the mark is the size of the finger |
+| an outline | only a normalised area | scale Brush size by it, half to double |
+| a bare dot | nothing | nothing; that half of the feature is dead here |
+
+`size` is normalised against a device-specific maximum rather than being a
+length, so it *cannot* become a world measurement — which is why it is carried
+as a separate signal and drives a relative size rather than an absolute one.
+Pretending otherwise would have been the easy mistake.
+
+Eight checks hold it to that: nothing reported draws a 2-cell dot where a contact
 draws a 26-cell print, the print is filled rather than an outline and solid right
-across its width, it takes the reported shape and orientation, and halving the
-reported radius halves the print. A diagnostic that draws the wrong size is worse
-than no diagnostic.
+across its width, it takes the reported shape and orientation, halving the
+reported radius halves the print, and a derived size draws a hollow ring at the
+same extent rather than something indistinguishable from a measurement. A
+diagnostic that draws the wrong size is worse than no diagnostic.
 
 Building it turned up the failure mode worth guarding: an **unset uniform is
 zero**, and a zero minor axis inflates the dab across the entire canvas. Both
