@@ -56,27 +56,34 @@ object Presets {
     // paint and how abruptly drag stops it.
     private val flip = listOf(
         Preset("Wet Paint") { s ->
+            s.flip.flowRate = 0f; s.flip.compression = 0f
             s.flip.flipRatio = 0.6f; s.flip.particleDrag = 0.25f
             s.flip.settleSpeed = 0.06f; s.flip.cohesion = 1f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 120f
         },
+        // Hold and it pours into a volume; drag and that volume's own momentum
+        // throws it. The splash is the gesture, not the emitter.
         Preset("Splatter") { s ->
-            s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
-            s.flip.settleSpeed = 0.12f; s.flip.cohesion = 4f
+            s.flip.flipRatio = 1.15f; s.flip.particleDrag = 0.02f
+            s.flip.settleSpeed = 0.10f; s.flip.cohesion = 6f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 51f
+            s.flip.flowRate = 12f; s.flip.compression = 0.01f
         },
         Preset("Fling") { s ->
+            s.flip.flowRate = 0f; s.flip.compression = 0f
             // travels a long way before it stops
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.05f
             s.flip.settleSpeed = 0.03f; s.flip.cohesion = 8f
             s.flip.pointSize = 4f; s.flip.particlesPerCell = 29f
         },
         Preset("Honey") { s ->
+            s.flip.flowRate = 0f; s.flip.compression = 0f
             s.flip.flipRatio = 0.45f; s.flip.particleDrag = 1.6f
             s.flip.settleSpeed = 0.02f; s.flip.cohesion = 26f
             s.flip.pointSize = 6f; s.flip.particlesPerCell = 51f
         },
         Preset("Mercury") { s ->
+            s.flip.flowRate = 0f; s.flip.compression = 0f
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.04f
             // very high tension: beads up hard and stays whole
             s.flip.settleSpeed = 0.015f; s.flip.cohesion = 38f
@@ -153,6 +160,6 @@ object Presets {
         Brush.VORTEX -> vortex
         Brush.SOLVENT -> solvent
         Brush.SMEAR -> smear
-        Brush.FREEZE, Brush.THAW, Brush.PROBE -> none
+        Brush.FREEZE, Brush.THAW -> none
     }
 }

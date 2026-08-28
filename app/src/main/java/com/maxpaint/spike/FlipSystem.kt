@@ -26,6 +26,20 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
      */
     var flipRatio = 0.6f
     var particleDrag = 0.25f
+
+    /**
+     * Dabs per second poured while the finger is held still. Zero is the old
+     * behaviour, where a still finger put down nothing; Wet Paint keeps it that
+     * way, and Splatter is built on it.
+     */
+    var flowRate = 0f
+
+    /**
+     * How hard an over-full cell pushes back. Without it particles resting
+     * together produce no divergence, so nothing objects and they stack: a pour
+     * piled four times the paint into the same cells instead of growing.
+     */
+    var compression = 0f
     /** CFL guard for particles, matching the grid's. */
     var maxSpeed = 4f
     /** Surface tension. With no gravity, this is what gathers paint into

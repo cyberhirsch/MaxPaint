@@ -143,6 +143,42 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## A pour, and paint that takes up room
+
+Splatter could not splatter. Emission happens per dab and dabs only happen when
+the pointer moves, so **holding still put down nothing at all** — the one gesture
+a pouring medium is built around.
+
+Holding now pours on the clock rather than on movement: a Flow control in dabs
+per second, with the fractional remainder carried between frames so a slow pour
+still pours. Hold and a volume builds; drag and the volume's own momentum throws
+it, which is where the splash comes from. Measured: the particles that were
+*poured* — not the ones the drag added — spread 0.021 left alone against 0.037
+when dragged through.
+
+Building it exposed something the medium had been getting away with. Particles
+resting together produce no divergence, so an incompressible solve has nothing to
+object to and **they stack without limit**: 24 frames of pouring put four times
+the paint into the same 32 cells, at 5.7x the rest density. A volume needs a term
+that notices a cell is over-full, so an over-full cell is now given a fake source
+and the projection pushes paint out of it until the density comes back:
+
+| a cell pushing back | cells after 24 frames | peak density |
+|---:|---:|---:|
+| 0 | 34 | 173 |
+| 0.005 | 168 | 44 |
+| **0.01** | **202** | **39** |
+| 0.05 | 263 | 27 |
+
+At zero the shader early-outs, so every preset that does not ask for it is
+bit-identical to before — which is what keeps **Wet Paint exactly as it was**.
+Only Splatter turns it on.
+
+The FLIP ranges also went wider, since several ceilings sat inside the
+interesting part rather than beyond it: Pressure 160 → **500** sweeps, Density
+120 → 400, Cohesion 50 → 200, Coupling down to a grid of 64, Drop size to 48px,
+plus Flow, Volume and Travel controls that had no slider at all.
+
 ## Every brush has its own size
 
 `splatRadius` was one shared field driving gas, drip, wash, stir, lift, set and
@@ -156,7 +192,19 @@ painting, so every reader in the solver is unchanged — they all wanted the act
 brush's size, which is what they were finally given. The slider appears on every
 panel whose brush has a footprint; nib and smear keep their own controls.
 
-## The finger, not a point
+## The finger, not a point — dormant
+
+**Nothing came of this on the device it was built against**, and the controls are
+gone rather than left inert. The panel reports no `touchMajor`, no `toolMajor`,
+no `size`, and a pressure that never moves — so there was no contact geometry to
+paint with, and a Fingerprint switch that greyed out Brush size in exchange for
+nothing would have been worse than no switch.
+
+What is recorded below is what the platform offers and what it cost to find out,
+because the finding is the useful part. The shader support survives — a dab still
+takes an axis and a minor ratio, still verified, and still reads a degenerate
+frame as a circle — so it costs nothing while unused and PRD §7.9 wants exactly
+this shape of input for a device that does report it.
 
 Android reports rather more about a touch than a coordinate. Per pointer, and
 through the batched historical samples too:
@@ -242,9 +290,14 @@ which API returned non-zero: a signal that has not moved by 2% over forty sample
 is reported as a constant, and treated as no signal at all. The probe draws dots
 for it, and the panel says why.
 
-Selecting Probe turns the readout on by itself, so the diagnosis is one action:
-pick the brush, paint, and the HUD prints every axis plus the verdict —
-`-> a constant, not a measurement; Fingerprint cannot use it`.
+Selecting Probe turned the readout on by itself, so the diagnosis was one
+action. The verdict came back `a constant, not a measurement`, and that closed
+it.
+
+The lesson worth keeping: **presence is not usefulness.** Three builds went into
+asking successively older APIs whether they returned non-zero, when the question
+was always whether the number *moves*. Checking the observed spread would have
+answered it on the first.
 
 Eight checks hold it to that: nothing reported draws a 2-cell dot where a contact
 draws a 26-cell print, the print is filled rather than an outline and solid right

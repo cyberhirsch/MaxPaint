@@ -74,6 +74,15 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private var lastFrameNs = 0L
     private val frameTimes = ArrayDeque<Double>()
 
+    /**
+     * Where a finger is resting, or null. Held on the renderer rather than in
+     * the touch queue because a pour is driven by the clock: the point is that
+     * paint keeps arriving when no events are.
+     */
+    @Volatile var heldU = 0f
+    @Volatile var heldV = 0f
+    @Volatile var holding = false
+
     /** Stylus tilt widens the mark; 1.0 is an upright pen (PRD FR-6). */
     @Volatile var tiltSpread = 1f
 
@@ -195,16 +204,13 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
                 Touch.BEGIN -> sim.beginStroke()
                 Touch.END -> sim.endStroke()
                 else -> {
-                    sim.contactMajor = t.major
-                    sim.contactMinor = t.minor
-                    sim.contactAngle = t.angle
-                    sim.contactSize = t.size
-                    sim.observeContact()
                     sim.stroke(t.u, t.v, t.du, t.dv, t.r, t.g, t.b, t.pressure,
                                tiltSpread, t.prevU, t.prevV)
                 }
             }
         }
+
+        if (holding) sim.pour(heldU, heldV, dt)
 
         if (undoRequested) { undoRequested = false; sim.undo() }
         if (redoRequested) { redoRequested = false; sim.redo() }

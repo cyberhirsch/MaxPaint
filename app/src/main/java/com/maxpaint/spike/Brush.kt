@@ -40,13 +40,7 @@ enum class Brush(val label: String, val carriesPigment: Boolean, val short: Stri
     FREEZE("Freeze", false, "set"),
 
     /** The inverse: lifts baked paint back into the simulation. */
-    THAW("Thaw", false, "melt"),
-
-    /**
-     * Diagnostic. Draws the contact patch the digitiser reported, exactly as
-     * the paint brushes are told to use it, straight onto the permanent layer.
-     */
-    PROBE("Probe", false, "probe");
+    THAW("Thaw", false, "melt");
 
     companion object {
         val labels: List<String> get() = entries.map { it.label }

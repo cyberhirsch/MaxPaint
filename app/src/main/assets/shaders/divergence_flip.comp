@@ -4,6 +4,21 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(rgba16f, binding = 0) readonly  uniform highp image2D uVel;
 layout(r32f,    binding = 1) writeonly uniform highp image2D uDiv;
+layout(r32f,    binding = 2) readonly  uniform highp image2D uMass;
+
+// Particles resting in one cell produce no divergence, so an incompressible
+// solve alone has nothing to object to and they stack without limit -- 4x the
+// paint in the same 32 cells. A volume needs a term that notices a cell is
+// over-full: an over-full cell is given a fake source, and the projection then
+// pushes paint out of it until the density comes back down.
+//
+// uRest is where that starts, in the same units as the mass field: each
+// particle contributes a bilinear weight of 1 per axis, which the cell-centred
+// reconstruction averages to about half a particle, so rest is half the
+// emission density.
+uniform float uRest;
+uniform float uCompression;   // 0 disables it entirely
+uniform float uCap;           // how over-full a cell may read, so one clump cannot dominate
 
 // FORWARD differences, paired with the BACKWARD gradient in gradsub.comp.
 //
@@ -34,5 +49,12 @@ void main() {
     float hx    = c.x > 0    ? here.x : 0.0;
     float hy    = c.y > 0    ? here.y : 0.0;
 
-    imageStore(uDiv, c, vec4((right - hx) + (up - hy), 0.0, 0.0, 0.0));
+    float div = (right - hx) + (up - hy);
+
+    if (uCompression > 0.0) {
+        float over = clamp(imageLoad(uMass, c).x - uRest, 0.0, uCap);
+        div -= over * uCompression;
+    }
+
+    imageStore(uDiv, c, vec4(div, 0.0, 0.0, 0.0));
 }
