@@ -188,19 +188,36 @@ the long one, so a fingertip rolled onto its side makes an oval mark angled the
 way the finger is. Pixels convert to world units through the view height, since
 world y spans 1.0 over it.
 
-Both controls live on the brush panel, under Brush size, because that is the
-thing they modify — they were in global settings at first and were simply not
-found. The Contact size label prints what was last measured
-(`finger 0.031 · brush 0.023`), so a slider that appears to do nothing can be
-told apart from a device that reports nothing.
+**Contact shape** is a slider on the brush panel, on at 100%: a ratio is
+dimensionless and bounded, so a device that only reports circles simply keeps
+the mark round rather than getting it wrong.
 
-Two controls, defaulted differently on purpose. **Contact shape** is on at 100%:
-a ratio is dimensionless and bounded, so a device that only reports circles
-simply keeps the mark round rather than getting it wrong. **Contact size** is off:
-it is in device-calibrated absolute units, and on a panel reporting a constant it
-would quietly turn the Brush size slider into a no-op. Even when it is on, the
-radius is clamped to a quarter to four times the setting, so a miscalibrated
-device cannot produce a mark unrelated to the size that was asked for.
+**Fingerprint** is a mode rather than a blend — a checkbox in settings that
+switches the footprint over to the contact area and greys out Brush size, which
+is the honest way to present it: two states that cannot both be half true. Off by
+default, because the measurement is in device-calibrated absolute units and a
+panel reporting a constant would leave the mark stuck at one size with no
+control. In that mode the radius is *not* clamped toward Brush size — that would
+defeat the point — but to an absolute band, wide enough to be honest and narrow
+enough that nonsense cannot fill the canvas.
+
+### The Probe brush
+
+Whether any of this does anything depends on hardware nobody can inspect from
+here, so there is a brush that answers it. Probe draws the reported contact patch
+straight onto the layer: **a dot at the touch point, always**, and a ring around
+it at the reported ellipse with a tick along its long axis, **only when a contact
+was reported**.
+
+Dot alone means the panel reports no contact geometry and Fingerprint has nothing
+to work with. Dot inside a ring means it does, and the ring is exactly the size
+and shape the brushes are being handed. No numbers to read, and the two answers
+cannot be confused — which is the only property a diagnostic really needs.
+
+Six checks hold it to that: that nothing reported draws a 2-cell dot and a
+contact draws a 28-cell ring, that the ring is a ring rather than a disc, that it
+takes the reported shape and orientation, and that halving the reported radius
+halves the ring — a diagnostic that draws the wrong size is worse than none.
 
 Building it turned up the failure mode worth guarding: an **unset uniform is
 zero**, and a zero minor axis inflates the dab across the entire canvas. Both

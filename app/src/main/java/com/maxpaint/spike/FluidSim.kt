@@ -66,12 +66,13 @@ class FluidSim(private val ctx: Context) {
     var contactAngle = 0f
 
     /**
-     * How much the measured patch replaces the Brush size slider. Off by
-     * default: the measurement is in device-calibrated absolute units, and a
-     * panel that reports a constant would quietly turn Brush size into a
-     * no-op. The diagnostic says whether this device reports anything usable.
+     * Fingerprint mode: the mark is the size of the finger, and Brush size
+     * stops applying. Off by default, because the measurement is in
+     * device-calibrated absolute units and a panel that reports a constant
+     * would turn the mark into a fixed size with no way to change it. The
+     * Probe brush says whether this device reports anything usable.
      */
-    var contactSizeAmount = 0f
+    var fingerprint = false
 
     /**
      * How much the measured patch ovals the dab. On by default, because a ratio
@@ -213,6 +214,7 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pPressureFlip: ComputeProgram
     private lateinit var pBlit: ComputeProgram
     private lateinit var pComposite: ComputeProgram
+    private lateinit var pProbe: ComputeProgram
     private lateinit var pDivergenceFlip: ComputeProgram
     private lateinit var pGradSubFlip: ComputeProgram
     /**
@@ -296,6 +298,7 @@ class FluidSim(private val ctx: Context) {
         pPressureFlip = ComputeProgram(ctx, "shaders/pressure_flip.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
         pComposite = ComputeProgram(ctx, "shaders/composite.comp")
+        pProbe = ComputeProgram(ctx, "shaders/probe.comp")
         pDivergenceFlip = ComputeProgram(ctx, "shaders/divergence_flip.comp")
         pGradSubFlip = ComputeProgram(ctx, "shaders/gradsub_flip.comp")
         flip.init()
@@ -452,7 +455,7 @@ class FluidSim(private val ctx: Context) {
      */
     val stampSpacing: Float
         get() = when (brush) {
-            Brush.NIB, Brush.SMEAR -> 0.02f
+            Brush.NIB, Brush.SMEAR, Brush.PROBE -> 0.02f
             else -> (splatRadius * 0.5f).coerceAtLeast(0.002f)
         }
 
@@ -462,7 +465,7 @@ class FluidSim(private val ctx: Context) {
      * point to this one, which already covers the segment exactly once.
      */
     val stampsDabs: Boolean
-        get() = brush != Brush.NIB && brush != Brush.SMEAR
+        get() = brush != Brush.NIB && brush != Brush.SMEAR && brush != Brush.PROBE
 
     /**
      * What one dab carries, as a fraction of the Load slider.
@@ -511,16 +514,15 @@ class FluidSim(private val ctx: Context) {
     }
 
     /**
-     * The dab's long radius, blending the brush setting toward the measured
-     * contact. Clamped to a band around the setting so a device reporting
-     * nonsense -- or nothing but a constant -- cannot produce a mark unrelated
-     * to the size that was asked for.
+     * The dab's long radius. In fingerprint mode this is the measured contact
+     * and nothing else -- clamping it toward the Brush size setting would
+     * defeat the point of the mode -- so the guard is an absolute band instead,
+     * wide enough to be honest and narrow enough that a device reporting
+     * nonsense cannot fill the canvas.
      */
     private fun contactRadius(base: Float): Float {
-        if (contactMajor <= 0f || contactSizeAmount <= 0f) return base
-        val measured = contactMajor * 0.5f
-        val blended = base * (1f - contactSizeAmount) + measured * contactSizeAmount
-        return blended.coerceIn(base * 0.25f, base * 4f)
+        if (!fingerprint || contactMajor <= 0f) return base
+        return (contactMajor * 0.5f).coerceIn(0.002f, 0.2f)
     }
 
     /** Minor over major, blended by [contactShapeAmount]. 1.0 is a circle. */
@@ -566,6 +568,7 @@ class FluidSim(private val ctx: Context) {
                 force(u, v, du, dv, forceMode.code, forceStrength)
             }
             Brush.SOLVENT -> solvent(u, v)
+            Brush.PROBE -> probe(u, v)
             Brush.FREEZE -> transfer(1f / 60f, force = true, thaw = false, maskAt = u to v)
             Brush.THAW -> transfer(1f / 60f, force = false, thaw = true, maskAt = u to v)
         }
@@ -813,6 +816,29 @@ class FluidSim(private val ctx: Context) {
 
         // divergent push: negative pinch drives pigment away from the drop
         force(u, v, 0f, 0f, ForceMode.PINCH.code, -forceStrength)
+    }
+
+    /**
+     * Marks the reported contact patch onto the permanent layer. Reads the raw
+     * measurement rather than anything the size controls have done to it, since
+     * the point is to see what the device actually said.
+     */
+    fun probe(u: Float, v: Float) {
+        if (!allocated) return
+        pProbe.use()
+        pProbe.set("uPoint", u, v)
+        pProbe.set("uAspect", aspect)
+        pProbe.set("uRadius", contactMajor * 0.5f)
+        pProbe.set("uAxis", contactAxisX, contactAxisY)
+        pProbe.set("uMinor",
+                   if (contactMajor > 0f) (contactMinor / contactMajor).coerceIn(0.05f, 1f)
+                   else 1f)
+        pProbe.set("uDot", 0.0025f)
+        background.read.bindImage(0, GLES31.GL_READ_ONLY)
+        background.write.bindImage(1, GLES31.GL_WRITE_ONLY)
+        pProbe.dispatch(dyeW, dyeH)
+        background.swap()
+        layersDirty = true
     }
 
     /** Inject momentum and colour. Coordinates and delta are in UV space. */

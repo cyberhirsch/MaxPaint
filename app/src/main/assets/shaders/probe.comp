@@ -1,0 +1,57 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// A debugging brush: draws the contact patch the digitiser reported, exactly as
+// the paint brushes are being told to use it. Nothing is simulated -- it marks
+// the permanent layer directly, so a stroke leaves a readable record of every
+// sample.
+//
+// Two marks, so the two failure modes can be told apart without any text:
+//   a centre dot is ALWAYS drawn, at the touch point
+//   the ellipse ring is drawn only when a contact was actually reported
+// Dot alone means the device reports no contact geometry. Dot inside a ring
+// means it does, and the ring is the shape and size being used.
+
+layout(rgba16f, binding = 0) readonly  uniform highp image2D uSrc;
+layout(rgba16f, binding = 1) writeonly uniform highp image2D uDst;
+
+uniform vec2  uPoint;
+uniform float uRadius;   // major radius in world units; <= 0 means nothing reported
+uniform vec2  uAxis;     // unit vector along the long axis
+uniform float uMinor;    // minor over major
+uniform float uAspect;
+uniform float uDot;      // radius of the centre dot, world units
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 sz = imageSize(uDst);
+    if (c.x >= sz.x || c.y >= sz.y) return;
+
+    vec4 prev = imageLoad(uSrc, c);
+    vec2 uv = (vec2(c) + 0.5) / vec2(sz);
+    vec2 d = uv - uPoint;
+    d.x *= uAspect;
+
+    // the touch point itself, always
+    float ink = 1.0 - smoothstep(uDot * 0.6, uDot, length(d));
+
+    if (uRadius > 0.0) {
+        vec2 ax = dot(uAxis, uAxis) > 0.5 ? uAxis : vec2(1.0, 0.0);
+        float mn = uMinor > 0.05 ? uMinor : 1.0;
+        vec2 e = vec2(dot(d, ax), dot(d, vec2(-ax.y, ax.x)) / mn);
+
+        // 1.0 exactly on the boundary of the reported ellipse
+        float r = length(e) / uRadius;
+        float w = max(0.10, 0.004 / uRadius);   // stays visible at small sizes
+        ink = max(ink, 1.0 - smoothstep(w * 0.5, w, abs(r - 1.0)));
+
+        // a tick along the long axis, so the reported orientation is legible
+        float along = abs(e.x) / uRadius;
+        float across = abs(e.y) / uRadius;
+        if (along < 1.0 && across < w * 0.6) ink = max(ink, 0.7);
+    }
+
+    // premultiplied black over whatever is there
+    imageStore(uDst, c, vec4(prev.rgb * (1.0 - ink), prev.a * (1.0 - ink) + ink));
+}

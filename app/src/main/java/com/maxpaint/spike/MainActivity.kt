@@ -549,6 +549,15 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
 
+    private fun checkbox(label: String, checked: Boolean, onChange: (Boolean) -> Unit): View =
+        android.widget.CheckBox(this).apply {
+            text = label
+            isChecked = checked
+            setTextColor(Color.WHITE)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+            setOnCheckedChangeListener { _, on -> onChange(on) }
+        }
+
     private fun rowOfButtons(vararg items: Pair<String, () -> Unit>): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -639,29 +648,27 @@ class MainActivity : AppCompatActivity() {
         // Nib and smear carry their own size controls; everything else drives
         // the shared footprint, and every one of them needs its own.
         if (selected != Brush.NIB && selected != Brush.SMEAR) {
+            val fp = renderer.sim.fingerprint
             panelBody.addView(slider("Brush size",
-                                     (renderer.sim.splatRadius * 1000).toInt(), 100) { p, l ->
-                renderer.sim.splatRadius = p / 1000f
-                l.text = String.format("Brush size: %.3f", p / 1000f)
+                                     (renderer.sim.splatRadius * 1000).toInt(), 100,
+                                     enabled = !fp) { p, l ->
+                if (!fp) renderer.sim.splatRadius = p / 1000f
+                l.text = String.format("Brush size: %.3f", p / 1000f) +
+                    if (fp) "  (Fingerprint is on)" else ""
             })
             panelBody.addView(slider("Contact shape",
                                      (renderer.sim.contactShapeAmount * 100).toInt(), 100) { p, l ->
                 renderer.sim.contactShapeAmount = p / 100f
                 l.text = "Contact shape: $p%  (dab ovals to the finger)"
             })
-            panelBody.addView(slider("Contact size",
-                                     (renderer.sim.contactSizeAmount * 100).toInt(), 100) { p, l ->
-                renderer.sim.contactSizeAmount = p / 100f
-                // Say what is actually being measured, so a slider that
-                // appears to do nothing can be told apart from a device that
-                // reports nothing. Refreshes whenever the panel is reopened.
-                val measured = renderer.sim.contactMajor * 0.5f
-                l.text = "Contact size: $p%  " + when {
-                    measured <= 0f -> "(no contact reported yet)"
-                    else -> String.format("(finger %.3f · brush %.3f)",
-                                          measured, renderer.sim.splatRadius)
-                }
-            })
+            panelBody.addView(hint(
+                // so a control that appears to do nothing can be told apart
+                // from a device that reports nothing
+                renderer.sim.contactMajor.let {
+                    if (it <= 0f) "No contact size reported yet — paint, then reopen this."
+                    else String.format("Finger measures %.3f; Brush size is %.3f.",
+                                       it * 0.5f, renderer.sim.splatRadius)
+                }))
         }
 
         when (selected) {
@@ -809,6 +816,16 @@ class MainActivity : AppCompatActivity() {
                 panelBody.addView(hint("Paint over the canvas to " +
                     (if (selected == Brush.FREEZE) "set" else "lift") + " just that area."))
             }
+
+            Brush.PROBE -> {
+                panelBody.addView(hint("Draws the contact patch the digitiser " +
+                    "reported, straight onto the layer. A dot marks the touch " +
+                    "point and is always drawn; the ring around it is the " +
+                    "reported ellipse, with a tick along its long axis.\n\n" +
+                    "Dot alone means this device reports no contact geometry, " +
+                    "so Fingerprint has nothing to work with. Dot inside a ring " +
+                    "means it does, and the ring is the size and shape being used."))
+            }
         }
 
         panelBody.addView(divider())
@@ -885,6 +902,14 @@ class MainActivity : AppCompatActivity() {
 
         panelBody.addView(divider())
         panelBody.addView(hint("What the digitiser reports"))
+        panelBody.addView(checkbox("Fingerprint — the mark is the size of the finger",
+                                   renderer.sim.fingerprint) { on ->
+            renderer.sim.fingerprint = on
+            toast(if (on) "Brush size is now the contact area" else "Brush size is back")
+        })
+        panelBody.addView(hint("With this on, Brush size stops applying and the " +
+            "footprint is whatever the panel reports touching it. The Probe " +
+            "brush draws that patch, so you can see whether there is one."))
 
         val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row3.addView(button("Touch") { b ->
@@ -909,12 +934,17 @@ class MainActivity : AppCompatActivity() {
         setPadding(0, dp(2), 0, dp(4))
     }
 
-    private fun slider(name: String, initial: Int, max: Int, onChange: (Int, TextView) -> Unit): View {
+    private fun slider(name: String, initial: Int, max: Int,
+                       enabled: Boolean = true,
+                       onChange: (Int, TextView) -> Unit): View {
         val label = TextView(this).apply {
             setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
             text = name
+            alpha = if (enabled) 1f else 0.4f
         }
         val bar = SeekBar(this).apply {
+            isEnabled = enabled
+            alpha = if (enabled) 1f else 0.4f
             this.max = max
             progress = initial
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
