@@ -196,7 +196,7 @@ class Flip:
         self._bar()
 
     def g2p(self, dt, flip_ratio=0.95, drag=0.25, aspect=1.0,
-            settle_speed=0.06, min_age=0.25, cohesion=0.0):
+            settle_speed=0.06, min_age=0.25, cohesion=0.0, rest=25.0):
         glUseProgram(self.g2p_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1f(uni(self.g2p_p, "uDt"), dt)
@@ -207,7 +207,9 @@ class Flip:
         glUniform1f(uni(self.g2p_p, "uSettleSpeed"), settle_speed)
         glUniform1f(uni(self.g2p_p, "uSettleMinAge"), min_age)
         glUniform2f(uni(self.g2p_p, "uTexel"), 1.0 / self.gw, 1.0 / self.gh)
-        glUniform1f(uni(self.g2p_p, "uCohesion"), cohesion)
+        # same slider-to-speed mapping as FlipSystem.gridToParticles
+        glUniform1f(uni(self.g2p_p, "uCohesionSpeed"), cohesion * 0.0025)
+        glUniform1f(uni(self.g2p_p, "uRestMass"), rest)
         glUniform1f(uni(self.g2p_p, "uMaxSpeed"), 4.0)
         glUniform1i(uni(self.g2p_p, "uVelNew"), 0)
         glUniform1i(uni(self.g2p_p, "uVelOld"), 1)
@@ -217,10 +219,11 @@ class Flip:
         self._bar()
 
     def step(self, dt, vel_tex=None, flip_ratio=0.95, settle_speed=0.06,
-             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0):
+             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0, rest=25.0):
         self.p2g()
         self.project(dt)
-        self.g2p(dt, flip_ratio, drag, aspect, settle_speed, min_age, cohesion)
+        self.g2p(dt, flip_ratio, drag, aspect, settle_speed, min_age, cohesion,
+                 rest)
 
     def draw(self, state, target, point_size=5.0):
         fbo = glGenFramebuffers(1)
@@ -439,6 +442,52 @@ def main():
     # loosened again without this going red
     check("the blend is capped where energy stops being conserved",
           FLIP_RATIO_CAP <= 1.0, f"shader clamps to {FLIP_RATIO_CAP}")
+    print()
+
+    # ---- every shipped preset must come to rest ----
+    #
+    # The cohesion rework was driven by exactly this: a resting blob at the
+    # shipped Mercury preset held a permanent kinetic-energy plateau with
+    # particles pinned at the CFL cap, and could never dry. So the invariant is
+    # checked at each preset's real numbers, cohesion included, not at one
+    # flattering configuration. Mirrors Presets.kt; update together.
+    print("Presets at rest:")
+    PRESETS = [
+        ("Wet Paint", 1.0, 0.25, 0.6, 0.06, 120.0),
+        ("Splatter", 6.0, 0.02, 0.99, 0.10, 51.0),
+        ("Fling", 8.0, 0.05, 0.97, 0.03, 29.0),
+        ("Honey", 26.0, 1.6, 0.45, 0.02, 51.0),
+        ("Mercury", 38.0, 0.04, 0.97, 0.015, 61.0),
+    ]
+
+    def rest_blob(coh, drag, ratio, settle, ppc, frames=120):
+        q = Flip()
+        q.make_grid(244, 104)
+        q.emit(0.5, 0.5, 0.0, 0.0, n=1200, radius=0.03, aspect=2.34)
+        for _ in range(frames):
+            q.p2g()
+            q.project(dt, iters=40)
+            q.g2p(dt, flip_ratio=ratio, drag=drag, settle_speed=settle,
+                  cohesion=coh, rest=ppc * 0.5)
+        pp = q.read()
+        live = pp[:, 6] == 1.0
+        ke = float((pp[live][:, 2:4] ** 2).sum()) if live.sum() else 0.0
+        # settled particles are drawn down and their slots cleared, so "dried"
+        # is everything that is no longer live
+        return ke, 1.0 - live.sum() / 1200.0
+
+    for name, coh, drag, ratio, settle, ppc in PRESETS:
+        ke, frac = rest_blob(coh, drag, ratio, settle, ppc)
+        check(f"a resting blob dries at the {name} preset",
+              frac > 0.7 and ke < 2.0,
+              f"{frac * 100:.0f}% settled, residual KE {ke:.2f}")
+
+    # and the top of the widened slider, which is where the old force was a
+    # permanent explosion held together by the CFL clamp
+    ke, frac = rest_blob(200.0, 0.02, 0.99, 0.06, 51.0)
+    check("cohesion at slider max stays bounded and still dries",
+          frac > 0.6 and ke < 2.0,
+          f"{frac * 100:.0f}% settled, residual KE {ke:.2f}")
     print()
 
     # ---- pouring ----
@@ -682,7 +731,13 @@ def main():
     print("Cohesion:")
 
     def gather(coh, frames=120):
-        """Scatter particles evenly, then see whether they pull together."""
+        """Scatter a THIN film, then see whether it beads up.
+
+        Thin on purpose: cohesion is gated off once local density reaches rest,
+        so paint already at rest density only rounds its rim -- the crush of an
+        at-density blob was the old energy pump, not a behaviour to test for.
+        Beading is thin paint condensing toward rest density.
+        """
         q = Flip()
         q.make_grid(64, 64)
         rng = np.random.default_rng(7)
@@ -690,32 +745,45 @@ def main():
             a = float(rng.random()) * 2 * np.pi
             r = 0.28 * float(rng.random()) ** 0.5
             q.emit(0.5 + r * np.cos(a), 0.5 + r * np.sin(a), 0.0, 0.0,
-                   n=CAP // 24, radius=0.02)
+                   n=CAP // 24, radius=0.045)
         p0 = q.read()
         c0 = p0[p0[:, 6] == 1.0][:, :2].mean(axis=0)
         for _ in range(frames):
-            q.step(dt, drag=0.6, settle_speed=0.0, cohesion=coh)
+            q.step(dt, drag=0.6, settle_speed=0.0, cohesion=coh, rest=12.0)
         q.p2g()
         m = q.mass.read()[:, :, 0]
         p = q.read()
         live = p[:, 6] == 1.0
         c1 = p[live][:, :2].mean(axis=0) if live.sum() else c0
         speeds = np.hypot(p[live][:, 2], p[live][:, 3]) if live.sum() else np.array([0.0])
+        total = float(m.sum())
         return dict(cells=int((m > 0.08).sum()), peak=float(m.max()),
+                    total=total,
+                    condensed=float(m[m >= 0.8 * 12.0].sum()) / max(total, 1e-9),
+                    meanv=float(speeds.mean()),
                     drift=float(np.hypot(*(c1 - c0))),
                     vmax=float(speeds.max()),
                     finite=bool(np.isfinite(p).all()))
 
     off = gather(0.0)
-    on = gather(25.0)
+    on = gather(200.0)
 
-    # Clumping is: the same paint occupying fewer, denser cells.
-    check("cohesion gathers paint into fewer cells",
-          on["cells"] < off["cells"] * 0.6,
-          f"{off['cells']} occupied cells without, {on['cells']} with")
-    check("and those cells are denser",
-          on["peak"] > off["peak"] * 1.5,
-          f"peak density {off['peak']:.1f} without, {on['peak']:.1f} with")
+    # Beading is: the paint's MASS condensing into cells at rest density. Not
+    # the raw occupied-cell count -- a thin haze of stragglers occupies many
+    # near-empty cells and counts them equally with beads -- and not peak
+    # density, which measured the old bulk crush that was half of the energy
+    # pump. The fraction of mass sitting in at-rest cells is the thing beading
+    # actually changes.
+    check("cohesion condenses a thin film into beads at rest density",
+          on["condensed"] > off["condensed"] * 1.8,
+          f"{off['condensed'] * 100:.0f}% of mass condensed without, "
+          f"{on['condensed'] * 100:.0f}% with")
+
+    # The half of the fix that matters: having beaded, the paint STOPS. The old
+    # force held the rim at sustained speed forever, so nothing could ever dry.
+    check("and the beads come to rest",
+          on["meanv"] < 0.02,
+          f"mean live speed {on['meanv']:.4f} after 120 frames")
 
     # It must gather in place. A skewed density field biases the gradient and
     # walks the whole liquid into a corner, which is exactly what the staggered

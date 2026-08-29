@@ -710,6 +710,51 @@ other brush measures its radius in world units, so on a 2.34 canvas a drip dab
 was an ellipse 2.34x wider than tall while claiming to be the same size as the
 gas brush's. It scatters in world units now.
 
+### Cohesion was a second energy source, and the worse one
+
+The user reported it right after the blend fix: "I think there is also a bug in
+the cohesion." A four-way measured investigation (energy sweep, oscillation
+tracing, code audit, standoff test) plus an adversarial refutation pass
+confirmed it, and it was worse than the blend bug: **a resting blob at the
+shipped Mercury preset held a permanent kinetic-energy plateau** — KE 95–632
+over two simulated seconds from a standing start, particles pinned at the CFL
+cap, 100% of them above the settle threshold at every sample. Paint with
+cohesion on could never dry.
+
+The mechanism was in the normalisation. `dir = grad / max(mHere, 0.05)`: at the
+free surface the local mass sits *below* the 0.05 floor, so the division
+amplified any fringe gradient ~20× into the magnitude clamp — every rim
+particle received the **maximum** acceleration `uCohesion × 4.0` world-units/s²
+forever, regardless of how weak the gradient actually was. A blob at rest
+always has a surface, a surface always has a gradient, so the pump never shut
+off. Drag cannot fix it (the implied terminal speed is 125–10,000× the CFL
+cap), and a pure-PIC control still pumped, so the FLIP blend was innocent —
+the bound had to be structural.
+
+**Cohesion is now a bounded target velocity, not a force.** The surface relaxes
+toward a creep speed along the density gradient — `vel += dirHat · (target −
+along) · rate` — so the speed cohesion can sustain is capped by the target
+(slider 200 = 0.5 world units/s, an eighth of the CFL cap) *whatever* the drag
+or blend, and overshoot is actively removed rather than kept. Three gates make
+it behave: a **surface factor** fading the pull to nothing at rest density (the
+bulk belongs to the pressure solve — bulk crush was half of the old pump), a
+**neighbour-mass gate** that kills the self-force (a lone particle no longer
+chases its own field), and a **gradient saturation** so the speckle of a thin
+haze earns almost no pull while a real density edge earns full.
+
+Two rounds of measurement shaped it. The projection cancels convergent motion
+every frame — correctly — so the relaxation must be brisk (~33 ms) or most of
+the target is lost to cancellation; and the beading metric had to change,
+because occupied-cell count weighs a near-empty haze cell equally with a bead.
+The honest metric is where the mass sits: a thin film goes from **31% to 72% of
+its mass condensed into at-rest beads, and then comes to rest** (mean speed
+0.001), where the old force held it churning forever.
+
+Seven new checks: each shipped preset's exact numbers must let a resting blob
+dry completely (Mercury included — the configuration that was broken), cohesion
+at slider max must stay bounded and still dry, and the beading checks measure
+condensed mass fraction and the coming-to-rest, not cell counts.
+
 ### Cohesion is what makes it clump
 
 Removing gravity left nothing to gather the paint. A liquid clumps because

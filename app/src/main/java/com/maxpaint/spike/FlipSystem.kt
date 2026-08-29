@@ -247,7 +247,12 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pG2P.set("uAspect", aspect)
         pG2P.set("uSettleSpeed", settleSpeed)
         pG2P.set("uSettleMinAge", settleMinAge)
-        pG2P.set("uCohesion", cohesion)
+        // The slider keeps its 0..200 numbers; what they now mean is the speed
+        // the surface may creep, in world units/s -- 200 is 0.5, an eighth of
+        // the CFL cap. Rest mass tracks the emission density, so the surface
+        // gate does not shift when Density changes.
+        pG2P.set("uCohesionSpeed", cohesion * 0.0025f)
+        pG2P.set("uRestMass", particlesPerCell * 0.5f)
         pG2P.set("uMaxSpeed", maxSpeed)
         pG2P.set("uTexel", 1f / gridW, 1f / gridH)
         pG2P.set("uVelNew", 0)
