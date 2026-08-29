@@ -26,7 +26,8 @@ uniform float uDrag;
 uniform float uAspect;
 uniform float uSettleSpeed;
 uniform float uSettleMinAge;
-uniform float uCohesion;   // surface tension: pulls paint into droplets
+uniform float uCohesionSpeed;  // world units/s the surface may creep
+uniform float uRestMass;       // emission density in mass units   // surface tension: pulls paint into droplets
 uniform float uMaxSpeed;   // CFL guard, same as the grid uses
 uniform vec2  uTexel;      // 1 / grid, for the staggered sample offsets
 
@@ -71,11 +72,24 @@ void main() {
     vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
 
     // Cohesion. With no gravity there is nothing to gather the paint, so
-    // without this it simply disperses and never reads as liquid. Pulling each
-    // particle up the density gradient is surface tension in the form that
-    // matters here: neighbouring paint attracts, so droplets form and hold
-    // together, while the pressure solve stops them collapsing.
-    if (uCohesion > 0.0) {
+    // without this it simply disperses and never reads as liquid.
+    //
+    // It is a TARGET VELOCITY the particle relaxes toward, never a force. The
+    // first version accumulated uCohesion * dir * uDt every frame, and that is
+    // an energy source: a blob at rest always has a surface, a surface always
+    // has a density gradient, and dividing the gradient by the near-zero mass
+    // at the free edge saturated the clamp -- so every rim particle received
+    // the maximum acceleration forever, regardless of how weak the gradient
+    // was. Measured: a resting blob at the shipped Mercury preset held a
+    // permanent kinetic-energy plateau with particles pinned at the CFL cap,
+    // and could never dry, because settling needs them to slow down. Drag
+    // cannot fix it (the implied terminal speed is orders of magnitude past
+    // the cap) and pure PIC still pumps, so the bound has to be structural.
+    //
+    // Relaxing toward a bounded target is that bound: the sustainable speed
+    // along the gradient can never exceed uCohesionSpeed, whatever the drag or
+    // the blend, and overshoot is actively removed rather than kept.
+    if (uCohesionSpeed > 0.0) {
         vec2 t = uTexel;
         float mHere = texture(uVelNew, pos).z;
         float mL = texture(uVelNew, pos - vec2(t.x, 0.0)).z;
@@ -83,17 +97,39 @@ void main() {
         float mB = texture(uVelNew, pos - vec2(0.0, t.y)).z;
         float mT = texture(uVelNew, pos + vec2(0.0, t.y)).z;
         vec2 grad = 0.5 * vec2(mR - mL, mT - mB);
+        float gmag = length(grad);
 
-        // Normalise by the local density. Mass is an accumulated weight, so a
-        // raw gradient scales with how many particles are in play -- the same
-        // cohesion setting would then behave completely differently at either
-        // end of the particle slider, and at high counts it flung paint apart
-        // instead of gathering it.
-        vec2 dir = grad / max(mHere, 0.05);
-        float mag = length(dir);
-        if (mag > 4.0) dir *= 4.0 / mag;
+        // Surface tension belongs to the surface: fade to nothing inside the
+        // bulk, so a filled interior is left to the pressure solve. The fade
+        // starts late -- a bead keeps its full pull until it is nearly at rest
+        // density, or it stalls half-formed.
+        float surface = 1.0 - smoothstep(0.8 * uRestMass, 1.1 * uRestMass, mHere);
 
-        vel += uCohesion * dir * uDt;
+        // And it needs an actual body of paint to pull toward. The neighbour
+        // mass gate kills the self-force -- a lone particle's neighbours hold
+        // only its own spill-over, so it no longer chases its own field -- and
+        // with it the vacuum-fringe noise that used to saturate the old clamp.
+        float body = mL + mR + mB + mT;
+
+        if (surface > 0.0 && body > uRestMass && gmag > 0.02 * uRestMass) {
+            vec2 dirHat = grad / gmag;
+            // Saturating in the gradient: a real density edge earns the full
+            // target, the speckle of a sparse haze earns almost none -- so
+            // thin paint drifts toward genuine beads instead of jittering
+            // toward whichever neighbour cell is momentarily denser.
+            float sat = clamp(gmag / (0.4 * uRestMass), 0.0, 1.0);
+            float target = uCohesionSpeed * surface * sat;
+            float along = dot(vel, dirHat);
+            // ~33 ms relaxation. The projection cancels convergent motion
+            // every frame -- correctly, that is its job -- so the creep only
+            // exists in the interval between this kick and the next solve, and
+            // a slow rate loses most of the target to that cancellation. The
+            // energy bound does not care about the rate: however fast the
+            // relaxation, the speed it can sustain along the gradient is
+            // capped by the target.
+            float rate = min(1.0, 30.0 * uDt);
+            vel += dirHat * (target - along) * rate;
+        }
     }
 
     vel *= 1.0 / (1.0 + uDrag * uDt);
