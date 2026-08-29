@@ -245,6 +245,10 @@ def main():
     make_context()
     print(f"Driver: {gstr(glGetString(GL_RENDERER))}\n")
     print("FLIP particles:")
+    # read from the shader, so the check follows what actually ships
+    _g2p = open(os.path.join(SHADERS, "flip_g2p.comp")).read()
+    FLIP_RATIO_CAP = float(
+        re.search(r"clamp\(uFlipRatio, 0\.0, ([\d.]+)\)", _g2p).group(1))
 
     dt = 1 / 60.0
     vel = Tex(128, 128, GL_RGBA16F, GL_LINEAR)     # still grid: gravity only
@@ -397,41 +401,44 @@ def main():
           f"({100 * (1 - after / max(before, 1e-9)):.0f}% removed, "
           f"{cells} interior cells)")
 
-    # Motion inheritance runs past 100%, where it extrapolates beyond pure FLIP
-    # rather than blending toward it: vel = gNew + r*(v - gOld). That is the
-    # noisy end of an already noisy scheme, so the top of the slider has to be
-    # shown to stay bounded rather than assumed to.
-    def at_setting(pct):
-        g = Flip()
-        g.make_grid(244, 104)
-        g.emit(0.5, 0.5, 1.5, 0.0, n=CAP // 2, radius=0.03, aspect=2.34)
-        for _ in range(60):
-            g.step(dt, flip_ratio=pct / 100.0, drag=0.6)
-        q = g.read()
-        m = q[:, 6] == 1.0
-        if not m.sum():
-            return dict(finite=True, vmax=0.0, spread=0.0, live=0)
-        v = q[m][:, 2:4]
-        return dict(finite=bool(np.isfinite(q[m]).all()),
-                    vmax=float(np.linalg.norm(v, axis=1).max()),
-                    spread=float(q[m][:, 0].std()), live=int(m.sum()))
+    # ---- energy ----
+    #
+    # The invariant a fluid must not break: with no input at all, kinetic energy
+    # falls. Nothing in the step is allowed to be a source.
+    #
+    # This replaces a check that asked whether the top of the motion-inheritance
+    # slider "stays bounded", read peak speed at frame 60, and passed -- because
+    # by frame 60 the runaway had already thrown everything into the walls and
+    # retired it. It was measuring the aftermath and calling it stability. The
+    # right question is whether energy rises at all, at any point.
+    print("Energy:")
 
-    top = at_setting(150)
-    check("the top of the motion-inheritance slider stays bounded",
-          top["finite"] and top["vmax"] < 5.0,
-          f"peak speed {top['vmax']:.3f}, all finite")
+    def kinetic(ratio, frames=45):
+        q = Flip()
+        q.make_grid(244, 104)
+        q.emit(0.5, 0.5, 0.3, 0.0, n=CAP // 3, radius=0.03, aspect=2.34)
+        peak, first = 0.0, None
+        for f in range(frames):
+            q.p2g()
+            q.project(dt, iters=60, rest=25.0, compression=0.01, cap=100.0)
+            q.g2p(dt, drag=0.02, settle_speed=0.0, flip_ratio=ratio, cohesion=6.0)
+            pp = q.read()
+            live = pp[:, 6] == 1.0
+            ke = float((pp[live][:, 2:4] ** 2).sum()) if live.sum() else 0.0
+            if first is None:
+                first = ke
+            peak = max(peak, ke)
+        return peak / max(first, 1e-9)
 
-    lively, tame = at_setting(120), at_setting(40)
-    check("inheriting more motion makes the paint livelier",
-          lively["spread"] > tame["spread"] * 1.5,
-          f"spread {tame['spread']:.4f} at 40%, {lively['spread']:.4f} at 120%")
+    for ratio in (0.3, 0.6, 0.9, 1.0):
+        gain = kinetic(ratio)
+        check(f"energy does not grow at {int(ratio * 100)}% motion inheritance",
+              gain <= 1.05, f"peak is {gain:.2f}x the first frame")
 
-    # honest about where it stops being useful: extrapolation oscillates, and
-    # a particle whose velocity swings through zero reads as settled and bakes
-    check("but past that it starts settling paint prematurely",
-          at_setting(150)["live"] < lively["live"] // 4,
-          f"{lively['live']} particles still live at 120%, "
-          f"{at_setting(150)['live']} at 150%")
+    # and the shape of the failure that was shipped, so the cap cannot be
+    # loosened again without this going red
+    check("the blend is capped where energy stops being conserved",
+          FLIP_RATIO_CAP <= 1.0, f"shader clamps to {FLIP_RATIO_CAP}")
     print()
 
     # ---- pouring ----

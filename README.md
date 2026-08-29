@@ -678,20 +678,29 @@ far past the 8–13 where the grid sweep peaked — but that sweep varied the *g
 at a fixed particle count, so its high-density rows were all too-coarse grids. Re-measured
 at a fixed good grid, coupling is flat to better from 5 up to 60 per cell
 (1.99x, 2.12x, 3.80x, 3.61x at 4.9, 18, 33, 60), so 120 is not past a cliff,
-only more expensive. The FLIP blend is now the **Motion inheritance** slider, 0–150%, default 60%.
-It is how much of its own motion a particle keeps instead of taking the grid's:
-0 is pure PIC, 100% pure FLIP, and above that it *extrapolates* —
-`vel = gNew + r·(v − gOld)` — keeping more than all of it. Pure PIC reads as a
-thick body, pure FLIP as a lively spray; the interesting settings are between.
+only more expensive. The FLIP blend is the **Motion inheritance** slider, 0–100%, default 60%. It is
+how much of its own motion a particle keeps instead of taking the grid's: 0 is
+pure PIC, which reads as a thick body, and 100% is pure FLIP, a lively spray.
 
-Past 100% is the noisy end of an already noisy scheme, so it is measured rather
-than assumed. Nothing goes non-finite anywhere on the range and peak speed stays
-inside the CFL clamp, but it stops being useful before the top: paint is
-markedly livelier at 120% (spread 0.216 against 0.021 at 40%), while at 150% the
-extrapolation oscillates enough that velocity swings through zero, reads as
-settled, and bakes — 1487 particles still live at 120%, **9** at 150%. Three
-checks record exactly that, including the last one, so the useful ceiling is a
-measured fact rather than folklore.
+**It ran to 150% for one build, and that was an energy source.** Past 1.0 the
+blend extrapolates — `vel = gNew + r·(v − gOld)` — so a particle's disagreement
+with the grid is *multiplied* by r every step rather than merely kept. That is a
+positive feedback loop, and it behaved like one: measured with no input at all,
+kinetic energy grew **10×** in forty frames at 1.15, while every value at or
+below 1.0 decayed monotonically. Compression was innocent (10.8× without it) and
+cohesion only amplified what was already there. What had looked like liveliness
+at 120% was energy arriving from nowhere.
+
+The clamp lives in the shader rather than the slider, so a caller asking for 1.5
+still conserves energy.
+
+Worse than the bug was the check that let it through. It asked whether the top of
+the slider "stays bounded", read peak speed at frame 60, and passed — because by
+frame 60 the runaway had already thrown everything into the walls and retired it.
+It was measuring the aftermath and calling it stability. What replaces it is the
+invariant a fluid genuinely must not break: **with no input, kinetic energy
+falls**, checked across the whole range, plus one that reads the clamp out of the
+shader so it cannot be loosened again without going red.
 
 The `Wet Paint` preset carries the same values, since it is the one the panel
 opens on and it would otherwise undo the defaults the first time it was picked.

@@ -657,11 +657,11 @@ class MainActivity : AppCompatActivity() {
                     l.text = "Cohesion: $p  (beads up →)"
                 })
                 panelBody.addView(slider("Motion inheritance",
-                                         (renderer.sim.flip.flipRatio * 100).toInt(), 150) { p, l ->
+                                         (renderer.sim.flip.flipRatio * 100).toInt(), 100) { p, l ->
                     renderer.sim.flip.flipRatio = p / 100f
                     l.text = "Motion inheritance: $p%" + when {
                         p == 0 -> "  (takes the grid's)"
-                        p >= 100 -> "  (keeps its own)"
+                        p >= 100 -> "  (keeps all of its own)"
                         else -> ""
                     }
                 })
