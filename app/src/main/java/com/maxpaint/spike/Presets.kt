@@ -64,7 +64,7 @@ object Presets {
         // Hold and it pours into a volume; drag and that volume's own momentum
         // throws it. The splash is the gesture, not the emitter.
         Preset("Splatter") { s ->
-            s.flip.flipRatio = 1.15f; s.flip.particleDrag = 0.02f
+            s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
             s.flip.settleSpeed = 0.10f; s.flip.cohesion = 6f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 51f
             s.flip.flowRate = 12f; s.flip.compression = 0.01f

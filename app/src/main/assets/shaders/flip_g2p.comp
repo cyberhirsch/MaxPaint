@@ -58,11 +58,17 @@ void main() {
 
     vec2 pic  = gNew;
     vec2 flip = vel + (gNew - gOld);
-    // Past 1.0 this extrapolates beyond pure FLIP: vel = gNew + r*(v - gOld),
-    // so the particle's disagreement with the grid is amplified rather than
-    // merely kept. That is the noisy end of an already noisy scheme, which is
-    // why the CFL clamp below is not optional at these settings.
-    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.5));
+    // Capped at 1.0, which is pure FLIP: the particle keeps ALL of its own
+    // motion. There is nothing beyond that to inherit.
+    //
+    // It was briefly allowed past 1.0, where the blend extrapolates --
+    // vel = gNew + r*(v - gOld) -- so the particle's disagreement with the grid
+    // is multiplied by r every step rather than merely kept. That is a positive
+    // feedback loop and it does what feedback loops do: measured with no input
+    // at all, kinetic energy grew 10x in forty frames at r = 1.15, while every
+    // value at or below 1.0 decayed monotonically. What looked like liveliness
+    // was energy arriving from nowhere.
+    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
 
     // Cohesion. With no gravity there is nothing to gather the paint, so
     // without this it simply disperses and never reads as liquid. Pulling each
