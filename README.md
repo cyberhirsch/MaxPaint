@@ -755,6 +755,21 @@ dry completely (Mercury included — the configuration that was broken), cohesio
 at slider max must stay bounded and still dry, and the beading checks measure
 condensed mass fraction and the coming-to-rest, not cell counts.
 
+**The first version of this fix broke a promise.** The user had signed off Wet
+Paint ("I like wet paint the way it is"), and changing what the cohesion number
+*means* changed Wet Paint while claiming presets were untouched — its setting of
+1 delivered near-maximum pull under the old saturation bug, and near-nothing
+under the new mapping. The restoration was done by measurement, not judgement:
+the old shader was pulled from git and run side by side on the same thin film at
+Wet Paint's settings. Old cohesion 1: 79.5% of mass condensed, 203 cells. The
+new mechanic plateaued at 72% at *any* slider value, because the surface gate
+stopped packing exactly at rest density — so the gate was widened to fade from
+rest to 1.8× rest (the energy bound lives in the target, not the gate; every
+drying check holds at the wider setting), and **new cohesion 30 reproduces the
+old look: 80.7% condensed, 206 cells** — and comes to rest, which the old one
+never quite did. Wet Paint ships at 30, and a check pins the equivalence so it
+cannot silently drift again.
+
 ### Cohesion is what makes it clump
 
 Removing gravity left nothing to gather the paint. A liquid clumps because

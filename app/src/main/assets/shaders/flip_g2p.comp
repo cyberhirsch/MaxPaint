@@ -101,9 +101,14 @@ void main() {
 
         // Surface tension belongs to the surface: fade to nothing inside the
         // bulk, so a filled interior is left to the pressure solve. The fade
-        // starts late -- a bead keeps its full pull until it is nearly at rest
-        // density, or it stalls half-formed.
-        float surface = 1.0 - smoothstep(0.8 * uRestMass, 1.1 * uRestMass, mHere);
+        // runs from rest to 1.8x rest: a bead keeps its full pull until it
+        // reaches rest density and may pack somewhat past it before the gate
+        // closes -- measured against the old force, beads that stop exactly at
+        // rest leave a visibly looser film than Wet Paint had. The energy
+        // bound does not depend on where this gate sits; that is the target's
+        // job. The gate only picks the equilibrium density, and the
+        // preset drying checks hold whatever it is set to.
+        float surface = 1.0 - smoothstep(uRestMass, 1.8 * uRestMass, mHere);
 
         // And it needs an actual body of paint to pull toward. The neighbour
         // mass gate kills the self-force -- a lone particle's neighbours hold
