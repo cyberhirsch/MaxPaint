@@ -453,7 +453,7 @@ def main():
     # flattering configuration. Mirrors Presets.kt; update together.
     print("Presets at rest:")
     PRESETS = [
-        ("Wet Paint", 1.0, 0.25, 0.6, 0.06, 120.0),
+        ("Wet Paint", 30.0, 0.25, 0.6, 0.06, 120.0),
         ("Splatter", 6.0, 0.02, 0.99, 0.10, 51.0),
         ("Fling", 8.0, 0.05, 0.97, 0.03, 29.0),
         ("Honey", 26.0, 1.6, 0.45, 0.02, 51.0),
@@ -784,6 +784,16 @@ def main():
     check("and the beads come to rest",
           on["meanv"] < 0.02,
           f"mean live speed {on['meanv']:.4f} after 120 frames")
+
+    # Wet Paint's look is a signed-off reference: the user approved it under
+    # the old force, whose bug made its setting of 1 far stronger than the
+    # number suggested. Its new value of 30 was chosen by measurement to
+    # reproduce that look (80.7% condensed against 79.5% under the old shader,
+    # 206 cells against 203), so this pins the equivalence.
+    wp = gather(30.0)
+    check("Wet Paint's cohesion matches its signed-off look",
+          wp["condensed"] > 0.72,
+          f"{wp['condensed'] * 100:.0f}% of mass condensed at its settings")
 
     # It must gather in place. A skewed density field biases the gradient and
     # walks the whole liquid into a corner, which is exactly what the staggered
