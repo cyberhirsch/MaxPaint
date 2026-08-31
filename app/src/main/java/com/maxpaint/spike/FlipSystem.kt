@@ -35,11 +35,12 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     var flowRate = 0f
 
     /**
-     * How hard an over-full cell pushes back. Without it particles resting
-     * together produce no divergence, so nothing objects and they stack: a pour
-     * piled four times the paint into the same cells instead of growing.
+     * Drift compensation strength, the reference solver's k (default 1): a
+     * cell denser than the emission density is given artificial divergence so
+     * the solve pushes the excess out. Without it FLIP loses volume -- the
+     * particles slowly sink into each other and the paint thins.
      */
-    var compression = 0f
+    var compression = 1f
     /** CFL guard for particles, matching the grid's. */
     var maxSpeed = 4f
     /** Surface tension. With no gravity, this is what gathers paint into
@@ -78,6 +79,9 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     private lateinit var pP2G: ComputeProgram
     private lateinit var pNormalize: ComputeProgram
     private lateinit var pG2P: ComputeProgram
+    private lateinit var pIntegrate: ComputeProgram
+    private lateinit var pSolve: ComputeProgram
+    private lateinit var pCopy: ComputeProgram
     private lateinit var pSepClear: ComputeProgram
     private lateinit var pSepBin: ComputeProgram
     private lateinit var pSepPush: ComputeProgram
@@ -131,6 +135,9 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pP2G = ComputeProgram(ctx, "shaders/flip_p2g.comp")
         pNormalize = ComputeProgram(ctx, "shaders/flip_normalize.comp")
         pG2P = ComputeProgram(ctx, "shaders/flip_g2p.comp")
+        pIntegrate = ComputeProgram(ctx, "shaders/flip_integrate.comp")
+        pSolve = ComputeProgram(ctx, "shaders/flip_solve.comp")
+        pCopy = ComputeProgram(ctx, "shaders/flip_copy.comp")
         pSepClear = ComputeProgram(ctx, "shaders/flip_sep_clear.comp")
         pSepBin = ComputeProgram(ctx, "shaders/flip_sep_bin.comp")
         pSepPush = ComputeProgram(ctx, "shaders/flip_sep_push.comp")
@@ -226,9 +233,9 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         gridBuffer = ids[0]
         GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, gridBuffer)
         GLES31.glBufferData(
-            // four ints per cell: momentum and weight for each component,
-            // since a staggered grid samples them at different points
-            GLES31.GL_SHADER_STORAGE_BUFFER, cells * 4 * 4, null, GLES31.GL_DYNAMIC_COPY
+            // six ints per cell: momentum and weight for each staggered
+            // component, cell-centred density, and the cell type
+            GLES31.GL_SHADER_STORAGE_BUFFER, cells * 6 * 4, null, GLES31.GL_DYNAMIC_COPY
         )
         GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, 0)
         gridCells = cells
@@ -260,12 +267,12 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
         val a = aspect.coerceIn(0.2f, 5f)
         // Rest packing distance -- hex-packing particlesPerCell into one grid
-        // cell -- times 0.7. Not 1.0: cohesion's gate lets a bead condense to
-        // 1.8x rest density, whose packing is 0.75x the rest distance. A
-        // minimum at the rest distance itself would unpack every bead the
-        // moment cohesion formed it, and the two would fight forever -- the
-        // bead never rests, the surface never dries. Below 0.75 the push only
-        // acts on genuine clumps, which is its whole job.
+        // cell -- times 0.7. Not 1.0: a minimum at the rest distance itself
+        // would unpack paint sitting exactly at the density cohesion and the
+        // solve's drift compensation both settle it to, and the passes would
+        // fight forever -- the bead never rests, the surface never dries.
+        // Below rest packing the push only acts on genuine clumps, which is
+        // its whole job.
         val cell = kotlin.math.sqrt(a) / gridRes.coerceAtLeast(1)
         var minDist = 0.75f * cell / kotlin.math.sqrt(particlesPerCell.coerceAtLeast(1f))
         var spacing = 2f * minDist
@@ -324,8 +331,21 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         }
     }
 
-    /** Scatters particle momentum onto the grid and resolves it into a field. */
-    fun particlesToGrid(velTarget: Tex, massTarget: Tex, w: Int, h: Int) {
+    /** integrateParticles + wall collisions: move on last frame's solve. */
+    fun integrate(dt: Float, aspect: Float) {
+        if (buffer == 0) return
+        pIntegrate.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+        pIntegrate.set("uDt", dt)
+        pIntegrate.set("uCapacity", liveSpan())
+        pIntegrate.set("uAspect", aspect)
+        GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
+        barrier()
+    }
+
+    /** Scatters particle momentum and density onto the grid and marks fluid
+     *  cells; the accumulator is resolved into the u/v/density fields. */
+    fun particlesToGrid(texU: Tex, texV: Tex, density: Tex, w: Int, h: Int) {
         if (buffer == 0 || gridBuffer == 0) return
 
         pClearGrid.use()
@@ -349,37 +369,90 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         GLES31.glUniform2i(
             GLES31.glGetUniformLocation(pNormalize.id, "uGrid"), w, h
         )
-        velTarget.bindImage(0, GLES31.GL_WRITE_ONLY)
-        massTarget.bindImage(1, GLES31.GL_WRITE_ONLY)
+        texU.bindImage(0, GLES31.GL_WRITE_ONLY)
+        texV.bindImage(2, GLES31.GL_WRITE_ONLY)
+        density.bindImage(3, GLES31.GL_WRITE_ONLY)
         GLES31.glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1)
         barrier()
     }
 
-    /** Gathers the projected field back onto the particles and moves them. */
-    fun gridToParticles(dt: Float, velNew: Tex, velOld: Tex, aspect: Float,
+    /** FLIP transfers the solve's CHANGE, so the pre-solve field is kept. */
+    fun snapshot(texU: Tex, texUOld: Tex, texV: Tex, texVOld: Tex, w: Int, h: Int) {
+        pCopy.use()
+        texU.bindImage(0, GLES31.GL_READ_ONLY)
+        texUOld.bindImage(1, GLES31.GL_WRITE_ONLY)
+        texV.bindImage(2, GLES31.GL_READ_ONLY)
+        texVOld.bindImage(3, GLES31.GL_WRITE_ONLY)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pCopy.id, "uGrid"), w, h)
+        GLES31.glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1)
+        barrier()
+    }
+
+    /**
+     * The reference's solveIncompressibility: red-black relaxation directly
+     * on the face velocities of fluid cells, with drift compensation.
+     */
+    fun solve(iterations: Int, omega: Float, texU: Tex, texV: Tex,
+              w: Int, h: Int) {
+        if (gridBuffer == 0) return
+        pSolve.use()
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, gridBuffer)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pSolve.id, "uGrid"), w, h)
+        pSolve.set("uOmega", omega)
+        pSolve.set("uRest", particlesPerCell)
+        pSolve.set("uCompensate", compression)
+        texU.bindImage(0, GLES31.GL_READ_WRITE)
+        texV.bindImage(2, GLES31.GL_READ_WRITE)
+        val half = (w + 1) / 2
+        for (i in 0 until iterations) {
+            for (parity in 0..1) {
+                pSolve.set("uParity", parity)
+                GLES31.glDispatchCompute((half + 7) / 8, (h + 7) / 8, 1)
+                GLES31.glMemoryBarrier(GLES31.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT)
+            }
+        }
+        barrier()
+    }
+
+    /** Gathers the solved field back onto the particles: the FLIP blend, then
+     *  MaxPaint's drag, cohesion, CFL clamp and settling. Positions move in
+     *  [integrate], next frame. */
+    fun gridToParticles(dt: Float, texU: Tex, texV: Tex,
+                        texUOld: Tex, texVOld: Tex, density: Tex,
                         gridW: Int, gridH: Int) {
-        if (buffer == 0) return
+        if (buffer == 0 || gridBuffer == 0) return
         pG2P.use()
         GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+        GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 1, gridBuffer)
         pG2P.set("uDt", dt)
         pG2P.set("uCapacity", liveSpan())
+        GLES31.glUniform2i(
+            GLES31.glGetUniformLocation(pG2P.id, "uGrid"), gridW, gridH
+        )
         pG2P.set("uFlipRatio", flipRatio)
         pG2P.set("uDrag", particleDrag)
-        pG2P.set("uAspect", aspect)
         pG2P.set("uSettleSpeed", settleSpeed)
         pG2P.set("uSettleMinAge", settleMinAge)
-        // The slider keeps its 0..200 numbers; what they now mean is the speed
+        // The slider keeps its 0..200 numbers; what they mean is the speed
         // the surface may creep, in world units/s -- 200 is 0.5, an eighth of
-        // the CFL cap. Rest mass tracks the emission density, so the surface
-        // gate does not shift when Density changes.
+        // the CFL cap. Rest mass tracks the emission density -- each particle
+        // deposits total density weight one, so a cell at rest holds
+        // particlesPerCell -- and the surface gate does not shift when
+        // Density changes.
         pG2P.set("uCohesionSpeed", cohesion * 0.0025f)
-        pG2P.set("uRestMass", particlesPerCell * 0.5f)
+        pG2P.set("uRestMass", particlesPerCell)
         pG2P.set("uMaxSpeed", maxSpeed)
         pG2P.set("uTexel", 1f / gridW, 1f / gridH)
-        pG2P.set("uVelNew", 0)
-        pG2P.set("uVelOld", 1)
-        velNew.bindSampler(0)
-        velOld.bindSampler(1)
+        pG2P.set("uUNew", 0)
+        pG2P.set("uVNew", 1)
+        pG2P.set("uUOld", 2)
+        pG2P.set("uVOld", 3)
+        pG2P.set("uDensity", 4)
+        texU.bindSampler(0)
+        texV.bindSampler(1)
+        texUOld.bindSampler(2)
+        texVOld.bindSampler(3)
+        density.bindSampler(4)
         GLES31.glDispatchCompute((liveSpan() + 63) / 64, 1, 1)
         barrier()
     }
@@ -421,7 +494,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         buffer = 0
     }
 
-    fun bytes(): Long = capacity.toLong() * STRIDE + gridCells.toLong() * 16 +
+    fun bytes(): Long = capacity.toLong() * STRIDE + gridCells.toLong() * 24 +
         sepW.toLong() * sepH * 13 * 4
 
     companion object {

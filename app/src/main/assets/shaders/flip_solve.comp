@@ -1,0 +1,81 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// solveIncompressibility from the reference solver: no pressure field at all.
+// Each relaxation sweep visits every fluid cell and pushes its four face
+// velocities directly until the cell's divergence is gone, weighted by which
+// neighbours can accept flow (air and fluid yes, walls no). Air cells are
+// skipped entirely, which is the free surface.
+//
+// Drift compensation, also from the reference: a cell denser than the
+// emission density is given artificial divergence so the solve pushes the
+// excess out. This is what stops particles slowly sinking into each other
+// over many frames -- without it FLIP loses volume and the paint thins.
+//
+// Red-black ordering makes the in-place update safe on the GPU: a cell
+// writes only its own left/bottom faces and its right/top neighbours' -- and
+// no two cells of one colour share a face, because orthogonal neighbours,
+// the only face-sharers, always differ in colour.
+
+layout(r32f, binding = 0) uniform highp image2D uU;
+layout(r32f, binding = 2) uniform highp image2D uV;
+// per cell: xMom, xW, yMom, yW, density, cellType (0 solid, 1 air, 2 fluid)
+layout(std430, binding = 1) buffer GridAccum { int acc[]; };
+
+uniform ivec2 uGrid;
+uniform int   uParity;
+uniform float uOmega;      // over-relaxation
+uniform float uRest;       // emission density, particles per cell
+uniform float uCompensate; // drift compensation strength; reference k = 1
+
+int cellType(ivec2 c) {
+    if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return 0;
+    return acc[(c.y * uGrid.x + c.x) * 6 + 5];
+}
+
+const float SCALE = 4096.0;
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (g.y >= uGrid.y) return;
+    int x = 2 * g.x + ((g.y + uParity) & 1);
+    if (x >= uGrid.x) return;
+    ivec2 c = ivec2(x, g.y);
+
+    if (cellType(c) != 2) return;   // only fluid cells drive flow
+
+    // which neighbours can accept flow; out of bounds is wall
+    float sx0 = cellType(c + ivec2(-1, 0)) != 0 ? 1.0 : 0.0;
+    float sx1 = cellType(c + ivec2( 1, 0)) != 0 ? 1.0 : 0.0;
+    float sy0 = cellType(c + ivec2( 0,-1)) != 0 ? 1.0 : 0.0;
+    float sy1 = cellType(c + ivec2( 0, 1)) != 0 ? 1.0 : 0.0;
+    float s = sx0 + sx1 + sy0 + sy1;
+    if (s == 0.0) return;
+
+    ivec2 cr = c + ivec2(1, 0);
+    ivec2 ct = c + ivec2(0, 1);
+
+    float uC = imageLoad(uU, c).x;
+    float vC = imageLoad(uV, c).x;
+    // faces on the far wall are not stored; they are walls, velocity zero
+    float uR = cr.x < uGrid.x ? imageLoad(uU, cr).x : 0.0;
+    float vT = ct.y < uGrid.y ? imageLoad(uV, ct).x : 0.0;
+
+    float div = uR - uC + vT - vC;
+
+    if (uCompensate > 0.0) {
+        float density = float(acc[(c.y * uGrid.x + c.x) * 6 + 4]) / SCALE;
+        float compression = density / max(uRest, 1.0) - 1.0;
+        if (compression > 0.0) div -= uCompensate * compression;
+    }
+
+    float p = -div / s * uOmega;
+
+    imageStore(uU, c, vec4(uC - sx0 * p, 0.0, 0.0, 0.0));
+    imageStore(uV, c, vec4(vC - sy0 * p, 0.0, 0.0, 0.0));
+    if (cr.x < uGrid.x && sx1 > 0.0)
+        imageStore(uU, cr, vec4(uR + p, 0.0, 0.0, 0.0));
+    if (ct.y < uGrid.y && sy1 > 0.0)
+        imageStore(uV, ct, vec4(vT + p, 0.0, 0.0, 0.0));
+}

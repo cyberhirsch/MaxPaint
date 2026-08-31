@@ -1,0 +1,37 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 64) in;
+
+// integrateParticles + handleParticleCollisions from the reference solver,
+// minus gravity: a canvas has no up, paint travels on the momentum of the
+// stroke. Runs first each frame, so the particle moves on the velocity the
+// previous frame's solve gave it.
+
+layout(std430, binding = 0) buffer Particles { vec4 data[]; };
+
+uniform float uDt;
+uniform int   uCapacity;
+uniform float uAspect;
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCapacity) return;
+
+    if (data[i * 2 + 1].z < 0.5 || data[i * 2 + 1].z > 1.5) return;
+
+    vec4 pv = data[i * 2];
+    vec2 pos = pv.xy;
+    vec2 vel = pv.zw;
+
+    // velocity is in world units (aspect x 1); position in UV
+    pos += vec2(vel.x / uAspect, vel.y) * uDt;
+
+    // wall collisions: clamp, and zero the normal component like the
+    // reference -- a wall absorbs, it does not bounce paint
+    if (pos.x < 0.0) { pos.x = 0.0; vel.x = 0.0; }
+    if (pos.x > 1.0) { pos.x = 1.0; vel.x = 0.0; }
+    if (pos.y < 0.0) { pos.y = 0.0; vel.y = 0.0; }
+    if (pos.y > 1.0) { pos.y = 1.0; vel.y = 0.0; }
+
+    data[i * 2] = vec4(pos, vel);
+}

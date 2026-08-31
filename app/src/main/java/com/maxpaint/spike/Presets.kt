@@ -61,7 +61,7 @@ object Presets {
         // against 79.5% under the old shader, 206 cells against 203. The look
         // the user signed off on, minus the energy source underneath it.
         Preset("Wet Paint") { s ->
-            s.flip.flowRate = 0f; s.flip.compression = 0f
+            s.flip.flowRate = 0f; s.flip.compression = 1f
             s.flip.flipRatio = 0.6f; s.flip.particleDrag = 0.25f
             s.flip.settleSpeed = 0.06f; s.flip.cohesion = 30f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 120f
@@ -72,23 +72,23 @@ object Presets {
             s.flip.flipRatio = 0.99f; s.flip.particleDrag = 0.02f
             s.flip.settleSpeed = 0.10f; s.flip.cohesion = 6f
             s.flip.pointSize = 3f; s.flip.particlesPerCell = 51f
-            s.flip.flowRate = 12f; s.flip.compression = 0.01f
+            s.flip.flowRate = 12f; s.flip.compression = 1f
         },
         Preset("Fling") { s ->
-            s.flip.flowRate = 0f; s.flip.compression = 0f
+            s.flip.flowRate = 0f; s.flip.compression = 1f
             // travels a long way before it stops
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.05f
             s.flip.settleSpeed = 0.03f; s.flip.cohesion = 8f
             s.flip.pointSize = 4f; s.flip.particlesPerCell = 29f
         },
         Preset("Honey") { s ->
-            s.flip.flowRate = 0f; s.flip.compression = 0f
+            s.flip.flowRate = 0f; s.flip.compression = 1f
             s.flip.flipRatio = 0.45f; s.flip.particleDrag = 1.6f
             s.flip.settleSpeed = 0.02f; s.flip.cohesion = 26f
             s.flip.pointSize = 6f; s.flip.particlesPerCell = 51f
         },
         Preset("Mercury") { s ->
-            s.flip.flowRate = 0f; s.flip.compression = 0f
+            s.flip.flowRate = 0f; s.flip.compression = 1f
             s.flip.flipRatio = 0.97f; s.flip.particleDrag = 0.04f
             // very high tension: beads up hard and stays whole
             s.flip.settleSpeed = 0.015f; s.flip.cohesion = 38f
