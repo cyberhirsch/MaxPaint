@@ -196,7 +196,10 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
 
     fun emit(u: Float, v: Float, du: Float, dv: Float, radius: Float,
              inkScale: Float = 1f, aspect: Float = 1f, perDab: Int = 32,
-             axisX: Float = 1f, axisY: Float = 0f, minor: Float = 1f) {
+             axisX: Float = 1f, axisY: Float = 0f, minor: Float = 1f,
+             // the far end of the emission segment; defaults collapse it to
+             // a point dab, a moving pour passes where the finger went
+             u2: Float = u, v2: Float = v, du2: Float = du, dv2: Float = dv) {
         if (buffer == 0) return
         val count = perDab
 
@@ -207,6 +210,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pEmit.set("uCapacity", capacity)
         pEmit.set("uPoint", u, v)
         pEmit.set("uVel", du, dv)
+        pEmit.set("uPointB", u2, v2)
+        pEmit.set("uVelB", du2, dv2)
         pEmit.set("uRadius", radius)
         pEmit.set("uAspect", aspect)
         pEmit.set("uAxis", axisX, axisY)

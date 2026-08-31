@@ -15,6 +15,14 @@ uniform int   uCount;       // how many to emit
 uniform int   uCapacity;
 uniform vec2  uPoint;
 uniform vec2  uVel;
+// The far end of the segment this emission covers, and the velocity there. A
+// pour from a moving finger is a STREAM: each particle lands at its own spot
+// along the path the finger travelled this frame, moving as the finger moved
+// at that spot -- both position and motion vector are interpolated, so a
+// stroke is a ribbon rather than a chain of dots. Callers emitting a point
+// dab pass the same values for both ends.
+uniform vec2  uPointB;
+uniform vec2  uVelB;
 uniform float uRadius;
 uniform float uAspect;    // width / height
 uniform vec2  uAxis;      // unit vector along the contact's long axis, world space
@@ -45,8 +53,12 @@ void main() {
     vec2 off = vec2(cos(a), sin(a) * mn) * rr;
     vec2 world = vec2(off.x * ax.x - off.y * ax.y,
                       off.x * ax.y + off.y * ax.x);
-    vec2 pos = uPoint + vec2(world.x / uAspect, world.y);
-    vec2 vel = uVel * (0.7 + 0.6 * hash(s + 3.1));
+    float t = hash(s + 9.3);
+    vec2 centre = mix(uPoint, uPointB, t);
+    vec2 velAt = mix(uVel, uVelB, t);
+
+    vec2 pos = centre + vec2(world.x / uAspect, world.y);
+    vec2 vel = velAt * (0.7 + 0.6 * hash(s + 3.1));
 
     data[slot * 2]     = vec4(pos, vel);
     data[slot * 2 + 1] = vec4(uInk, 0.0, 1.0, hash(s + 5.9));   // state 1 = live

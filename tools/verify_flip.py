@@ -103,7 +103,10 @@ class Flip:
         return out
 
     def emit(self, u, v, du, dv, n=64, radius=0.02, ink=0.14, aspect=1.0,
-             axis=(1.0, 0.0), minor=1.0):
+             axis=(1.0, 0.0), minor=1.0, seg=None):
+        # seg=(u2, v2, du2, dv2) emits along a segment with the motion vector
+        # interpolated, as a moving pour does; None is a point dab
+        u2, v2, du2, dv2 = seg if seg else (u, v, du, dv)
         glUseProgram(self.emit_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glUniform1i(uni(self.emit_p, "uHead"), self.head)
@@ -111,6 +114,8 @@ class Flip:
         glUniform1i(uni(self.emit_p, "uCapacity"), CAP)
         glUniform2f(uni(self.emit_p, "uPoint"), u, v)
         glUniform2f(uni(self.emit_p, "uVel"), du, dv)
+        glUniform2f(uni(self.emit_p, "uPointB"), u2, v2)
+        glUniform2f(uni(self.emit_p, "uVelB"), du2, dv2)
         glUniform1f(uni(self.emit_p, "uRadius"), radius)
         glUniform1f(uni(self.emit_p, "uAspect"), aspect)
         glUniform2f(uni(self.emit_p, "uAxis"), axis[0], axis[1])
@@ -368,6 +373,26 @@ def main():
           f"centroid ({p[live][:,0].mean():.3f}, {p[live][:,1].mean():.3f})")
     check("emission is jittered, not a single point",
           float(p[live][:, 0].std()) > 1e-4, f"x spread {p[live][:,0].std():.4f}")
+
+    # A moving pour is a stream, not a chain of dots: particles land all along
+    # the segment the finger travelled, and each takes the motion vector
+    # interpolated to its own spot on the path.
+    sf = Flip()
+    sf.emit(0.2, 0.5, 0.0, 0.0, n=512, radius=0.01,
+            seg=(0.8, 0.5, 2.0, 0.0))
+    p = sf.read()
+    live = p[p[:, 6] == 1.0]
+    xs = live[:, 0]
+    thirds = [((xs >= lo) & (xs < hi)).sum()
+              for lo, hi in ((0.2, 0.4), (0.4, 0.6), (0.6, 0.8))]
+    check("a moving pour streams along the whole segment",
+          min(thirds) > 512 * 0.15,
+          f"particles per third of the path: {thirds}")
+    near = live[xs < 0.4][:, 2]
+    far = live[xs > 0.6][:, 2]
+    check("and the motion vector is interpolated along it",
+          len(near) and len(far) and float(near.mean()) < float(far.mean()) * 0.5,
+          f"mean vx {near.mean():.2f} at the start, {far.mean():.2f} at the end")
 
     # There is no gravity, so paint must travel on the stroke's momentum and
     # stop where drag stops it -- not fall.

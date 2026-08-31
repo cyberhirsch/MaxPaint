@@ -796,32 +796,41 @@ class FluidSim(private val ctx: Context) {
      */
     fun pour(u: Float, v: Float, du: Float, dv: Float, dt: Float) {
         if (!allocated || brush != Brush.FLIP || flip.flowRate <= 0f) return
-        if (pourLastU < 0f) { pourLastU = u; pourLastV = v }
-        pourDebt += flip.flowRate * dt
-        val dabs = pourDebt.toInt()
-        if (dabs > 0) {
-            pourDebt -= dabs.toFloat()
-            val r = splatRadius * 0.5f
-            val perDab = flip.countFor(r, aspect)
+        if (pourLastU < 0f) {
+            pourLastU = u; pourLastV = v
+            pourLastDu = du; pourLastDv = dv
+        }
+        val r = splatRadius * 0.5f
+        // The debt is kept in PARTICLES, not dabs: whole-dab quantisation at
+        // 30fps meant roughly one stamp per frame, and a fast stroke came out
+        // as a chain of dots however the stamps were placed. One emission per
+        // frame instead spreads the frame's whole particle budget along the
+        // segment the finger travelled, each particle at its own point on the
+        // path with the motion vector interpolated to that point.
+        pourDebt += flip.flowRate * dt * flip.countFor(r, aspect)
+        val n = pourDebt.toInt()
+        if (n > 0) {
+            pourDebt -= n.toFloat()
             val inherit = flip.flipRatio.coerceIn(0f, 1f)
-            val n = dabs.coerceAtMost(8)
-            for (i in 1..n) {
-                val t = i / n.toFloat()
-                flip.emit(pourLastU + (u - pourLastU) * t,
-                          pourLastV + (v - pourLastV) * t,
-                          du * inherit, dv * inherit,
-                          r, inkPerStroke, aspect, perDab,
-                          contactAxisX, contactAxisY, contactMinorRatio)
-            }
+            flip.emit(pourLastU, pourLastV,
+                      pourLastDu * inherit, pourLastDv * inherit,
+                      r, inkPerStroke, aspect, n.coerceAtMost(8192),
+                      contactAxisX, contactAxisY, contactMinorRatio,
+                      u2 = u, v2 = v,
+                      du2 = du * inherit, dv2 = dv * inherit)
         }
         pourLastU = u
         pourLastV = v
+        pourLastDu = du
+        pourLastDv = dv
     }
 
-    /** Fractional dabs carried between frames, so a slow pour still pours. */
+    /** Fractional particles carried between frames, so a slow pour still pours. */
     private var pourDebt = 0f
     private var pourLastU = -1f
     private var pourLastV = -1f
+    private var pourLastDu = 0f
+    private var pourLastDv = 0f
 
     fun endPour() { pourDebt = 0f; pourLastU = -1f; pourLastV = -1f }
 
