@@ -1,0 +1,70 @@
+#version 310 es
+layout(local_size_x = 64) in;
+
+// pushParticlesApart, after Matthias Muller's Ten Minute Physics FLIP
+// (tenMinutePhysics/18-flip.html). This is the anti-grain pass: nothing else
+// in the pipeline acts at particle scale, so without it particles clump into
+// the speckle that reads as a grain sim rather than a liquid. Each particle
+// pushes itself half of the overlap out of every neighbour closer than
+// uMinDist; the neighbour does its own half in its own thread, which together
+// is the reference's symmetric push without needing atomics on positions.
+//
+// Reads of neighbour positions race with their writes, so this is a Jacobi
+// relaxation rather than the reference's Gauss-Seidel -- for a pass whose only
+// job is to even out spacing, an occasionally stale neighbour costs one
+// iteration of convergence, not correctness.
+
+layout(std430, binding = 0) buffer Particles { vec4 data[]; };
+layout(std430, binding = 2) buffer SepGrid { int cells[]; };
+
+uniform int   uCapacity;
+uniform float uAspect;
+uniform float uSpacing;
+uniform ivec2 uSep;
+uniform float uMinDist;   // rest packing distance, world units
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCapacity) return;
+
+    vec4 meta = data[i * 2 + 1];
+    if (meta.z < 0.5 || meta.z > 1.5) return;
+
+    vec4 pv = data[i * 2];
+    vec2 world = vec2(pv.x * uAspect, pv.y);
+    ivec2 c = clamp(ivec2(world / uSpacing), ivec2(0), uSep - 1);
+
+    float minDist2 = uMinDist * uMinDist;
+    vec2 disp = vec2(0.0);
+
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            ivec2 n = c + ivec2(dx, dy);
+            if (n.x < 0 || n.y < 0 || n.x >= uSep.x || n.y >= uSep.y) continue;
+            int cell = (n.y * uSep.x + n.x) * 13;
+            int count = min(cells[cell], 12);
+            for (int s = 0; s < count; s++) {
+                int j = cells[cell + 1 + s];
+                if (j == i) continue;
+                vec2 ow = vec2(data[j * 2].x * uAspect, data[j * 2].y);
+                vec2 d = world - ow;
+                float d2 = dot(d, d);
+                if (d2 >= minDist2) continue;
+                float dist = sqrt(d2);
+                if (dist > 1e-6) {
+                    disp += d * (0.5 * (uMinDist - dist) / dist);
+                } else {
+                    // coincident particles have no direction to separate
+                    // along; invent one from the pair's indices so the two
+                    // threads pick opposite sides
+                    float a = float(i - j) * 2.399963;   // golden angle
+                    disp += 0.5 * uMinDist * vec2(cos(a), sin(a));
+                }
+            }
+        }
+    }
+
+    world += disp;
+    vec2 pos = clamp(vec2(world.x / uAspect, world.y), vec2(0.0), vec2(1.0));
+    data[i * 2] = vec4(pos, pv.zw);
+}

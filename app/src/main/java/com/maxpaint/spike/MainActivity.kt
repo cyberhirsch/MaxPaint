@@ -654,6 +654,11 @@ class MainActivity : AppCompatActivity() {
                         renderer.sim.splatRadius * 0.5f, renderer.sim.canvasAspect)
                     l.text = "Density: ${d.toInt()}  ($n particles per dab)"
                 })
+                panelBody.addView(slider("Separation", renderer.sim.flip.separationIters, 4) { p, l ->
+                    renderer.sim.flip.separationIters = p
+                    l.text = if (p == 0) "Separation: off  (particles may clump)"
+                             else "Separation: $p pass${if (p > 1) "es" else ""}  (evens spacing)"
+                })
                 panelBody.addView(slider("Pressure", renderer.sim.flipIterations, 500) { p, l ->
                     renderer.sim.flipIterations = p.coerceAtLeast(4)
                     l.text = "Pressure: ${p.coerceAtLeast(4)} sweeps"

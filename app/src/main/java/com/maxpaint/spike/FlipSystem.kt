@@ -60,6 +60,14 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
      */
     var particlesPerCell = 120f
 
+    /**
+     * Iterations of the particle-separation relaxation (pushParticlesApart in
+     * the reference solver). Zero disables it. This is the anti-grain pass:
+     * the grid cannot see sub-cell clumping, so without it particles pile
+     * into speckle instead of spreading into a body of liquid.
+     */
+    var separationIters = 2
+
     private var buffer = 0
     private var vao = 0
     private var head = 0
@@ -70,7 +78,15 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     private lateinit var pP2G: ComputeProgram
     private lateinit var pNormalize: ComputeProgram
     private lateinit var pG2P: ComputeProgram
+    private lateinit var pSepClear: ComputeProgram
+    private lateinit var pSepBin: ComputeProgram
+    private lateinit var pSepPush: ComputeProgram
     private var drawProgram = 0
+
+    /** Spatial hash for the separation pass: 13 ints per cell (count + 12 ids). */
+    private var sepBuffer = 0
+    private var sepW = 0
+    private var sepH = 0
 
     /** Fixed-point momentum and mass accumulator, one triple per grid cell. */
     private var gridBuffer = 0
@@ -104,6 +120,9 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         vao = 0
         gridBuffer = 0
         gridCells = 0
+        sepBuffer = 0
+        sepW = 0
+        sepH = 0
         head = 0
         emitted = 0L
 
@@ -112,6 +131,9 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pP2G = ComputeProgram(ctx, "shaders/flip_p2g.comp")
         pNormalize = ComputeProgram(ctx, "shaders/flip_normalize.comp")
         pG2P = ComputeProgram(ctx, "shaders/flip_g2p.comp")
+        pSepClear = ComputeProgram(ctx, "shaders/flip_sep_clear.comp")
+        pSepBin = ComputeProgram(ctx, "shaders/flip_sep_bin.comp")
+        pSepPush = ComputeProgram(ctx, "shaders/flip_sep_push.comp")
         drawProgram = GLUtil.link(
             GLUtil.compile(GLES31.GL_VERTEX_SHADER, GLUtil.readAsset(ctx, "shaders/particle.vert"), "particle.vert"),
             GLUtil.compile(GLES31.GL_FRAGMENT_SHADER, GLUtil.readAsset(ctx, "shaders/particle.frag"), "particle.frag")
@@ -219,6 +241,89 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         GLES31.GL_VERTEX_ATTRIB_ARRAY_BARRIER_BIT
     )
 
+    /**
+     * The reference solver's pushParticlesApart: a relaxation that moves any
+     * two live particles closer than the rest packing distance apart, half
+     * each. Runs before the grid transfer so the grid sees paint that already
+     * fills its footprint evenly instead of sub-cell clumps.
+     *
+     * The hash must be nearly as fine as the separation distance itself, or a
+     * cell's twelve recorded slots see only a fraction of a crowd and the
+     * push starves -- the reference's spacing is 2.2x the particle radius for
+     * the same reason. Cells are 2x the rest distance (a handful of particles
+     * each at rest), capped by a memory budget; the cap only binds at extreme
+     * Density-times-Coupling settings, where separation degrades rather than
+     * the allocation exploding.
+     */
+    fun pushApart(aspect: Float) {
+        if (buffer == 0 || separationIters <= 0) return
+
+        val a = aspect.coerceIn(0.2f, 5f)
+        // Rest packing distance -- hex-packing particlesPerCell into one grid
+        // cell -- times 0.7. Not 1.0: cohesion's gate lets a bead condense to
+        // 1.8x rest density, whose packing is 0.75x the rest distance. A
+        // minimum at the rest distance itself would unpack every bead the
+        // moment cohesion formed it, and the two would fight forever -- the
+        // bead never rests, the surface never dries. Below 0.75 the push only
+        // acts on genuine clumps, which is its whole job.
+        val cell = kotlin.math.sqrt(a) / gridRes.coerceAtLeast(1)
+        var minDist = 0.75f * cell / kotlin.math.sqrt(particlesPerCell.coerceAtLeast(1f))
+        var spacing = 2f * minDist
+        val budget = 600_000f
+        if (a / (spacing * spacing) > budget) spacing = kotlin.math.sqrt(a / budget)
+        // the push only searches 3x3 hash cells, so it cannot honour a
+        // separation wider than one of them
+        minDist = minDist.coerceAtMost(0.95f * spacing)
+
+        val w = kotlin.math.ceil(a / spacing).toInt().coerceAtLeast(8)
+        val h = kotlin.math.ceil(1f / spacing).toInt().coerceAtLeast(8)
+        if (sepBuffer == 0 || w != sepW || h != sepH) {
+            if (sepBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(sepBuffer), 0)
+            sepW = w
+            sepH = h
+            val ids = IntArray(1)
+            GLES31.glGenBuffers(1, ids, 0)
+            sepBuffer = ids[0]
+            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, sepBuffer)
+            GLES31.glBufferData(
+                GLES31.GL_SHADER_STORAGE_BUFFER,
+                sepW * sepH * 13 * 4, null, GLES31.GL_DYNAMIC_COPY
+            )
+            GLES31.glBindBuffer(GLES31.GL_SHADER_STORAGE_BUFFER, 0)
+        }
+
+        val span = liveSpan()
+        val cells = sepW * sepH
+        for (iter in 0 until separationIters) {
+            pSepClear.use()
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 2, sepBuffer)
+            pSepClear.set("uCells", cells)
+            GLES31.glDispatchCompute((cells + 63) / 64, 1, 1)
+            GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+
+            pSepBin.use()
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 2, sepBuffer)
+            pSepBin.set("uCapacity", span)
+            pSepBin.set("uAspect", a)
+            pSepBin.set("uSpacing", spacing)
+            GLES31.glUniform2i(GLES31.glGetUniformLocation(pSepBin.id, "uSep"), sepW, sepH)
+            GLES31.glDispatchCompute((span + 63) / 64, 1, 1)
+            GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
+
+            pSepPush.use()
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
+            GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 2, sepBuffer)
+            pSepPush.set("uCapacity", span)
+            pSepPush.set("uAspect", a)
+            pSepPush.set("uSpacing", spacing)
+            pSepPush.set("uMinDist", minDist)
+            GLES31.glUniform2i(GLES31.glGetUniformLocation(pSepPush.id, "uSep"), sepW, sepH)
+            GLES31.glDispatchCompute((span + 63) / 64, 1, 1)
+            barrier()
+        }
+    }
+
     /** Scatters particle momentum onto the grid and resolves it into a field. */
     fun particlesToGrid(velTarget: Tex, massTarget: Tex, w: Int, h: Int) {
         if (buffer == 0 || gridBuffer == 0) return
@@ -308,13 +413,16 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     fun release() {
         if (gridBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(gridBuffer), 0)
         gridBuffer = 0
+        if (sepBuffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(sepBuffer), 0)
+        sepBuffer = 0
         if (buffer != 0) GLES31.glDeleteBuffers(1, intArrayOf(buffer), 0)
         if (vao != 0) GLES31.glDeleteVertexArrays(1, intArrayOf(vao), 0)
         if (drawProgram != 0) GLES31.glDeleteProgram(drawProgram)
         buffer = 0
     }
 
-    fun bytes(): Long = capacity.toLong() * STRIDE + gridCells.toLong() * 16
+    fun bytes(): Long = capacity.toLong() * STRIDE + gridCells.toLong() * 16 +
+        sepW.toLong() * sepH * 13 * 4
 
     companion object {
         /** Two vec4 per particle: pos+vel, then ink/age/state/seed. */

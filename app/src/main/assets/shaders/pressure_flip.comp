@@ -12,6 +12,12 @@ layout(r32f, binding = 3) readonly uniform highp image2D uMass;
 
 uniform int   uParity;
 uniform float uMinMass;
+// Successive over-relaxation: each sweep overshoots toward the Gauss-Seidel
+// value, reaching the same residual in a fraction of the sweeps -- the
+// difference between a working pressure solve and none at the low sweep
+// counts the slider allows. The reference uses 1.9; measured here, with air
+// cells pinned at zero, 1.9 diverges early and 1.5 is the robust choice.
+uniform float uOmega;
 
 void main() {
     ivec2 g = ivec2(gl_GlobalInvocationID.xy);
@@ -33,5 +39,7 @@ void main() {
     float t = imageLoad(uPressure, clamp(c + ivec2( 0, 1), ivec2(0), mx)).x;
     float d = imageLoad(uDiv, c).x;
 
-    imageStore(uPressure, c, vec4((l + r + b + t - d) * 0.25, 0.0, 0.0, 0.0));
+    float pOld = imageLoad(uPressure, c).x;
+    float pGS = (l + r + b + t - d) * 0.25;
+    imageStore(uPressure, c, vec4(pOld + uOmega * (pGS - pOld), 0.0, 0.0, 0.0));
 }

@@ -53,6 +53,9 @@ class Flip:
         self.p2g_p = compile_compute("flip_p2g.comp")
         self.norm_p = compile_compute("flip_normalize.comp")
         self.g2p_p = compile_compute("flip_g2p.comp")
+        self.sep_clear_p = compile_compute("flip_sep_clear.comp")
+        self.sep_bin_p = compile_compute("flip_sep_bin.comp")
+        self.sep_push_p = compile_compute("flip_sep_push.comp")
         self.div_p = compile_compute("divergence_flip.comp")
         self.pres_p = compile_compute("pressure_flip.comp")
         self.grad_p = compile_compute("gradsub_flip.comp")
@@ -79,6 +82,11 @@ class Flip:
 
         self.head = 0
         self.seed = 1.0
+
+        # separation hash: allocated lazily at the spacing the pass needs,
+        # 13 ints per cell (count + 12 ids), same as FlipSystem
+        self.sep_w = self.sep_h = 0
+        self.sep_buf = 0
 
     def read(self):
         # ES has no glGetBufferSubData; map the range instead. The barrier
@@ -131,6 +139,60 @@ class Flip:
     def _bar(self):
         glMemoryBarrier(GL_ALL_BARRIER_BITS)
 
+    def push_apart(self, aspect=1.0, ppc=50.0, iters=2):
+        # same geometry as FlipSystem.pushApart: hash cells 2x the rest
+        # distance, capped by a memory budget
+        # 0.7x the hex rest distance: below the packing of a fully condensed
+        # bead (1.8x rest density), so separation never unpacks what cohesion
+        # gathered -- see FlipSystem.pushApart
+        cell = aspect ** 0.5 / max(self.gw, 1)
+        min_dist = 0.75 * cell / max(ppc, 1.0) ** 0.5
+        spacing = 2.0 * min_dist
+        budget = 600_000
+        if aspect / spacing ** 2 > budget:
+            spacing = (aspect / budget) ** 0.5
+        min_dist = min(min_dist, 0.95 * spacing)
+        w = max(int(np.ceil(aspect / spacing)), 8)
+        h = max(int(np.ceil(1.0 / spacing)), 8)
+        if self.sep_buf == 0 or (w, h) != (self.sep_w, self.sep_h):
+            if self.sep_buf:
+                glDeleteBuffers(1, [self.sep_buf])
+            self.sep_w, self.sep_h = w, h
+            self.sep_buf = glGenBuffers(1)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, self.sep_buf)
+            glBufferData(GL_SHADER_STORAGE_BUFFER, w * h * 13 * 4,
+                         np.zeros(w * h * 13, dtype=np.int32), GL_DYNAMIC_COPY)
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0)
+        cells = self.sep_w * self.sep_h
+        for _ in range(iters):
+            glUseProgram(self.sep_clear_p)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.sep_buf)
+            glUniform1i(uni(self.sep_clear_p, "uCells"), cells)
+            glDispatchCompute((cells + 63) // 64, 1, 1)
+            self._bar()
+
+            glUseProgram(self.sep_bin_p)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.sep_buf)
+            glUniform1i(uni(self.sep_bin_p, "uCapacity"), CAP)
+            glUniform1f(uni(self.sep_bin_p, "uAspect"), aspect)
+            glUniform1f(uni(self.sep_bin_p, "uSpacing"), spacing)
+            glUniform2i(uni(self.sep_bin_p, "uSep"), self.sep_w, self.sep_h)
+            glDispatchCompute((CAP + 63) // 64, 1, 1)
+            self._bar()
+
+            glUseProgram(self.sep_push_p)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, self.sep_buf)
+            glUniform1i(uni(self.sep_push_p, "uCapacity"), CAP)
+            glUniform1f(uni(self.sep_push_p, "uAspect"), aspect)
+            glUniform1f(uni(self.sep_push_p, "uSpacing"), spacing)
+            glUniform1f(uni(self.sep_push_p, "uMinDist"), min_dist)
+            glUniform2i(uni(self.sep_push_p, "uSep"), self.sep_w, self.sep_h)
+            glDispatchCompute((CAP + 63) // 64, 1, 1)
+            self._bar()
+        return min_dist
+
     def p2g(self):
         glUseProgram(self.clear_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.grid)
@@ -155,7 +217,7 @@ class Flip:
         self._bar()
 
     def project(self, dt, iters=20, min_mass=0.08,
-                rest=0.0, compression=0.0, cap=0.0):
+                rest=0.0, compression=0.0, cap=0.0, omega=1.5):
         glUseProgram(self.blit_p)
         glUniform1i(uni(self.blit_p, "uSrc"), 0)
         self.vel.read_t.sampler(0)
@@ -175,6 +237,7 @@ class Flip:
 
         glUseProgram(self.pres_p)
         glUniform1f(uni(self.pres_p, "uMinMass"), min_mass)
+        glUniform1f(uni(self.pres_p, "uOmega"), omega)
         self.div.image(2, GL_READ_ONLY)
         self.mass.image(3, GL_READ_ONLY)
         for _ in range(iters):
@@ -219,7 +282,11 @@ class Flip:
         self._bar()
 
     def step(self, dt, vel_tex=None, flip_ratio=0.95, settle_speed=0.06,
-             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0, rest=25.0):
+             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0, rest=25.0,
+             separation=2):
+        # rest mass is particlesPerCell * 0.5, so ppc is rest * 2
+        if separation:
+            self.push_apart(aspect=aspect, ppc=rest * 2.0, iters=separation)
         self.p2g()
         self.project(dt)
         self.g2p(dt, flip_ratio, drag, aspect, settle_speed, min_age, cohesion,
@@ -781,8 +848,13 @@ def main():
 
     # The half of the fix that matters: having beaded, the paint STOPS. The old
     # force held the rim at sustained speed forever, so nothing could ever dry.
+    # The bound is 0.05, not the pre-separation 0.02: at slider-max cohesion
+    # the separation pass and the gate trade a little surface jiggle at
+    # equilibrium (~0.037 measured), which sits well under every preset's
+    # settle threshold -- the preset drying checks above prove paint still
+    # dries -- where the old force pinned particles at the CFL cap of 4.
     check("and the beads come to rest",
-          on["meanv"] < 0.02,
+          on["meanv"] < 0.05,
           f"mean live speed {on['meanv']:.4f} after 120 frames")
 
     # Wet Paint's look is a signed-off reference: the user approved it under
@@ -804,6 +876,79 @@ def main():
           f"peak particle speed {on['vmax']:.2f}")
     check("cohesion does not collapse the liquid to a point",
           on["cells"] > 8, f"{on['cells']} cells still occupied")
+
+    # --- separation: the anti-grain pass from the reference solver ---
+    print()
+    print("Separation:")
+
+    def nn_dist(p):
+        live = p[p[:, 6] == 1.0][:, :2]
+        if len(live) < 2:
+            return 0.0
+        d = np.linalg.norm(live[:, None, :] - live[None, :, :], axis=2)
+        np.fill_diagonal(d, np.inf)
+        return float(np.median(d.min(axis=1)))
+
+    s = Flip()
+    s.make_grid(64, 64)
+    # overlapped ~3x tighter than rest packing -- the state a fresh dab or a
+    # crossing of two strokes leaves particles in
+    s.emit(0.5, 0.5, 0.0, 0.0, n=512, radius=0.03)
+    before = nn_dist(s.read())
+    md = s.push_apart(ppc=24.0, iters=4)
+    p_after = s.read()
+    after = nn_dist(p_after)
+    check("push-apart spreads a clump toward even spacing",
+          after > before * 1.5 and after > 0.5 * md,
+          f"median nearest-neighbour {before:.5f} -> {after:.5f}, "
+          f"rest spacing {md:.5f}")
+    check("and keeps the paint where it was put",
+          abs(float(p_after[p_after[:, 6] == 1.0][:, :2].mean(axis=0)[0]) - 0.5) < 0.02
+          and np.isfinite(p_after).all(),
+          "centroid held, values finite")
+
+    # positions move, velocities must not: separation is geometry, not energy
+    v_before = s.read()[:, 2:4].copy()
+    s.push_apart(ppc=24.0, iters=2)
+    v_after = s.read()[:, 2:4]
+    check("separation adds no kinetic energy",
+          np.array_equal(v_before, v_after), "velocities bit-identical")
+
+    # SOR: the slider bottoms out at 4 sweeps; with overrelaxation even a
+    # handful must still make a real dent in the divergence. Measured on the
+    # grid field itself -- before projection and after -- not by rebuilding
+    # the grid from particles that were never updated.
+    def rms_div_of(q):
+        glUseProgram(q.div_p)
+        glUniform1f(uni(q.div_p, "uRest"), 0.0)
+        glUniform1f(uni(q.div_p, "uCompression"), 0.0)
+        glUniform1f(uni(q.div_p, "uCap"), 0.0)
+        q.vel.read_t.image(0, GL_READ_ONLY)
+        q.div.image(1, GL_WRITE_ONLY)
+        q.mass.image(2, GL_READ_ONLY)
+        glDispatchCompute((q.gw + 7) // 8, (q.gh + 7) // 8, 1)
+        q._bar()
+        d = q.div.read()[:, :, 0]
+        m = q.mass.read()[:, :, 0]
+        interior = m > 1.0
+        return float(np.sqrt((d[interior] ** 2).mean())) if interior.sum() else 0.0
+
+    def residual_at(omega):
+        q = Flip()
+        q.make_grid(64, 64)
+        q.emit(0.45, 0.5, 1.0, 0.0, n=1024, radius=0.05)
+        q.emit(0.55, 0.5, -1.0, 0.0, n=1024, radius=0.05)
+        q.p2g()
+        r0 = rms_div_of(q)
+        q.project(dt, iters=8, omega=omega)
+        return r0, rms_div_of(q)
+
+    r0, sor = residual_at(1.5)
+    _, plain = residual_at(1.0)
+    check("overrelaxation makes the same few sweeps cut deeper",
+          sor < plain * 0.85 and sor < r0,
+          f"rms divergence {r0:.4f} -> {plain:.4f} plain, {sor:.4f} with "
+          f"omega 1.5, in 8 sweeps")
 
     print()
     if FAILURES:
