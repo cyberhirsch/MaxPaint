@@ -3,41 +3,85 @@ precision highp float;
 precision highp sampler2D;
 layout(local_size_x = 64) in;
 
-// Grid to particle, with the blend FLIP actually specifies.
+// Grid to particle: transferVelocities(fromGrid) from the reference solver.
 //
-// The previous version blended toward the ABSOLUTE grid velocity, which throws
-// away the particle's history every step and behaves like PIC with inertia.
-// Real FLIP adds the grid's CHANGE to the particle's own velocity, so detail
-// the grid cannot represent survives:
+// Per component, gather the four surrounding face values with bilinear hat
+// weights -- but only from faces that touch a non-air cell, so a particle
+// near the surface never averages in the zero velocity of empty space. The
+// blend is real FLIP: the grid's CHANGE is added to the particle's own
+// velocity, and mixed with the pure grid velocity by uFlipRatio.
 //
-//   v_pic  = v_grid_new
-//   v_flip = v_particle + (v_grid_new - v_grid_old)
+//   v_pic  = gather(vel)
+//   v_flip = v_particle + gather(vel - velBeforeSolve)
 //   v      = mix(v_pic, v_flip, ratio)
+//
+// The ratio is clamped at 1.0. Past it the blend extrapolates and multiplies
+// the particle's disagreement with the grid every frame -- measured with no
+// input at all, kinetic energy grew 10x in forty frames at 1.15. On top of
+// the port ride MaxPaint's own layers: drag, cohesion (there is no gravity
+// to gather paint into drops), a CFL clamp, and the settle/dry lifecycle.
+// Positions do not move here; that is next frame's integrate pass.
 
 layout(std430, binding = 0) buffer Particles { vec4 data[]; };
+// per cell: xMom, xW, yMom, yW, density, cellType (0 solid, 1 air, 2 fluid)
+layout(std430, binding = 1) buffer GridAccum { int acc[]; };
 
-layout(binding = 0) uniform highp sampler2D uVelNew;   // after projection
-layout(binding = 1) uniform highp sampler2D uVelOld;   // before projection
+// u and v are separate r32f textures (the solve needs read-write images, and
+// r32f is the only float format ES 3.1 guarantees that for); density is a
+// filterable rgba16f so cohesion gets a smooth gradient
+layout(binding = 0) uniform highp sampler2D uUNew;   // after the solve
+layout(binding = 1) uniform highp sampler2D uVNew;
+layout(binding = 2) uniform highp sampler2D uUOld;   // before the solve
+layout(binding = 3) uniform highp sampler2D uVOld;
+layout(binding = 4) uniform highp sampler2D uDensity;
 
 uniform float uDt;
 uniform int   uCapacity;
+uniform ivec2 uGrid;
 uniform float uFlipRatio;
 uniform float uDrag;
-uniform float uAspect;
 uniform float uSettleSpeed;
 uniform float uSettleMinAge;
 uniform float uCohesionSpeed;  // world units/s the surface may creep
-uniform float uRestMass;       // emission density in mass units   // surface tension: pulls paint into droplets
-uniform float uMaxSpeed;   // CFL guard, same as the grid uses
-uniform vec2  uTexel;      // 1 / grid, for the staggered sample offsets
+uniform float uRestMass;       // emission density, particles per cell
+uniform float uMaxSpeed;       // CFL guard
+uniform vec2  uTexel;
 
-// The grid is staggered: x lives on left faces, y on bottom faces. Each
-// component must therefore be sampled at its own point, half a cell apart --
-// sampling both at the cell centre leaves the field biased.
-vec2 sampleStaggered(sampler2D tex, vec2 uv) {
-    float vx = texture(tex, uv + vec2(0.5 * uTexel.x, 0.0)).x;
-    float vy = texture(tex, uv + vec2(0.0, 0.5 * uTexel.y)).y;
-    return vec2(vx, vy);
+int cellType(ivec2 c) {
+    if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return 0;
+    return acc[(c.y * uGrid.x + c.x) * 6 + 5];
+}
+
+// A face is valid when either cell beside it holds something other than air.
+float validFace(ivec2 face, ivec2 axis) {
+    return (cellType(face) != 1 || cellType(face - axis) != 1) ? 1.0 : 0.0;
+}
+
+float fetch(sampler2D t, ivec2 c) {
+    return texelFetch(t, clamp(c, ivec2(0), uGrid - 1), 0).x;
+}
+
+// Gathers one staggered component; returns (pic, corr, weight).
+vec3 gather(vec2 g, int comp) {
+    ivec2 axis = comp == 0 ? ivec2(1, 0) : ivec2(0, 1);
+    vec2 q = comp == 0 ? vec2(g.x, g.y - 0.5) : vec2(g.x - 0.5, g.y);
+    ivec2 b = ivec2(floor(q));
+    vec2 f = q - vec2(b);
+
+    float pic = 0.0, corr = 0.0, wsum = 0.0;
+    for (int dy = 0; dy <= 1; dy++) {
+        for (int dx = 0; dx <= 1; dx++) {
+            ivec2 c = b + ivec2(dx, dy);
+            float w = (dx == 0 ? 1.0 - f.x : f.x) * (dy == 0 ? 1.0 - f.y : f.y);
+            float valid = validFace(c, axis);
+            float vNew = comp == 0 ? fetch(uUNew, c) : fetch(uVNew, c);
+            float vOld = comp == 0 ? fetch(uUOld, c) : fetch(uVOld, c);
+            pic  += valid * w * vNew;
+            corr += valid * w * (vNew - vOld);
+            wsum += valid * w;
+        }
+    }
+    return vec3(pic, corr, wsum);
 }
 
 void main() {
@@ -53,85 +97,47 @@ void main() {
     vec4 pv = data[i * 2];
     vec2 pos = pv.xy;
     vec2 vel = pv.zw;
+    vec2 g = pos * vec2(uGrid);
 
-    vec2 gNew = sampleStaggered(uVelNew, pos);
-    vec2 gOld = sampleStaggered(uVelOld, pos);
+    float ratio = clamp(uFlipRatio, 0.0, 1.0);
+    for (int comp = 0; comp < 2; comp++) {
+        vec3 r = gather(g, comp);
+        if (r.z > 0.0) {
+            float pic = r.x / r.z;
+            float flipV = (comp == 0 ? vel.x : vel.y) + r.y / r.z;
+            float blended = mix(pic, flipV, ratio);
+            if (comp == 0) vel.x = blended; else vel.y = blended;
+        }
+    }
 
-    vec2 pic  = gNew;
-    vec2 flip = vel + (gNew - gOld);
-    // Capped at 1.0, which is pure FLIP: the particle keeps ALL of its own
-    // motion. There is nothing beyond that to inherit.
-    //
-    // It was briefly allowed past 1.0, where the blend extrapolates --
-    // vel = gNew + r*(v - gOld) -- so the particle's disagreement with the grid
-    // is multiplied by r every step rather than merely kept. That is a positive
-    // feedback loop and it does what feedback loops do: measured with no input
-    // at all, kinetic energy grew 10x in forty frames at r = 1.15, while every
-    // value at or below 1.0 decayed monotonically. What looked like liveliness
-    // was energy arriving from nowhere.
-    vel = mix(pic, flip, clamp(uFlipRatio, 0.0, 1.0));
-
-    // Cohesion. With no gravity there is nothing to gather the paint, so
-    // without this it simply disperses and never reads as liquid.
-    //
-    // It is a TARGET VELOCITY the particle relaxes toward, never a force. The
-    // first version accumulated uCohesion * dir * uDt every frame, and that is
-    // an energy source: a blob at rest always has a surface, a surface always
-    // has a density gradient, and dividing the gradient by the near-zero mass
-    // at the free edge saturated the clamp -- so every rim particle received
-    // the maximum acceleration forever, regardless of how weak the gradient
-    // was. Measured: a resting blob at the shipped Mercury preset held a
-    // permanent kinetic-energy plateau with particles pinned at the CFL cap,
-    // and could never dry, because settling needs them to slow down. Drag
-    // cannot fix it (the implied terminal speed is orders of magnitude past
-    // the cap) and pure PIC still pumps, so the bound has to be structural.
-    //
-    // Relaxing toward a bounded target is that bound: the sustainable speed
-    // along the gradient can never exceed uCohesionSpeed, whatever the drag or
-    // the blend, and overshoot is actively removed rather than kept.
+    // Cohesion: a TARGET VELOCITY the surface relaxes toward, never a force
+    // -- a force with a per-frame accumulation was an energy source (see git
+    // history). With no gravity this is what gathers paint into droplets.
     if (uCohesionSpeed > 0.0) {
         vec2 t = uTexel;
-        float mHere = texture(uVelNew, pos).z;
-        float mL = texture(uVelNew, pos - vec2(t.x, 0.0)).z;
-        float mR = texture(uVelNew, pos + vec2(t.x, 0.0)).z;
-        float mB = texture(uVelNew, pos - vec2(0.0, t.y)).z;
-        float mT = texture(uVelNew, pos + vec2(0.0, t.y)).z;
+        vec2 uv = pos;
+        float mHere = texture(uDensity, uv).x;
+        float mL = texture(uDensity, uv - vec2(t.x, 0.0)).x;
+        float mR = texture(uDensity, uv + vec2(t.x, 0.0)).x;
+        float mB = texture(uDensity, uv - vec2(0.0, t.y)).x;
+        float mT = texture(uDensity, uv + vec2(0.0, t.y)).x;
         vec2 grad = 0.5 * vec2(mR - mL, mT - mB);
         float gmag = length(grad);
 
-        // Surface tension belongs to the surface: fade to nothing inside the
-        // bulk, so a filled interior is left to the pressure solve. The fade
-        // runs from rest to 1.8x rest: a bead keeps its full pull until it
-        // reaches rest density and may pack somewhat past it before the gate
-        // closes -- measured against the old force, beads that stop exactly at
-        // rest leave a visibly looser film than Wet Paint had. The energy
-        // bound does not depend on where this gate sits; that is the target's
-        // job. The gate only picks the equilibrium density, and the
-        // preset drying checks hold whatever it is set to.
-        float surface = 1.0 - smoothstep(uRestMass, 1.8 * uRestMass, mHere);
-
-        // And it needs an actual body of paint to pull toward. The neighbour
-        // mass gate kills the self-force -- a lone particle's neighbours hold
-        // only its own spill-over, so it no longer chases its own field -- and
-        // with it the vacuum-fringe noise that used to saturate the old clamp.
+        // The gate closes AT rest density, because that is where the solve's
+        // drift compensation starts pushing back: a gate that let cohesion
+        // pull toward 1.8x rest (as the pre-rewrite one did) asks for exactly
+        // the density the solve forbids, and at high cohesion the two fight
+        // forever -- measured as a permanent 22-unit kinetic-energy plateau
+        // at slider max, where this gate settles to rest.
+        float surface = 1.0 - smoothstep(0.7 * uRestMass, uRestMass, mHere);
         float body = mL + mR + mB + mT;
 
         if (surface > 0.0 && body > uRestMass && gmag > 0.02 * uRestMass) {
             vec2 dirHat = grad / gmag;
-            // Saturating in the gradient: a real density edge earns the full
-            // target, the speckle of a sparse haze earns almost none -- so
-            // thin paint drifts toward genuine beads instead of jittering
-            // toward whichever neighbour cell is momentarily denser.
             float sat = clamp(gmag / (0.4 * uRestMass), 0.0, 1.0);
             float target = uCohesionSpeed * surface * sat;
             float along = dot(vel, dirHat);
-            // ~33 ms relaxation. The projection cancels convergent motion
-            // every frame -- correctly, that is its job -- so the creep only
-            // exists in the interval between this kick and the next solve, and
-            // a slow rate loses most of the target to that cancellation. The
-            // energy bound does not care about the rate: however fast the
-            // relaxation, the speed it can sustain along the gradient is
-            // capped by the target.
             float rate = min(1.0, 30.0 * uDt);
             vel += dirHat * (target - along) * rate;
         }
@@ -139,19 +145,10 @@ void main() {
 
     vel *= 1.0 / (1.0 + uDrag * uDt);
 
-    // particles get the same CFL guard as the grid; without it cohesion could
-    // accelerate one past anything the simulation can represent
     if (uMaxSpeed > 0.0) {
         float sp = length(vel);
         if (sp > uMaxSpeed) vel *= uMaxSpeed / sp;
     }
-
-    pos += vec2(vel.x / uAspect, vel.y) * uDt;
-
-    if (pos.x < 0.0) { pos.x = 0.0; vel.x = abs(vel.x) * 0.2; }
-    if (pos.x > 1.0) { pos.x = 1.0; vel.x = -abs(vel.x) * 0.2; }
-    if (pos.y < 0.0) { pos.y = 0.0; vel.y = abs(vel.y) * 0.2; }
-    if (pos.y > 1.0) { pos.y = 1.0; vel.y = -abs(vel.y) * 0.2; }
 
     float age = meta.y + uDt;
     if (length(vel) < uSettleSpeed && age > uSettleMinAge) state = 2.0;

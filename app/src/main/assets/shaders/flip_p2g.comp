@@ -2,21 +2,21 @@
 precision highp float;
 layout(local_size_x = 64) in;
 
-// Particle to grid, on a STAGGERED (MAC) layout.
+// Particle to grid, ported from transferVelocities(toGrid) and
+// updateParticleDensity() in Matthias Muller's Ten Minute Physics 2D FLIP
+// (tenMinutePhysics/18-flip.html, MIT).
 //
-// The x component of cell c lives on its LEFT face, the y component on its
-// BOTTOM face. That is what the forward-divergence / backward-gradient pair in
-// divergence_flip.comp and gradsub_flip.comp assumes. Scattering both
-// components to the cell centre instead leaves a half-cell mismatch, which
-// shows up as the whole field drifting steadily in -x and -y even with no
-// force applied at all.
+// The grid is staggered (MAC): the x component of cell (i,j) lives on its
+// LEFT face, the y component on its BOTTOM face, and density at the centre.
+// Each quantity scatters with bilinear hat weights at its own sample point.
+// ES 3.1 has no float atomics, so everything accumulates as fixed point.
 //
-// ES 3.1 has no float atomics, so momentum and weight accumulate as fixed-point
-// integers; each component keeps its own weight because their sample points
-// differ.
+// This pass also builds the cell-type field the solve and the gather need:
+// any cell containing a live particle is FLUID, the rest stay AIR.
 
 layout(std430, binding = 0) buffer Particles { vec4 data[]; };
-layout(std430, binding = 1) buffer GridAccum { int acc[]; };   // vx, wx, vy, wy
+// per cell: xMom, xW, yMom, yW, density, cellType
+layout(std430, binding = 1) buffer GridAccum { int acc[]; };
 
 uniform int   uCapacity;
 uniform ivec2 uGrid;
@@ -25,16 +25,21 @@ const float SCALE = 4096.0;
 
 void addX(ivec2 c, float v, float w) {
     if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return;
-    int i = (c.y * uGrid.x + c.x) * 4;
+    int i = (c.y * uGrid.x + c.x) * 6;
     atomicAdd(acc[i],     int(v * w * SCALE));
     atomicAdd(acc[i + 1], int(w * SCALE));
 }
 
 void addY(ivec2 c, float v, float w) {
     if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return;
-    int i = (c.y * uGrid.x + c.x) * 4;
+    int i = (c.y * uGrid.x + c.x) * 6;
     atomicAdd(acc[i + 2], int(v * w * SCALE));
     atomicAdd(acc[i + 3], int(w * SCALE));
+}
+
+void addD(ivec2 c, float w) {
+    if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return;
+    atomicAdd(acc[(c.y * uGrid.x + c.x) * 6 + 4], int(w * SCALE));
 }
 
 void main() {
@@ -47,23 +52,39 @@ void main() {
     vec4 pv = data[i * 2];
     vec2 pos = pv.xy;
     vec2 vel = pv.zw;
-    vec2 g = pos * vec2(uGrid);
+    vec2 g = pos * vec2(uGrid);   // texel space
 
-    // x lives on left faces: sample space is offset half a cell in y
+    // the cell holding the particle is fluid
+    ivec2 cell = clamp(ivec2(g), ivec2(0), uGrid - 1);
+    atomicMax(acc[(cell.y * uGrid.x + cell.x) * 6 + 5], 2);
+
+    // x on left faces: the sample space is offset half a cell in y
     vec2 qx = vec2(g.x, g.y - 0.5);
     ivec2 bx = ivec2(floor(qx));
     vec2 fx = qx - vec2(bx);
-    addX(bx,                 vel.x, (1.0 - fx.x) * (1.0 - fx.y));
-    addX(bx + ivec2(1, 0),   vel.x, fx.x * (1.0 - fx.y));
-    addX(bx + ivec2(0, 1),   vel.x, (1.0 - fx.x) * fx.y);
-    addX(bx + ivec2(1, 1),   vel.x, fx.x * fx.y);
+    addX(bx,               vel.x, (1.0 - fx.x) * (1.0 - fx.y));
+    addX(bx + ivec2(1, 0), vel.x, fx.x * (1.0 - fx.y));
+    addX(bx + ivec2(0, 1), vel.x, (1.0 - fx.x) * fx.y);
+    addX(bx + ivec2(1, 1), vel.x, fx.x * fx.y);
 
-    // y lives on bottom faces: offset half a cell in x
+    // y on bottom faces: offset half a cell in x
     vec2 qy = vec2(g.x - 0.5, g.y);
     ivec2 by = ivec2(floor(qy));
     vec2 fy = qy - vec2(by);
-    addY(by,                 vel.y, (1.0 - fy.x) * (1.0 - fy.y));
-    addY(by + ivec2(1, 0),   vel.y, fy.x * (1.0 - fy.y));
-    addY(by + ivec2(0, 1),   vel.y, (1.0 - fy.x) * fy.y);
-    addY(by + ivec2(1, 1),   vel.y, fy.x * fy.y);
+    addY(by,               vel.y, (1.0 - fy.x) * (1.0 - fy.y));
+    addY(by + ivec2(1, 0), vel.y, fy.x * (1.0 - fy.y));
+    addY(by + ivec2(0, 1), vel.y, (1.0 - fy.x) * fy.y);
+    addY(by + ivec2(1, 1), vel.y, fy.x * fy.y);
+
+    // density at cell centres: offset half a cell in both. Each particle
+    // deposits total weight one, so a cell's density is simply how many
+    // particles' worth of paint it holds -- the drift compensation in the
+    // solve compares it against the emission density.
+    vec2 qd = g - 0.5;
+    ivec2 bd = ivec2(floor(qd));
+    vec2 fd = qd - vec2(bd);
+    addD(bd,               (1.0 - fd.x) * (1.0 - fd.y));
+    addD(bd + ivec2(1, 0), fd.x * (1.0 - fd.y));
+    addD(bd + ivec2(0, 1), (1.0 - fd.x) * fd.y);
+    addD(bd + ivec2(1, 1), fd.x * fd.y);
 }

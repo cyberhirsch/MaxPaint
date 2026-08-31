@@ -1,0 +1,20 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Snapshots the velocity field before the solve. FLIP transfers the CHANGE
+// the solve made, so the pre-solve field must survive it.
+
+layout(r32f, binding = 0) readonly  uniform highp image2D uU;
+layout(r32f, binding = 1) writeonly uniform highp image2D uUOld;
+layout(r32f, binding = 2) readonly  uniform highp image2D uV;
+layout(r32f, binding = 3) writeonly uniform highp image2D uVOld;
+
+uniform ivec2 uGrid;
+
+void main() {
+    ivec2 c = ivec2(gl_GlobalInvocationID.xy);
+    if (c.x >= uGrid.x || c.y >= uGrid.y) return;
+    imageStore(uUOld, c, imageLoad(uU, c));
+    imageStore(uVOld, c, imageLoad(uV, c));
+}

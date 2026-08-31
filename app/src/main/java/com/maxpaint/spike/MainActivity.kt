@@ -632,10 +632,10 @@ class MainActivity : AppCompatActivity() {
                                       renderer.sim.canvasAspect) / 1000}k particles/s)"
                 })
                 panelBody.addView(slider("Volume",
-                                         (renderer.sim.flip.compression * 1000).toInt(), 100) { p, l ->
-                    renderer.sim.flip.compression = p / 1000f
+                                         (renderer.sim.flip.compression * 25).toInt(), 100) { p, l ->
+                    renderer.sim.flip.compression = p / 25f
                     l.text = if (p == 0) "Volume: 0  (paint stacks where it lands)"
-                             else String.format("Volume: %.3f  (a full cell pushes back)", p / 1000f)
+                             else String.format("Volume: %.2f  (over-full cells push back)", p / 25f)
                 })
                 panelBody.addView(slider("Travel",
                                          (renderer.sim.flip.particleDrag * 50).toInt(), 200) { p, l ->

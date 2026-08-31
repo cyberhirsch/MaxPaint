@@ -2,46 +2,43 @@
 precision highp float;
 layout(local_size_x = 8, local_size_y = 8) in;
 
-// Each component is divided by its own accumulated weight, because on a
-// staggered grid the two components are sampled at different points.
+// Resolves the fixed-point accumulator into the velocity field: each face is
+// its accumulated momentum over its accumulated weight. Wall faces -- the
+// left face of column zero, the bottom face of row zero -- are pinned to
+// zero, which is the reference's "restore solid cells" for static walls.
+//
+// u and v live in separate r32f images: the solve updates them in place, and
+// r32f is the only float format ES 3.1 guarantees read-write image access
+// for. Density gets an rgba16f texture of its own because cohesion needs a
+// smooth bilinear gradient and r32f is not filterable.
 
 layout(std430, binding = 1) buffer GridAccum { int acc[]; };
 
-layout(rgba16f, binding = 0) writeonly uniform highp image2D uVel;
-layout(r32f,    binding = 1) writeonly uniform highp image2D uMass;
+layout(r32f,    binding = 0) writeonly uniform highp image2D uU;
+layout(r32f,    binding = 2) writeonly uniform highp image2D uV;
+layout(rgba16f, binding = 3) writeonly uniform highp image2D uDensity;
 
 uniform ivec2 uGrid;
 
-int idx(ivec2 c) { return (clamp(c, ivec2(0), uGrid - 1).y * uGrid.x
-                         + clamp(c, ivec2(0), uGrid - 1).x) * 4; }
+const float SCALE = 4096.0;
 
 void main() {
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     if (c.x >= uGrid.x || c.y >= uGrid.y) return;
 
-    int i = (c.y * uGrid.x + c.x) * 4;
-    float vx = float(acc[i]);
+    int i = (c.y * uGrid.x + c.x) * 6;
     float wx = float(acc[i + 1]);
-    float vy = float(acc[i + 2]);
     float wy = float(acc[i + 3]);
 
-    vec2 v = vec2(wx > 0.5 ? vx / wx : 0.0,
-                  wy > 0.5 ? vy / wy : 0.0);
+    float u = wx > 0.5 ? float(acc[i]) / wx : 0.0;
+    float v = wy > 0.5 ? float(acc[i + 2]) / wy : 0.0;
 
-    // Cell-CENTRED mass, reconstructed by averaging each face pair.
-    //
-    // wx is sampled half a cell below the centre and wy half a cell to the
-    // left, so simply averaging them gives a field skewed along the diagonal.
-    // Its gradient then carries a constant diagonal bias, and anything that
-    // follows that gradient -- cohesion -- walks the whole liquid into a
-    // corner instead of gathering it.
-    float wxr = float(acc[idx(c + ivec2(1, 0)) + 1]);
-    float wyt = float(acc[idx(c + ivec2(0, 1)) + 3]);
-    float mass = 0.25 * (wx + wxr + wy + wyt) / 4096.0;
+    if (c.x == 0) u = 0.0;   // left wall face
+    if (c.y == 0) v = 0.0;   // bottom wall face
 
-    // Mass also goes in .z. R32F is not filterable on ES without
-    // OES_texture_float_linear, and the cohesion force needs a smooth gradient,
-    // so it rides in the rgba16f field where bilinear sampling is guaranteed.
-    imageStore(uVel, c, vec4(v, mass, 0.0));
-    imageStore(uMass, c, vec4(mass, 0.0, 0.0, 0.0));
+    float density = float(acc[i + 4]) / SCALE;
+
+    imageStore(uU, c, vec4(u, 0.0, 0.0, 0.0));
+    imageStore(uV, c, vec4(v, 0.0, 0.0, 0.0));
+    imageStore(uDensity, c, vec4(density, 0.0, 0.0, 0.0));
 }
