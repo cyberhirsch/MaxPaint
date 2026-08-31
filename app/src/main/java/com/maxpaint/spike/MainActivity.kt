@@ -663,6 +663,12 @@ class MainActivity : AppCompatActivity() {
                     renderer.sim.flipIterations = p.coerceAtLeast(4)
                     l.text = "Pressure: ${p.coerceAtLeast(4)} sweeps"
                 })
+                panelBody.addView(slider("Settle",
+                                         (renderer.sim.flip.settleSpeed * 500).toInt(), 100) { p, l ->
+                    renderer.sim.flip.settleSpeed = p / 500f
+                    l.text = if (p == 0) "Settle: 0  (paint never dries)"
+                             else String.format("Settle: %.3f  (dries below this speed →  faster)", p / 500f)
+                })
                 panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 200) { p, l ->
                     renderer.sim.flip.cohesion = p.toFloat()
                     l.text = "Cohesion: $p  (beads up →)"
