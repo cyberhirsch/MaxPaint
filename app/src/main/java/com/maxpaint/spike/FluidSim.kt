@@ -550,13 +550,10 @@ class FluidSim(private val ctx: Context) {
             Brush.NIB -> nib(u, v, prevU, prevV)
             Brush.SMEAR -> smear(u, v, prevU, prevV)
             Brush.FLIP -> {
-                // a little momentum into the grid too, so the pour interacts
-                // with fluid already on the canvas
-                val r = splatRadius * 0.5f
-                flip.emit(u, v, du, dv, r, inkPerStroke, aspect,
-                          perDab = flip.countFor(r, aspect),
-                          axisX = contactAxisX, axisY = contactAxisY,
-                          minor = contactMinorRatio)
+                // The stroke itself emits nothing: pouring is the particle
+                // medium's one emitter, and it runs on the clock in pour().
+                // What a stroke does contribute is momentum into the grid, so
+                // the gesture stirs paint already on the canvas.
                 force(u, v, du, dv, ForceMode.PUSH.code, 0.4f)
             }
             Brush.WATERCOLOR -> wet(u, v)
@@ -787,36 +784,46 @@ class FluidSim(private val ctx: Context) {
     }
 
     /**
-     * Paint that keeps coming while the finger is still.
+     * The particle medium's ONE emitter: paint pours from the finger the whole
+     * time it is down, moving or not. Without pouring there is no ink.
      *
-     * Emission otherwise happens per dab, and dabs only happen when the pointer
-     * moves, so holding still put down nothing at all. A pour is the opposite:
-     * hold and a volume builds up, then drag and its own momentum throws it --
-     * the splash comes from the gesture rather than from the emitter.
-     *
-     * Rate is per second, so it does not follow the frame rate.
+     * The rate is per second (the Flow slider), so it does not follow the
+     * frame rate; dabs owed this frame are laid along the finger's path since
+     * last frame rather than stamped on one point. Poured paint takes the
+     * finger's motion scaled by Motion inheritance: at 0% it falls as a
+     * puddle wherever the finger passes, at 100% it is thrown as a jet with
+     * the full velocity of the gesture.
      */
-    fun pour(u: Float, v: Float, dt: Float) {
-        // the pour belongs to the particle medium; every other brush is
-        // event-driven and a still finger should leave it alone
+    fun pour(u: Float, v: Float, du: Float, dv: Float, dt: Float) {
         if (!allocated || brush != Brush.FLIP || flip.flowRate <= 0f) return
+        if (pourLastU < 0f) { pourLastU = u; pourLastV = v }
         pourDebt += flip.flowRate * dt
         val dabs = pourDebt.toInt()
-        if (dabs <= 0) return
-        pourDebt -= dabs.toFloat()
-        val r = splatRadius * 0.5f
-        val perDab = flip.countFor(r, aspect)
-        repeat(dabs.coerceAtMost(8)) {
-            // no velocity of its own: it is a puddle, not a jet
-            flip.emit(u, v, 0f, 0f, r, inkPerStroke, aspect, perDab,
-                      contactAxisX, contactAxisY, contactMinorRatio)
+        if (dabs > 0) {
+            pourDebt -= dabs.toFloat()
+            val r = splatRadius * 0.5f
+            val perDab = flip.countFor(r, aspect)
+            val inherit = flip.flipRatio.coerceIn(0f, 1f)
+            val n = dabs.coerceAtMost(8)
+            for (i in 1..n) {
+                val t = i / n.toFloat()
+                flip.emit(pourLastU + (u - pourLastU) * t,
+                          pourLastV + (v - pourLastV) * t,
+                          du * inherit, dv * inherit,
+                          r, inkPerStroke, aspect, perDab,
+                          contactAxisX, contactAxisY, contactMinorRatio)
+            }
         }
+        pourLastU = u
+        pourLastV = v
     }
 
     /** Fractional dabs carried between frames, so a slow pour still pours. */
     private var pourDebt = 0f
+    private var pourLastU = -1f
+    private var pourLastV = -1f
 
-    fun endPour() { pourDebt = 0f }
+    fun endPour() { pourDebt = 0f; pourLastU = -1f; pourLastV = -1f }
 
     /** Inject momentum and colour. Coordinates and delta are in UV space. */
     fun splat(u: Float, v: Float, du: Float, dv: Float, r: Float, g: Float, b: Float) {

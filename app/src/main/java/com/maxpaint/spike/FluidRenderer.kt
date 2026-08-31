@@ -214,22 +214,28 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             }
         }
 
-        // A pour is for a STILL finger. The held point follows the finger, so
-        // without this gate the pour fired all through a stroke too -- one
-        // full-density, zero-velocity dab every flowRate-th of a second at
-        // wherever the finger happened to be, which printed a chain of evenly
-        // spaced beads along every stroke (spacing = stroke speed / flow).
-        // The stroke's own dabs already cover a moving finger; the pour only
-        // runs once the finger lingers.
+        // The pour runs the whole time the finger is down -- it is the
+        // particle medium's only emitter. It carries the finger's velocity,
+        // scaled inside pour() by Motion inheritance, so a still finger
+        // puddles and a fast gesture throws a jet. The velocity convention
+        // matches the stroke dabs' (delta x 12 per 60Hz event), independent
+        // of the frame rate.
         if (holding) {
-            val moved = kotlin.math.hypot(heldU - pourU, heldV - pourV)
+            val du: Float
+            val dv: Float
+            if (pourU >= 0f && dt > 0f) {
+                val scale = 12f / (60f * dt)
+                du = (heldU - pourU) * scale
+                dv = (heldV - pourV) * scale
+            } else {
+                du = 0f; dv = 0f
+            }
             pourU = heldU
             pourV = heldV
-            if (moved < sim.splatRadius * 0.1f) {
-                sim.pour(heldU, heldV, dt)
-            } else {
-                sim.endPour()   // moving: no debt piles up for the next pause
-            }
+            sim.pour(heldU, heldV, du, dv, dt)
+        } else {
+            pourU = -1f
+            pourV = -1f
         }
 
         if (undoRequested) { undoRequested = false; sim.undo() }

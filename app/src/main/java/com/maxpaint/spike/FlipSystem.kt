@@ -28,11 +28,10 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     var particleDrag = 0.25f
 
     /**
-     * Dabs per second poured while the finger is held still. Zero is the old
-     * behaviour, where a still finger put down nothing; Wet Paint keeps it that
-     * way, and Splatter is built on it.
+     * Dabs per second poured while the finger is down -- the particle
+     * medium's ONE emitter, moving or still. Zero means no ink at all.
      */
-    var flowRate = 0f
+    var flowRate = 40f
 
     /**
      * Drift compensation strength, the reference solver's k (default 1): a

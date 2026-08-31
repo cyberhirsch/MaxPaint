@@ -625,8 +625,8 @@ class MainActivity : AppCompatActivity() {
                 // coupling peaks near eight per occupied cell.
                 panelBody.addView(slider("Flow", renderer.sim.flip.flowRate.toInt(), 40) { p, l ->
                     renderer.sim.flip.flowRate = p.toFloat()
-                    l.text = if (p == 0) "Flow: 0  (a still finger paints nothing)"
-                             else "Flow: $p dabs/s held  " +
+                    l.text = if (p == 0) "Flow: 0  (no ink -- pouring is the emitter)"
+                             else "Flow: $p dabs/s poured  " +
                                   "(~${p * renderer.sim.flip.countFor(
                                       renderer.sim.splatRadius * 0.5f,
                                       renderer.sim.canvasAspect) / 1000}k particles/s)"
