@@ -575,10 +575,15 @@ def main():
               f"{frac * 100:.0f}% settled, residual KE {ke:.2f}")
 
     # and the top of the widened slider, which is where the old force was a
-    # permanent explosion held together by the CFL clamp
+    # permanent explosion held together by the CFL clamp. The KE bound is 10:
+    # the pathology this guards against measured in the thousands, with every
+    # particle pinned at the CFL cap, while the equilibrium surface creep that
+    # legitimately remains at slider max lands at 0.2-2.3 depending on the
+    # Mesa version (0.18 locally, 2.24 on the CI runner) -- a driver-marginal
+    # number the check must not flap on.
     ke, frac = rest_blob(200.0, 0.02, 0.99, 0.06, 51.0)
     check("cohesion at slider max stays bounded and still dries",
-          frac > 0.6 and ke < 2.0,
+          frac > 0.6 and ke < 10.0,
           f"{frac * 100:.0f}% settled, residual KE {ke:.2f}")
     print()
 
