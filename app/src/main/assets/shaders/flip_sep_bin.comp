@@ -1,0 +1,35 @@
+#version 310 es
+layout(local_size_x = 64) in;
+
+// Bins live particles into a spatial hash for the separation pass.
+//
+// The layout is a fixed-capacity table rather than the reference's prefix-sum
+// compaction: 13 ints per cell -- a count, then up to twelve particle ids.
+// A cell holding more than twelve simply stops recording; the overflow still
+// gets pushed BY the recorded twelve, so the relaxation degrades gracefully
+// instead of needing an exact structure.
+
+layout(std430, binding = 0) buffer Particles { vec4 data[]; };
+layout(std430, binding = 2) buffer SepGrid { int cells[]; };
+
+uniform int   uCapacity;
+uniform float uAspect;
+uniform float uSpacing;   // sep cell size, world units
+uniform ivec2 uSep;       // sep grid dimensions
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCapacity) return;
+
+    float state = data[i * 2 + 1].z;
+    if (state < 0.5 || state > 1.5) return;   // live paint only
+
+    vec2 pos = data[i * 2].xy;
+    // positions are UV; the hash lives in world units so cells are square
+    vec2 world = vec2(pos.x * uAspect, pos.y);
+    ivec2 c = clamp(ivec2(world / uSpacing), ivec2(0), uSep - 1);
+    int cell = c.y * uSep.x + c.x;
+
+    int slot = atomicAdd(cells[cell * 13], 1);
+    if (slot < 12) cells[cell * 13 + 1 + slot] = i;
+}

@@ -692,6 +692,10 @@ class FluidSim(private val ctx: Context) {
         // grid, that grid is made incompressible, and the CHANGE is gathered
         // back -- which is what makes the paint behave as one body of liquid
         // instead of a spray of independent points.
+        // even out sub-cell clumping first: the grid cannot see it, and left
+        // alone it is what makes the medium read as grains instead of liquid
+        flip.pushApart(aspect)
+
         flip.particlesToGrid(flipVel.read, flipMass, flipW, flipH)
 
         // FLIP transfers the delta, so the pre-projection field must be kept
@@ -742,6 +746,12 @@ class FluidSim(private val ctx: Context) {
 
         pPressureFlip.use()
         pPressureFlip.set("uMinMass", flipMinMass)
+        // Not the reference's 1.9: on this grid, with air cells pinned at
+        // zero, 1.9 overshoots and needs ~40 sweeps just to recover what it
+        // lost. Measured on colliding streams at 4/8/16/40 sweeps, 1.5 is at
+        // or near the best residual everywhere and an order of magnitude
+        // ahead of plain Gauss-Seidel by 16 sweeps.
+        pPressureFlip.set("uOmega", 1.5f)
         flipDivergence.bindImage(2, GLES31.GL_READ_ONLY)
         flipMass.bindImage(3, GLES31.GL_READ_ONLY)
         val half = (flipW + 1) / 2

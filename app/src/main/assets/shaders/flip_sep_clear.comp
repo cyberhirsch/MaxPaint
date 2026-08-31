@@ -1,0 +1,15 @@
+#version 310 es
+layout(local_size_x = 64) in;
+
+// Resets the separation hash before each binning pass. Only the counts need
+// clearing: the id slots are gated by the count and stale ids are never read.
+
+layout(std430, binding = 2) buffer SepGrid { int cells[]; };
+
+uniform int uCells;
+
+void main() {
+    int i = int(gl_GlobalInvocationID.x);
+    if (i >= uCells) return;
+    cells[i * 13] = 0;
+}
