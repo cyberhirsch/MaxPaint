@@ -83,6 +83,10 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var heldV = 0f
     @Volatile var holding = false
 
+    /** The held point last frame; a pour only runs when it stopped moving. */
+    private var pourU = -1f
+    private var pourV = -1f
+
     /** Stylus tilt widens the mark; 1.0 is an upright pen (PRD FR-6). */
     @Volatile var tiltSpread = 1f
 
@@ -210,7 +214,23 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
             }
         }
 
-        if (holding) sim.pour(heldU, heldV, dt)
+        // A pour is for a STILL finger. The held point follows the finger, so
+        // without this gate the pour fired all through a stroke too -- one
+        // full-density, zero-velocity dab every flowRate-th of a second at
+        // wherever the finger happened to be, which printed a chain of evenly
+        // spaced beads along every stroke (spacing = stroke speed / flow).
+        // The stroke's own dabs already cover a moving finger; the pour only
+        // runs once the finger lingers.
+        if (holding) {
+            val moved = kotlin.math.hypot(heldU - pourU, heldV - pourV)
+            pourU = heldU
+            pourV = heldV
+            if (moved < sim.splatRadius * 0.1f) {
+                sim.pour(heldU, heldV, dt)
+            } else {
+                sim.endPour()   // moving: no debt piles up for the next pause
+            }
+        }
 
         if (undoRequested) { undoRequested = false; sim.undo() }
         if (redoRequested) { redoRequested = false; sim.redo() }
