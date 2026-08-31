@@ -579,7 +579,12 @@ def main():
         ("Mercury", 38.0, 0.04, 0.97, 0.015, 61.0),
     ]
 
-    def rest_blob(coh, drag, ratio, settle, ppc, frames=120):
+    # 200 frames, not 120: Mercury's settle speed of 0.015 makes it the
+    # slowest-drying preset by design, and at 120 frames its settled fraction
+    # sat within driver variance of the bound (79% local Mesa, under 70% on
+    # the CI runner's). The invariant is that every preset DRIES, not that it
+    # dries in two seconds.
+    def rest_blob(coh, drag, ratio, settle, ppc, frames=200):
         q = Flip()
         q.make_grid(244, 104)
         q.emit(0.5, 0.5, 0.0, 0.0, n=1200, radius=0.03, aspect=2.34)
