@@ -66,6 +66,12 @@ class MainActivity : AppCompatActivity() {
             override fun onTouchEvent(event: MotionEvent): Boolean = handleTouch(event)
         }.apply {
             setEGLContextClientVersion(3)
+            // Backgrounding the app otherwise destroys the GL context, and the
+            // painting lives in GL textures: coming back would mean starting
+            // over even with a perfect recreation path. Preservation is
+            // best-effort per device, so the recreation path stays correct
+            // regardless -- see FlipSystem.init().
+            preserveEGLContextOnPause = true
             setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }

@@ -91,6 +91,22 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         if (emitted >= capacity) capacity else head.coerceAtLeast(1)
 
     fun init() {
+        // init() runs whenever a GL context is (re)created. Names from the old
+        // context are dead, but the guards below cannot tell a dead nonzero
+        // name from a live one: after the app was backgrounded and the context
+        // lost, resizeGrid() saw gridCells unchanged and a nonzero gridBuffer
+        // and skipped recreation, so every frame then dispatched against a
+        // deleted buffer -- which is what broke the solver on returning to the
+        // app. Forget the old names outright; deleting them would be a no-op
+        // in this context anyway. The counters reset too: the particles those
+        // names held are gone, and inUse must not claim otherwise.
+        buffer = 0
+        vao = 0
+        gridBuffer = 0
+        gridCells = 0
+        head = 0
+        emitted = 0L
+
         pEmit = ComputeProgram(ctx, "shaders/flip_emit.comp")
         pClearGrid = ComputeProgram(ctx, "shaders/flip_clear_grid.comp")
         pP2G = ComputeProgram(ctx, "shaders/flip_p2g.comp")

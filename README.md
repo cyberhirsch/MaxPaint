@@ -143,6 +143,26 @@ mark, stirred, gives up 20.9 of its 46.3 units of ink to the live field, which i
 then stirrable. Pickup at zero restores the old behaviour exactly (set paint
 46.3 → 46.3), and the *Smear Only* vortex preset ships that way.
 
+## Leaving the app no longer breaks the solver
+
+Backgrounding the app destroys the GL context, and coming back rebuilt almost
+everything — programs recreated, `appliedSimRes` forced to −1 so every texture
+reallocates — except one thing. `FlipSystem.resizeGrid` guards its recreation
+with `if (cells == gridCells && gridBuffer != 0) return`, and after a context
+loss `gridBuffer` is a *dead* nonzero name with `gridCells` unchanged, so the
+particle grid buffer was never rebuilt. The `emitted` counter also survived, so
+`inUse` stayed true and every frame dispatched compute against a deleted buffer
+— GL errors that, depending on the driver, wedge far more than the drip brush.
+A guard cannot tell a dead nonzero name from a live one, so `init()` (which
+runs exactly when a context is created) now forgets all the old names and
+counters outright and lets everything recreate lazily.
+
+The second half: `preserveEGLContextOnPause = true`. The painting lives in GL
+textures, so even a perfect recreation path means coming back to a blank
+canvas. With preservation, on virtually all modern devices the context — and
+the artwork — survives backgrounding; the hardened recreation path covers the
+devices and situations where it does not, at the cost of the canvas.
+
 ## A pour, and paint that takes up room
 
 Splatter could not splatter. Emission happens per dab and dabs only happen when
