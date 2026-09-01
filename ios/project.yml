@@ -1,0 +1,26 @@
+# XcodeGen spec: `xcodegen generate` in this directory produces
+# MaxPaint.xcodeproj. The project file is generated, never committed.
+name: MaxPaint
+options:
+  bundleIdPrefix: com.maxpaint
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  MaxPaint:
+    type: application
+    platform: iOS
+    sources: [MaxPaint]
+    info:
+      path: MaxPaint/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UIRequiresFullScreen: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.maxpaint.spike
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        CODE_SIGNING_ALLOWED: "NO"

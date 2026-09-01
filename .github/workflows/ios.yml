@@ -1,0 +1,47 @@
+name: Build iOS
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    # macOS minutes bill at 10x, so this job only runs when ios/ changes
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate the Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Build for the simulator (no signing)
+        working-directory: ios
+        run: |
+          set -o pipefail
+          xcodebuild -project MaxPaint.xcodeproj -scheme MaxPaint \
+            -destination 'generic/platform=iOS Simulator' \
+            -configuration Debug \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build | tail -60
+
+      - name: Collect the app
+        run: |
+          mkdir -p out
+          cp -R ios/build/Build/Products/Debug-iphonesimulator/MaxPaint.app out/
+
+      - name: Upload the simulator app
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxpaint-ios-sim-${{ github.sha }}
+          path: out/MaxPaint.app
+          if-no-files-found: error
