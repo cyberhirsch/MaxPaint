@@ -40,8 +40,7 @@ uniform int   uCapacity;
 uniform ivec2 uGrid;
 uniform float uFlipRatio;
 uniform float uDrag;
-uniform float uSettleSpeed;
-uniform float uSettleMinAge;
+uniform float uSettleTime;     // seconds of life before paint sets; <= 0 never
 uniform float uCohesionSpeed;  // world units/s the surface may creep
 uniform float uRestMass;       // emission density, particles per cell
 uniform float uMaxSpeed;       // CFL guard
@@ -100,15 +99,13 @@ void main() {
     vec2 g = pos * vec2(uGrid);
 
     float ratio = clamp(uFlipRatio, 0.0, 1.0);
-    vec2 gridVel = vec2(0.0);   // the local fluid's own motion (pure PIC)
     for (int comp = 0; comp < 2; comp++) {
         vec3 r = gather(g, comp);
         if (r.z > 0.0) {
             float pic = r.x / r.z;
             float flipV = (comp == 0 ? vel.x : vel.y) + r.y / r.z;
             float blended = mix(pic, flipV, ratio);
-            if (comp == 0) { vel.x = blended; gridVel.x = pic; }
-            else           { vel.y = blended; gridVel.y = pic; }
+            if (comp == 0) vel.x = blended; else vel.y = blended;
         }
     }
 
@@ -153,15 +150,14 @@ void main() {
     }
 
     float age = meta.y + uDt;
-    // A particle dries only when IT is slow AND the fluid around it is too.
-    // Emission gives each particle a random share (0.7-1.3x) of the stroke's
-    // velocity, so the settle threshold used to slice through a fresh pour's
-    // spread: the slow tail froze on the spot at min age while its siblings
-    // flew on -- paint sticking mid-stroke beside paint in flight. The local
-    // grid velocity is the pure PIC gather, already in hand; wet paint in a
-    // moving body now stays wet until the body itself comes to rest.
-    if (length(vel) < uSettleSpeed && length(gridVel) < uSettleSpeed &&
-        age > uSettleMinAge) state = 2.0;
+    // Settling is purely a clock on the particle's life: paint stays wet for
+    // uSettleTime seconds and then sets, however it is moving. Speed-based
+    // settling kept slicing through a fresh pour's velocity spread -- the
+    // slow tail stuck mid-stroke while its siblings flew -- and how long
+    // paint stays workable is a property the artist sets, not one the
+    // motion should decide. Drag is what slows the liquid; the timer is
+    // what dries it.
+    if (uSettleTime > 0.0 && age > uSettleTime) state = 2.0;
 
     data[i * 2]     = vec4(pos, vel);
     data[i * 2 + 1] = vec4(meta.x, age, state, meta.w);

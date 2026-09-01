@@ -637,10 +637,15 @@ class MainActivity : AppCompatActivity() {
                     l.text = if (p == 0) "Volume: 0  (paint stacks where it lands)"
                              else String.format("Volume: %.2f  (over-full cells push back)", p / 25f)
                 })
-                panelBody.addView(slider("Travel",
-                                         (renderer.sim.flip.particleDrag * 50).toInt(), 200) { p, l ->
-                    renderer.sim.flip.particleDrag = p / 50f
-                    l.text = String.format("Travel: %.2f drag  (← flies further)", p / 50f)
+                panelBody.addView(slider("Drag",
+                                         ((1.0 - Math.exp(-renderer.sim.flip.particleDrag.toDouble())) * 100).toInt(),
+                                         100) { p, l ->
+                    // p% of the liquid's speed is lost per second; the solver
+                    // wants a rate, so invert the exponential decay
+                    val f = p.coerceAtMost(99) / 100.0
+                    renderer.sim.flip.particleDrag = (-Math.log(1.0 - f)).toFloat()
+                    l.text = if (p == 0) "Drag: 0%  (nothing slows the liquid)"
+                             else "Drag: $p% speed lost per second"
                 })
                 panelBody.addView(slider("Coupling", (512 - renderer.sim.flipRes) / 8, 56) { p, l ->
                     val res = 512 - p * 8
@@ -664,10 +669,10 @@ class MainActivity : AppCompatActivity() {
                     l.text = "Pressure: ${p.coerceAtLeast(4)} sweeps"
                 })
                 panelBody.addView(slider("Settle",
-                                         (renderer.sim.flip.settleSpeed * 500).toInt(), 100) { p, l ->
-                    renderer.sim.flip.settleSpeed = p / 500f
-                    l.text = if (p == 0) "Settle: 0  (paint never dries)"
-                             else String.format("Settle: %.3f  (dries below this speed →  faster)", p / 500f)
+                                         (renderer.sim.flip.settleTime * 10).toInt(), 100) { p, l ->
+                    renderer.sim.flip.settleTime = p / 10f
+                    l.text = if (p == 0) "Settle: never  (paint stays wet)"
+                             else String.format("Settle: %.1f s wet, then sets", p / 10f)
                 })
                 panelBody.addView(slider("Cohesion", renderer.sim.flip.cohesion.toInt(), 200) { p, l ->
                     renderer.sim.flip.cohesion = p.toFloat()
