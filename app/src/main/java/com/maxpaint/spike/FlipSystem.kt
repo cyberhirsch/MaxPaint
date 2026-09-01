@@ -45,8 +45,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     /** Surface tension. With no gravity, this is what gathers paint into
      *  droplets rather than letting it disperse. */
     var cohesion = 1f
-    var settleSpeed = 0.06f
-    var settleMinAge = 0.25f
+    /** Seconds a particle stays wet before it sets; 0 or less never dries. */
+    var settleTime = 2f
     var pointSize = 3f
     var inkPerParticle = 0.14f
     /**
@@ -435,8 +435,7 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         )
         pG2P.set("uFlipRatio", flipRatio)
         pG2P.set("uDrag", particleDrag)
-        pG2P.set("uSettleSpeed", settleSpeed)
-        pG2P.set("uSettleMinAge", settleMinAge)
+        pG2P.set("uSettleTime", settleTime)
         // The slider keeps its 0..200 numbers; what they mean is the speed
         // the surface may creep, in world units/s -- 200 is 0.5, an eighth of
         // the CFL cap. Rest mass tracks the emission density -- each particle

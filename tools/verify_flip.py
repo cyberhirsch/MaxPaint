@@ -286,7 +286,7 @@ class Flip:
         self._bar()
 
     def g2p(self, dt, flip_ratio=0.95, drag=0.25,
-            settle_speed=0.06, min_age=0.25, cohesion=0.0, rest=50.0):
+            settle_time=1.0, cohesion=0.0, rest=50.0):
         glUseProgram(self.g2p_p)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, self.buf)
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, self.grid)
@@ -295,8 +295,8 @@ class Flip:
         glUniform2i(uni(self.g2p_p, "uGrid"), self.gw, self.gh)
         glUniform1f(uni(self.g2p_p, "uFlipRatio"), flip_ratio)
         glUniform1f(uni(self.g2p_p, "uDrag"), drag)
-        glUniform1f(uni(self.g2p_p, "uSettleSpeed"), settle_speed)
-        glUniform1f(uni(self.g2p_p, "uSettleMinAge"), min_age)
+        # settling is purely a clock on particle age; <= 0 never dries
+        glUniform1f(uni(self.g2p_p, "uSettleTime"), settle_time)
         glUniform2f(uni(self.g2p_p, "uTexel"), 1.0 / self.gw, 1.0 / self.gh)
         # same slider-to-speed mapping as FlipSystem.gridToParticles
         glUniform1f(uni(self.g2p_p, "uCohesionSpeed"), cohesion * 0.0025)
@@ -315,8 +315,8 @@ class Flip:
         glDispatchCompute((CAP + 63) // 64, 1, 1)
         self._bar()
 
-    def step(self, dt, vel_tex=None, flip_ratio=0.95, settle_speed=0.06,
-             min_age=0.25, drag=0.25, aspect=1.0, cohesion=0.0, rest=50.0,
+    def step(self, dt, vel_tex=None, flip_ratio=0.95, settle_time=1.0,
+             drag=0.25, aspect=1.0, cohesion=0.0, rest=50.0,
              separation=2, iters=40, compensate=1.0):
         # the reference's simulate(): integrate, separate, to grid, solve,
         # from grid. rest is the emission density, particles per cell.
@@ -327,7 +327,7 @@ class Flip:
         self.snapshot()
         if iters:
             self.solve(iters=iters, rest=rest, compensate=compensate)
-        self.g2p(dt, flip_ratio, drag, settle_speed, min_age, cohesion, rest)
+        self.g2p(dt, flip_ratio, drag, settle_time, cohesion, rest)
 
     def draw(self, state, target, point_size=5.0):
         fbo = glGenFramebuffers(1)
@@ -423,7 +423,7 @@ def main():
     live = p[:, 6] == 1.0
     s0 = p[live][:, :2].mean(axis=0)
     for _ in range(60):
-        still.step(dt, settle_speed=0.0)
+        still.step(dt, settle_time=0.0)
     p = still.read()
     live = p[:, 6] == 1.0
     s1 = p[live][:, :2].mean(axis=0)
@@ -542,7 +542,7 @@ def main():
         q.emit(0.5, 0.5, 0.3, 0.0, n=CAP // 3, radius=0.03, aspect=2.34)
         peak, first = 0.0, None
         for f in range(frames):
-            q.step(dt, drag=0.02, settle_speed=0.0, flip_ratio=ratio,
+            q.step(dt, drag=0.02, settle_time=0.0, flip_ratio=ratio,
                    cohesion=6.0, rest=50.0, iters=60, aspect=2.34)
             pp = q.read()
             live = pp[:, 6] == 1.0
@@ -571,12 +571,13 @@ def main():
     # checked at each preset's real numbers, cohesion included, not at one
     # flattering configuration. Mirrors Presets.kt; update together.
     print("Presets at rest:")
+    # (name, cohesion, drag, flip ratio, settle TIME in seconds, density)
     PRESETS = [
-        ("Wet Paint", 30.0, 0.25, 0.6, 0.06, 120.0),
-        ("Splatter", 6.0, 0.02, 0.99, 0.10, 51.0),
-        ("Fling", 8.0, 0.05, 0.97, 0.03, 29.0),
-        ("Honey", 26.0, 1.6, 0.45, 0.02, 51.0),
-        ("Mercury", 38.0, 0.04, 0.97, 0.015, 61.0),
+        ("Wet Paint", 30.0, 0.25, 0.6, 2.0, 120.0),
+        ("Splatter", 6.0, 0.02, 0.99, 1.5, 51.0),
+        ("Fling", 8.0, 0.05, 0.97, 1.5, 29.0),
+        ("Honey", 26.0, 1.6, 0.45, 2.5, 51.0),
+        ("Mercury", 38.0, 0.04, 0.97, 2.5, 61.0),
     ]
 
     # 200 frames, not 120: Mercury's settle speed of 0.015 makes it the
@@ -589,7 +590,7 @@ def main():
         q.make_grid(244, 104)
         q.emit(0.5, 0.5, 0.0, 0.0, n=1200, radius=0.03, aspect=2.34)
         for _ in range(frames):
-            q.step(dt, flip_ratio=ratio, drag=drag, settle_speed=settle,
+            q.step(dt, flip_ratio=ratio, drag=drag, settle_time=settle,
                    cohesion=coh, rest=ppc, aspect=2.34, iters=40)
         pp = q.read()
         live = pp[:, 6] == 1.0
@@ -631,7 +632,7 @@ def main():
         q.make_grid(244, 104)
         for _ in range(frames):
             q.emit(0.5, 0.5, 0.0, 0.0, n=PER, radius=0.02, aspect=2.34)
-            q.step(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.0,
+            q.step(dt, drag=0.02, settle_time=0.0, flip_ratio=1.0,
                    rest=DENSITY, aspect=2.34, iters=60, compensate=compensate)
         built = frames * PER            # the volume, before anything is thrown
         if throw:
@@ -639,12 +640,12 @@ def main():
             for k in range(8):
                 q.emit(0.5 + 0.01 * k, 0.5, 2.2, 0.0, n=PER // 2,
                        radius=0.02, aspect=2.34)
-                q.step(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.0,
+                q.step(dt, drag=0.02, settle_time=0.0, flip_ratio=1.0,
                        rest=DENSITY, aspect=2.34, iters=60,
                        compensate=compensate)
         else:
             for _ in range(8):
-                q.step(dt, drag=0.02, settle_speed=0.0, flip_ratio=1.0,
+                q.step(dt, drag=0.02, settle_time=0.0, flip_ratio=1.0,
                        rest=DENSITY, aspect=2.34, iters=60,
                        compensate=compensate)
         pp = q.read()
@@ -741,7 +742,7 @@ def main():
             q.emit(0.35, 0.5, 1.4, 0.0, n=CAP // 4, radius=0.03)
             q.emit(0.65, 0.5, -1.4, 0.0, n=CAP // 4, radius=0.03)
             for _ in range(45):
-                q.step(dt, drag=0.0, settle_speed=0.0, rest=50.0,
+                q.step(dt, drag=0.0, settle_time=0.0, rest=50.0,
                        iters=30 if project else 0, separation=0)
             pp = q.read()
             lv = pp[:, 6] == 1.0
@@ -822,7 +823,7 @@ def main():
         q.emit(0.35, 0.5, 1.4, 0.0, n=CAP // 4, radius=0.03)
         q.emit(0.65, 0.5, -1.4, 0.0, n=CAP // 4, radius=0.03)
         for _ in range(45):
-            q.step(dt, drag=0.0, settle_speed=0.0, rest=50.0,
+            q.step(dt, drag=0.0, settle_time=0.0, rest=50.0,
                    iters=30 if project else 0, separation=0)
         p = q.read()
         live = p[:, 6] == 1.0
@@ -873,7 +874,7 @@ def main():
         p0 = q.read()
         c0 = p0[p0[:, 6] == 1.0][:, :2].mean(axis=0)
         for _ in range(frames):
-            q.step(dt, drag=0.6, settle_speed=0.0, cohesion=coh, rest=24.0)
+            q.step(dt, drag=0.6, settle_time=0.0, cohesion=coh, rest=24.0)
         q.p2g()
         m = q.mass_field()
         p = q.read()
