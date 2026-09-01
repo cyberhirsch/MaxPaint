@@ -60,6 +60,12 @@ void main() {
     vec2 pos = centre + vec2(world.x / uAspect, world.y);
     vec2 vel = velAt * (0.7 + 0.6 * hash(s + 3.1));
 
+    // Birth age is jittered by up to ~1.5 frames. Emission is per frame, so
+    // without this every particle of a frame's cohort reaches the settle time
+    // in the SAME tick and freezes as one cluster -- a stroke dried as a
+    // chain of knots, one per frame. Spread the clocks and drying is
+    // continuous along the stroke.
+    float age0 = hash(s + 11.7) * 0.05;
     data[slot * 2]     = vec4(pos, vel);
-    data[slot * 2 + 1] = vec4(uInk, 0.0, 1.0, hash(s + 5.9));   // state 1 = live
+    data[slot * 2 + 1] = vec4(uInk, age0, 1.0, hash(s + 5.9));   // state 1 = live
 }
