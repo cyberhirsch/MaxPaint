@@ -992,6 +992,7 @@ editing the shaders:
 Requires the Android SDK (compileSdk 34) and JDK 17+.
 
 ```
+cd android
 echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 ./gradlew :app:assembleDebug
 ```

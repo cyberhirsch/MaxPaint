@@ -10,11 +10,11 @@ cd "$(dirname "$0")/.."
 
 echo "== GLSL =="
 fail=0
-for f in app/src/main/assets/shaders/*.comp; do
+for f in android/app/src/main/assets/shaders/*.comp; do
     glslangValidator -S comp "$f" > /dev/null || { echo "  FAIL $f"; fail=1; }
 done
-glslangValidator -S vert app/src/main/assets/shaders/display.vert > /dev/null || fail=1
-glslangValidator -S frag app/src/main/assets/shaders/display.frag > /dev/null || fail=1
+glslangValidator -S vert android/app/src/main/assets/shaders/display.vert > /dev/null || fail=1
+glslangValidator -S frag android/app/src/main/assets/shaders/display.frag > /dev/null || fail=1
 [ $fail -eq 0 ] && echo "  all shaders compile against the ES 3.1 spec"
 [ $fail -eq 0 ] || exit 1
 
