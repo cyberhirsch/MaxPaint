@@ -23,7 +23,7 @@ from verify_solver import (make_context, compile_compute, uni, Tex, Double,
                            gstr, check, FAILURES)
 
 SHADERS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                       "..", "app", "src", "main", "assets", "shaders")
+                       "..", "android", "app", "src", "main", "assets", "shaders")
 STRIDE = 32
 CAP = 4096
 
@@ -726,11 +726,11 @@ def main():
     # holding one particle couples that particle to nothing. This measures the
     # coupling directly: two streams fired head-on, with the solve and without.
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "..", "app", "src", "main", "java", "com",
+                            "..", "android", "app", "src", "main", "java", "com",
                             "maxpaint", "spike", "FluidSim.kt")).read()
     shipped_res = int(re.search(r"var flipRes = (\d+)", src).group(1))
     flip_src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "..", "app", "src", "main", "java", "com",
+                                 "..", "android", "app", "src", "main", "java", "com",
                                  "maxpaint", "spike", "FlipSystem.kt")).read()
     shipped_density = float(
         re.search(r"var particlesPerCell = ([\d.]+)f", flip_src).group(1))

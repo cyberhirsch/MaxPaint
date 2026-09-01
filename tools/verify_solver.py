@@ -22,7 +22,7 @@ from OpenGL import EGL
 from OpenGL.GLES3 import *
 
 SHADER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "..", "app", "src", "main", "assets", "shaders")
+                          "..", "android", "app", "src", "main", "assets", "shaders")
 
 FAILURES = []
 
@@ -1119,7 +1119,7 @@ def main():
     # the calibration comes from the shipped source, so the check cannot drift
     # away from what the app actually does
     _src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                             "..", "app", "src", "main", "java", "com",
+                             "..", "android", "app", "src", "main", "java", "com",
                              "maxpaint", "spike", "FluidSim.kt")).read()
     DAB_CALIBRATION = float(re.search(r"DAB_CALIBRATION = ([\d.]+)f", _src).group(1))
 
