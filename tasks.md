@@ -1,9 +1,10 @@
 # Tasks
 
-Improvements found in a full read of the repo on 2026-09-05, sorted by how hard
-each one is for a model to land unattended. "Difficulty" is about the work, not
-the value: how much of the codebase has to be understood, whether the result
-can be verified headlessly, and how much judgement the change needs.
+Improvements found in a full read of the repo on 2026-09-05, sorted by the
+weakest Claude model that could plausibly land each one unattended. The sort
+is about the work, not the value: how much of the codebase has to be held in
+mind at once, whether the result can be verified headlessly, and how much
+judgement (rather than mechanical change) it needs.
 
 Every task lists where it lives and what "done" looks like, so any one of them
 can be picked up on its own. Tasks inside a tier are ordered easiest first.
@@ -14,7 +15,9 @@ compiles in CI. Anything marked **device** can only be confirmed on a phone.
 
 ---
 
-## Tier 1 — trivial
+## Haiku
+
+One file, a few lines, mechanical, verifiable by reading.
 
 One file, a few lines, verifiable by reading.
 
@@ -71,9 +74,10 @@ One file, a few lines, verifiable by reading.
 
 ---
 
-## Tier 2 — easy
+## Sonnet (small)
 
-One or two files, contained logic, verifiable in the harness or by reading.
+One or two files, contained logic, verifiable in the harness or by reading —
+no cross-file design decision required.
 
 9. **Replace the sine hash in emission with an integer hash.**
    Where: `flip_emit.comp` `hash()` and `Shaders.metal` `hash1()`. Arguments
@@ -134,10 +138,10 @@ One or two files, contained logic, verifiable in the harness or by reading.
 
 ---
 
-## Tier 3 — moderate
+## Sonnet (large)
 
-Several files or a new mechanism, but the design is settled and the harness
-can check it.
+Several files or a new mechanism. The design in "done when" is settled enough
+to follow directly, and the harness (or a new one) can check the result.
 
 17. **Measure ink conservation in the sweep the way the harness does.**
     Where: `Benchmark.run` and `scriptedFrame` at `Benchmark.kt:91`. The
@@ -212,10 +216,11 @@ can check it.
 
 ---
 
-## Tier 4 — hard
+## Opus
 
 Cross-cutting refactors or new infrastructure. The harness catches
-regressions but the design needs judgement.
+regressions, but getting there needs a design call the task only sketches —
+an interface shape, a state machine, what stays behind a facade.
 
 27. **Move stroke stamping out of the activity.**
     Where: `MainActivity.strokeTo` holds dab spacing, carry, impulse share and
@@ -268,10 +273,10 @@ regressions but the design needs judgement.
 
 ---
 
-## Tier 5 — research
+## Opus (extended thinking / research)
 
-Correct answer unknown in advance; needs measurement on real GPUs and may
-not pay off.
+Correct answer unknown in advance; needs a real numerics or performance
+investigation with measurement on real GPUs, and may not pay off.
 
 33. **Cut the dispatch count of the particle solve.**
     Where: `FlipSystem.solve` issues 320 half-sweep dispatches with a barrier
