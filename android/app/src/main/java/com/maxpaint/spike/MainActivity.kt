@@ -284,7 +284,7 @@ class MainActivity : AppCompatActivity() {
         rail.addView(toolButton("set") {
             if (showingGlobal && panelOpen) togglePanel() else showGlobal()
         })
-        rail.addView(toolButton("clr") { renderer.clearRequested = true })
+        rail.addView(toolButton("clr") { confirmClear() })
         rail.addView(toolButton("frz") { renderer.freezeRequested = true; toast("Frozen") })
 
         val scroll = ScrollView(this).apply {
@@ -479,6 +479,16 @@ class MainActivity : AppCompatActivity() {
             .setMessage("The paint on it goes with it. This cannot be undone.")
             .setNegativeButton("Keep", null)
             .setPositiveButton("Delete") { _, _ -> onGl { renderer.sim.deleteActiveLayer() } }
+            .show()
+    }
+
+    /** Clearing the canvas cannot be undone, so it asks first. */
+    private fun confirmClear() {
+        AlertDialog.Builder(this)
+            .setTitle("Clear everything?")
+            .setMessage("All layers and the undo history will be lost. This cannot be undone.")
+            .setNegativeButton("Keep", null)
+            .setPositiveButton("Clear") { _, _ -> renderer.clearRequested = true }
             .show()
     }
 
@@ -857,6 +867,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun slider(name: String, initial: Int, max: Int,
                        enabled: Boolean = true,
+                       fireOnInit: Boolean = false,
                        onChange: (Int, TextView) -> Unit): View {
         val label = TextView(this).apply {
             setTextColor(Color.WHITE); setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
@@ -875,7 +886,7 @@ class MainActivity : AppCompatActivity() {
                 override fun onStopTrackingTouch(sb: SeekBar?) {}
             })
         }
-        onChange(initial, label)
+        if (fireOnInit) onChange(initial, label)
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(label)
@@ -988,7 +999,7 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("OK", null)
             .setNeutralButton("Log") { _, _ ->
                 android.util.Log.i("MaxPaintSweep", "\n$report")
-                toast("Written to ${file.absolutePath}")
+                toast("Logged to logcat")
             }
             .show()
     }

@@ -14,7 +14,7 @@ import android.opengl.GLES31
  *   pressure  R32F     at simRes, image load/store only (R32F is not filterable on ES)
  *   curl/div  R32F     at simRes
  *
- * Velocity is stored in normalised-UV units per second, which makes advection
+ * Velocity is stored in world units per second, which makes advection
  * independent of grid resolution and lets the dye grid be finer than the
  * velocity grid for free.
  */
@@ -89,10 +89,8 @@ class FluidSim(private val ctx: Context) {
     var velocityGain = 1.0f
     /** Sweeps for the particle grid's own projection. */
     /**
-     * 40 rather than 20. Sweeps needed scale with grid width, and on the old
-     * ink-sized grid 20 was drastically under-solved; on the coarse particle
-     * grid the same 20 removes 92.6% of interior divergence and 40 removes
-     * 99.1%, at half the cost the under-solved version used to pay.
+     * 160 red-black sweeps (80 iterations). Sweeps needed scale with grid width,
+     * and on the coarse particle grid this removes 99.1% of interior divergence.
      */
     var flipIterations = 160
     /**
