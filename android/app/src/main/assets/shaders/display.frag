@@ -21,6 +21,8 @@ uniform int   uHasUnder;     // 0 = nothing below, do not sample
 uniform int   uHasOver;      // 0 = nothing above
 uniform float uActiveAlpha;  // opacity of the layer being painted on, 0 when hidden
 uniform int   uShowWater;    // 1 = draw wet watercolor pigment and a damp sheen
+uniform int   uFlipActive;   // 1 = particles are in use, sample uFlip
+uniform int   uNibActive;    // 1 = nib is in use, sample uNib
 
 const vec3 PAPER = vec3(1.0);
 
@@ -65,12 +67,16 @@ void main() {
 
     col = col * (1.0 - clamp(live.a, 0.0, 1.0)) + liveRgb;
 
-    vec4 drops = texture(uFlip, vUv);
-    col = col * (1.0 - clamp(drops.a, 0.0, 1.0)) + drops.rgb;
+    if (uFlipActive == 1) {
+        vec4 drops = texture(uFlip, vUv);
+        col = col * (1.0 - clamp(drops.a, 0.0, 1.0)) + drops.rgb;
+    }
 
     // wet nib ink sits on top of everything, black and opaque at full strength
-    float nib = clamp(texture(uNib, vUv).x, 0.0, 1.0);
-    col *= (1.0 - nib);
+    if (uNibActive == 1) {
+        float nib = clamp(texture(uNib, vUv).x, 0.0, 1.0);
+        col *= (1.0 - nib);
+    }
 
     // layers stacked over the one being painted on cover the wet paint too
     if (uHasOver == 1) {

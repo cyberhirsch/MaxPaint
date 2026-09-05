@@ -153,10 +153,10 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         }
 
         val now = System.nanoTime()
-        var dt = (now - lastFrameNs) / 1_000_000_000f
+        val dtUnclamped = (now - lastFrameNs) / 1_000_000_000f
         lastFrameNs = now
         // never let a hitch blow up the simulation
-        dt = dt.coerceIn(1f / 240f, 1f / 30f)
+        val dt = dtUnclamped.coerceIn(1f / 240f, 1f / 30f)
 
         if (pendingSimRes != appliedSimRes || pendingDyeScale != appliedDyeScale) {
             sim.allocate(pendingSimRes, pendingDyeScale)
@@ -173,7 +173,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
 
         if (particleBenchmarkRequested) {
             particleBenchmarkRequested = false
-            val pb = ParticleBenchmark(sim)
+            val refreshRate = getDisplayRefreshRate()
+            val pb = ParticleBenchmark(sim, refreshRate = refreshRate)
             pb.run()
             benchmarkReport = pb.report(deviceInfo)
             lastFrameNs = System.nanoTime()
@@ -244,7 +245,7 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         if (!paused) sim.step(dt)
 
         render()
-        updateStats(dt)
+        updateStats(dtUnclamped)
     }
 
     private fun render() {
@@ -282,6 +283,14 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         GLES31.glUniform1i(
             GLES31.glGetUniformLocation(displayProgram, "uShowWater"),
             if (sim.waterActive) 1 else 0
+        )
+        GLES31.glUniform1i(
+            GLES31.glGetUniformLocation(displayProgram, "uFlipActive"),
+            if (sim.flip.inUse) 1 else 0
+        )
+        GLES31.glUniform1i(
+            GLES31.glGetUniformLocation(displayProgram, "uNibActive"),
+            if (sim.nibActive) 1 else 0
         )
 
         GLES31.glBindVertexArray(vao)
@@ -328,7 +337,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     private fun runBenchmark() {
         val saveRes = appliedSimRes
         val saveDye = appliedDyeScale
-        val bench = Benchmark(sim, dyeScale = pendingDyeScale)
+        val refreshRate = getDisplayRefreshRate()
+        val bench = Benchmark(sim, dyeScale = pendingDyeScale, refreshRate = refreshRate)
         bench.run()
         benchmarkReport = bench.report(deviceInfo)
 
@@ -337,6 +347,16 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.clear()
         frameTimes.clear()
         lastFrameNs = System.nanoTime()
+    }
+
+    private fun getDisplayRefreshRate(): Float = when {
+        android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R -> {
+            ctx.display?.refreshRate ?: 60f
+        }
+        ctx is android.app.Activity -> {
+            ctx.windowManager.defaultDisplay.refreshRate
+        }
+        else -> 60f
     }
 
     private fun updateStats(dt: Float) {

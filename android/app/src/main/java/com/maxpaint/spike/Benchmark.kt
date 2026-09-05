@@ -19,11 +19,14 @@ class Benchmark(
     private val resolutions: IntArray = FluidSim.RESOLUTIONS,
     private val dyeScale: Int = 1,
     private val warmupFrames: Int = 20,
-    private val measureFrames: Int = 90
+    private val measureFrames: Int = 90,
+    private val refreshRate: Float = 60f
 ) {
     data class Result(
         val simRes: Int,
         val dyeRes: Int,
+        val simW: Int,
+        val simH: Int,
         val medianMs: Double,
         val p95Ms: Double,
         val meanMs: Double,
@@ -31,10 +34,12 @@ class Benchmark(
         /** Fraction of divergence one cold solve removes, at this sweep count. */
         val convergence: Double,
         /** Fractional change in total ink across the measured run. */
-        val inkDrift: Double
+        val inkDrift: Double,
+        val refreshRate: Float
     ) {
         val estimatedFps get() = if (medianMs > 0) 1000.0 / medianMs else 0.0
-        val fastEnough get() = medianMs <= 16.6 && p95Ms <= 20.0
+        val frameTimeMs get() = 1000.0 / refreshRate
+        val fastEnough get() = medianMs <= frameTimeMs && p95Ms <= frameTimeMs * 1.2
         /** Converged enough that strokes neither smear nor visibly bloom. */
         val solvedEnough get() = convergence >= 0.5 && kotlin.math.abs(inkDrift) <= 0.15
         val usable get() = fastEnough && solvedEnough
@@ -74,12 +79,15 @@ class Benchmark(
                 Result(
                     simRes = res,
                     dyeRes = res * dyeScale,
+                    simW = sim.simW,
+                    simH = sim.simH,
                     medianMs = samples[samples.size / 2],
                     p95Ms = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)],
                     meanMs = samples.average(),
                     vramMb = sim.vramBytes() / (1024.0 * 1024.0),
                     convergence = convergence,
-                    inkDrift = if (inkBefore > 1e-6) (inkAfter - inkBefore) / inkBefore else 0.0
+                    inkDrift = if (inkBefore > 1e-6) (inkAfter - inkBefore) / inkBefore else 0.0,
+                    refreshRate = refreshRate
                 )
             )
         }
@@ -101,16 +109,22 @@ class Benchmark(
     fun report(deviceLine: String): String = buildString {
         appendLine("MaxPaint — resolution headroom sweep")
         appendLine(deviceLine)
+        val refreshRateStr = if (refreshRate == refreshRate.toInt().toFloat()) refreshRate.toInt() else refreshRate
         appendLine("solver=${if (sim.useRedBlack) "RB-GS" else "Jacobi"}  iters=${sim.pressureIterations}  " +
-                "dyeScale=${dyeScale}x  ${measureFrames} frames each")
+                "dyeScale=${dyeScale}x  ${measureFrames} frames each  @ ${refreshRateStr}Hz")
         appendLine()
-        appendLine("  cells   dye    median     p95   est.fps    vram   solved   ink    verdict")
+        appendLine("  grid       median     p95   est.fps    vram   solved   ink    verdict")
         appendLine("  ---------------------------------------------------------------------------")
+        var lastW = -1
+        var lastH = -1
         results.forEach { r ->
+            if (r.simW == lastW && r.simH == lastH) return@forEach
+            lastW = r.simW
+            lastH = r.simH
             appendLine(
                 String.format(
-                    "  %-6s %-6s %6.2fms %6.2fms %6.1f %6.1fMB %6.0f%% %+5.0f%%   %s",
-                    "${r.simRes}", "${r.dyeRes}",
+                    "  %-4d×%-4d %6.2fms %6.2fms %6.1f %6.1fMB %6.0f%% %+5.0f%%   %s",
+                    r.simW, r.simH,
                     r.medianMs, r.p95Ms, r.estimatedFps, r.vramMb,
                     r.convergence * 100, r.inkDrift * 100,
                     when {
@@ -160,11 +174,13 @@ class ParticleBenchmark(
     private val sim: FluidSim,
     private val counts: IntArray = intArrayOf(25_000, 50_000, 100_000, 200_000, 400_000),
     private val warmupFrames: Int = 15,
-    private val measureFrames: Int = 45
+    private val measureFrames: Int = 45,
+    private val refreshRate: Float = 60f
 ) {
-    data class Row(val count: Int, val medianMs: Double, val p95Ms: Double) {
+    data class Row(val count: Int, val medianMs: Double, val p95Ms: Double, val refreshRate: Float) {
         val fps get() = if (medianMs > 0) 1000.0 / medianMs else 0.0
-        val holds60 get() = medianMs <= 16.6 && p95Ms <= 20.0
+        val frameTimeMs get() = 1000.0 / refreshRate
+        val holds60 get() = medianMs <= frameTimeMs && p95Ms <= frameTimeMs * 1.2
     }
 
     var rows: List<Row> = emptyList(); private set
@@ -209,7 +225,8 @@ class ParticleBenchmark(
                 Row(
                     count = placed,
                     medianMs = samples[samples.size / 2],
-                    p95Ms = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)]
+                    p95Ms = samples[(samples.size * 95 / 100).coerceAtMost(samples.size - 1)],
+                    refreshRate = refreshRate
                 )
             )
         }

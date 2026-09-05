@@ -1,6 +1,6 @@
 # MaxPaint
 
-Fluid-simulation painting for Android. See [docs/PRD.md](docs/PRD.md) for the product spec.
+Fluid-simulation painting for Android and iOS. See [docs/PRD.md](docs/PRD.md) for the product spec.
 
 ## Where it is
 
@@ -53,15 +53,14 @@ every build would claim `versionCode` 1.
 
 Built: the gas/FLIP/watercolor/vortex/solvent/freeze/thaw media, presets over
 each, the bake and its four dials, the resolution sweep with quality columns,
-stylus pressure and tilt, and tilt-driven gravity.
+stylus pressure and tilt.
 
 Layers are deliberately out — one canvas, one background layer. The rest of
 milestone M3, the app around the paint, is not built:
 
 | Missing | PRD |
 |---|---|
-| Undo / redo | FR-17, FR-18 |
-| Export (PNG, JPEG, `.maxpaint`) | FR-4 |
+| Export (JPEG, `.maxpaint`) | FR-4 |
 | Time-lapse export | FR-5 |
 | Replay log, and the hi-res re-render it enables | FR-19 – FR-21 |
 | Canvas pan / zoom / rotate, 3-finger undo | FR-7 |
@@ -972,7 +971,7 @@ and does not accumulate over a run — which the verification asserts.
 | `FluidRenderer.kt` | GL thread, input queue, display pass, live stats |
 | `MainActivity.kt` | Touch handling and the control panel |
 
-Velocity is stored in **normalised-UV units per second**, which makes advection
+Velocity is stored in **world units per second**, which makes advection
 resolution-independent and lets the dye grid differ from the velocity grid for
 free.
 
