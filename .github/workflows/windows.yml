@@ -1,0 +1,41 @@
+name: Build Windows
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "windows/**"
+      # the Windows app ships the Android shaders verbatim
+      - "android/app/src/main/assets/shaders/**"
+      - ".github/workflows/windows.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        working-directory: windows
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        working-directory: windows
+        run: cmake --build build --config Release
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out/maxpaint
+          cp windows/build/Release/maxpaint.exe out/maxpaint/
+          cp -R windows/build/Release/shaders out/maxpaint/
+          ls -R out
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: maxpaint-windows-${{ github.sha }}
+          path: out/maxpaint
+          if-no-files-found: error
