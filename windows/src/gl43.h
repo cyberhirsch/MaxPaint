@@ -46,6 +46,7 @@ typedef void GLvoid;
 #define GL_CLAMP_TO_EDGE 0x812F
 #define GL_TEXTURE0 0x84C0
 #define GL_RGBA16F 0x881A
+#define GL_RGBA 0x1908
 #define GL_R32F 0x822E
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
@@ -97,6 +98,7 @@ typedef void GLvoid;
     X(void, glBindTexture, (GLenum, GLuint)) \
     X(void, glTexStorage2D, (GLenum, GLsizei, GLenum, GLsizei, GLsizei)) \
     X(void, glTexParameteri, (GLenum, GLenum, GLint)) \
+    X(void, glTexSubImage2D, (GLenum, GLint, GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, const void *)) \
     X(void, glBindImageTexture, (GLuint, GLuint, GLint, GLboolean, GLint, GLenum, GLenum)) \
     X(void, glActiveTexture, (GLenum)) \
     X(void, glGenFramebuffers, (GLsizei, GLuint *)) \

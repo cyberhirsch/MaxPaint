@@ -7,11 +7,16 @@ loader only rewrites the `#version` line and drops standalone precision
 statements. The Python harness in `../tools/` is the behavioural
 reference.
 
-Mouse paints (the streamed pour with motion inheritance). Keys tune the
-medium and the window title shows the current values:
+Two tools: **1** paints (the streamed pour with motion inheritance), **2**
+is the glitch brush (pixel sorting under the cursor -- runs of pixels in
+a brightness band get sorted along each row or column). Drop an image
+file onto the window, or pass its path on the command line, to load it
+as set paint and take it apart. Keys tune the medium and the window
+title shows the current values:
 
-    W/S flow    E/D settle    R/F motion inheritance
-    T/G drag    Q/A cohesion  C clears the canvas
+    W/S flow    E/D settle    R/F motion inheritance   T/G drag
+    Q/A cohesion   [ ] brush size   C clears the canvas
+    glitch: H/J band low   K/L band high   V direction   B order
 
 ## Building
 

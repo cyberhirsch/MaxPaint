@@ -4,14 +4,22 @@
 // rewrites the version header and drops standalone precision statements.
 // The Python harness in ../tools/ remains the behavioural reference.
 //
-// Mouse paints (the streamed pour with motion inheritance); keys tune:
-//   W/S flow    E/D settle    R/F motion inheritance
-//   T/G drag    Q/A cohesion  C clears the canvas
+// Tools: 1 paint (the streamed pour with motion inheritance), 2 glitch
+// (pixel sorting under the brush). Drop an image file onto the window, or
+// pass its path on the command line, to load it as set paint.
+//   W/S flow    E/D settle    R/F motion inheritance   T/G drag
+//   Q/A cohesion   [ ] brush size   C clears the canvas
+//   glitch: H/J band low   K/L band high   V direction   B order
 // Current values live in the window title.
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include "gl43.h"
+
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_HDR
+#define STBI_NO_LINEAR
+#include "stb_image.h"
 
 #include <algorithm>
 #include <cmath>
@@ -439,18 +447,31 @@ out vec4 fragColor;
 layout(binding = 0) uniform sampler2D uBackground;
 layout(binding = 1) uniform sampler2D uLive;
 void main() {
-    float ink = texture(uBackground, vUv).a + texture(uLive, vUv).a;
-    float paper = 1.0 - clamp(ink, 0.0, 1.0);
-    fragColor = vec4(paper, paper, paper, 1.0);
+    // everything is premultiplied: the set layer over white paper, then the
+    // live particles (black ink, alpha only) over that
+    vec4 bg = texture(uBackground, vUv);
+    vec3 paper = bg.rgb + vec3(1.0 - clamp(bg.a, 0.0, 1.0));
+    vec4 live = texture(uLive, vUv);
+    vec3 col = live.rgb + paper * (1.0 - clamp(live.a, 0.0, 1.0));
+    fragColor = vec4(col, 1.0);
 })";
 
 // ------------------------------------------------------------ app
 
 struct App {
     Flip flip;
-    GLuint background = 0, live = 0, fboBackground = 0, fboLive = 0;
+    GLuint background = 0, backgroundB = 0, live = 0;
+    GLuint fboBackground = 0, fboLive = 0;
     GLuint compositeProgram = 0, emptyVao = 0;
     int fbW = 0, fbH = 0;
+
+    // tools: 0 paint, 1 glitch (pixel sort)
+    int tool = 0;
+    float glitchLo = 0.25f, glitchHi = 0.85f;
+    bool glitchVertical = false, glitchDescending = false;
+    Prog pPixelSort, pCopyRect;
+    bool haveGlitchLast = false;
+    float glitchLastX = 0, glitchLastY = 0, glitchCarry = 0;
 
     bool mouseDown = false;
     double mouseX = 0, mouseY = 0;
@@ -461,7 +482,10 @@ struct App {
     void allocate(int w, int h) {
         fbW = w; fbH = h;
         background = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        backgroundB = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         live = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        pPixelSort.id = computeProgram("pixelsort.comp");
+        pCopyRect.id = computeProgram("copy_rect.comp");
         glGenFramebuffers(1, &fboBackground);
         glBindFramebuffer(GL_FRAMEBUFFER, fboBackground);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, background, 0);
@@ -509,8 +533,101 @@ struct App {
                   std::min(n, 8192));
     }
 
+    // One glitch dab: sort every line crossing the disc into the back
+    // buffer, then copy just the bounding box forward -- same two passes as
+    // the Android host, same shaders.
+    void glitchDab(float u, float v) {
+        int cx = (int)(u * fbW), cy = (int)(v * fbH);
+        int r = std::min(127, std::max(2, (int)(flip.brushRadius * fbH)));
+
+        pPixelSort.use();
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, background);
+        pPixelSort.set("uSrc", 0);
+        glBindImageTexture(0, backgroundB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pPixelSort.set2i("uCentre", cx, cy);
+        pPixelSort.set("uRadius", r);
+        pPixelSort.set("uVertical", glitchVertical ? 1 : 0);
+        pPixelSort.set("uLo", glitchLo);
+        pPixelSort.set("uHi", glitchHi);
+        pPixelSort.set("uDescending", glitchDescending ? 1 : 0);
+        glDispatchCompute(2 * r + 1, 1, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+        pCopyRect.use();
+        glBindTexture(GL_TEXTURE_2D, backgroundB);
+        pCopyRect.set("uSrc", 0);
+        glBindImageTexture(0, background, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pCopyRect.set2i("uOrigin", cx - r, cy - r);
+        pCopyRect.set2i("uSize", 2 * r + 1, 2 * r + 1);
+        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    }
+
+    // dabs strung along the mouse path half a radius apart, as on Android
+    void glitchStroke() {
+        if (!mouseDown || fbW == 0) { haveGlitchLast = false; return; }
+        float cx = (float)(mouseX / fbW);
+        float cy = 1.0f - (float)(mouseY / fbH);
+        if (!haveGlitchLast) {
+            glitchDab(cx, cy);
+            haveGlitchLast = true;
+            glitchLastX = cx; glitchLastY = cy; glitchCarry = 0;
+            return;
+        }
+        float dx = (cx - glitchLastX) * flip.aspect, dy = cy - glitchLastY;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        float spacing = std::max(flip.brushRadius * 0.5f, 0.002f);
+        float next = spacing - glitchCarry;
+        int stamps = 0;
+        while (next <= dist && stamps < 64) {
+            float t = next / dist;
+            glitchDab(glitchLastX + (cx - glitchLastX) * t, glitchLastY + (cy - glitchLastY) * t);
+            next += spacing;
+            stamps++;
+        }
+        glitchCarry = stamps < 64 ? dist - (next - spacing) : 0;
+        glitchLastX = cx; glitchLastY = cy;
+    }
+
+    // Loads a picture as set paint: centre-cropped to the canvas, resampled
+    // to its resolution, premultiplied, rows flipped for GL.
+    bool importImage(const char *path) {
+        int w = 0, h = 0, n = 0;
+        unsigned char *px = stbi_load(path, &w, &h, &n, 4);
+        if (!px) { std::fprintf(stderr, "could not read %s\n", path); return false; }
+        float canvasAspect = (float)fbW / (float)fbH;
+        float srcAspect = (float)w / (float)h;
+        int cropW = w, cropH = h;
+        if (srcAspect > canvasAspect) cropW = std::max(1, (int)(h * canvasAspect));
+        else cropH = std::max(1, (int)(w / canvasAspect));
+        int ox = (w - cropW) / 2, oy = (h - cropH) / 2;
+
+        std::vector<float> buf((size_t)fbW * fbH * 4);
+        for (int y = 0; y < fbH; y++) {
+            // GL row 0 is the bottom; image row 0 is the top
+            int sy = oy + (int)((float)(fbH - 1 - y) * cropH / fbH);
+            for (int x = 0; x < fbW; x++) {
+                int sx = ox + (int)((float)x * cropW / fbW);
+                const unsigned char *c = px + ((size_t)sy * w + sx) * 4;
+                float a = c[3] / 255.0f;
+                float *o = &buf[((size_t)y * fbW + x) * 4];
+                o[0] = c[0] / 255.0f * a;
+                o[1] = c[1] / 255.0f * a;
+                o[2] = c[2] / 255.0f * a;
+                o[3] = a;
+            }
+        }
+        stbi_image_free(px);
+        glBindTexture(GL_TEXTURE_2D, background);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbW, fbH, GL_RGBA, GL_FLOAT, buf.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        std::printf("loaded %s (%dx%d)\n", path, w, h);
+        return true;
+    }
+
     void frame(float dt) {
-        pour(dt);
+        if (tool == 1) glitchStroke();
+        else pour(dt);
         if (flip.emitted > 0) flip.step(dt);
 
         // freshly dried particles land in the background, permanently
@@ -539,6 +656,9 @@ static void onCursor(GLFWwindow *, double x, double y) {
     app.mouseX = x;
     app.mouseY = y;
 }
+static void onDrop(GLFWwindow *, int count, const char **paths) {
+    if (count > 0) app.importImage(paths[0]);
+}
 static void onKey(GLFWwindow *, int key, int, int action, int) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
     Flip &f = app.flip;
@@ -553,6 +673,16 @@ static void onKey(GLFWwindow *, int key, int, int action, int) {
         case GLFW_KEY_G: f.particleDrag = std::max(0.0f, f.particleDrag - 0.1f); break;
         case GLFW_KEY_Q: f.cohesion = std::min(200.0f, f.cohesion + 10); break;
         case GLFW_KEY_A: f.cohesion = std::max(0.0f, f.cohesion - 10); break;
+        case GLFW_KEY_1: app.tool = 0; break;
+        case GLFW_KEY_2: app.tool = 1; break;
+        case GLFW_KEY_LEFT_BRACKET: f.brushRadius = std::max(0.004f, f.brushRadius - 0.004f); break;
+        case GLFW_KEY_RIGHT_BRACKET: f.brushRadius = std::min(0.17f, f.brushRadius + 0.004f); break;
+        case GLFW_KEY_H: app.glitchLo = std::max(0.0f, app.glitchLo - 0.05f); break;
+        case GLFW_KEY_J: app.glitchLo = std::min(app.glitchHi, app.glitchLo + 0.05f); break;
+        case GLFW_KEY_K: app.glitchHi = std::max(app.glitchLo, app.glitchHi - 0.05f); break;
+        case GLFW_KEY_L: app.glitchHi = std::min(1.0f, app.glitchHi + 0.05f); break;
+        case GLFW_KEY_V: app.glitchVertical = !app.glitchVertical; break;
+        case GLFW_KEY_B: app.glitchDescending = !app.glitchDescending; break;
         case GLFW_KEY_C:
             f.clearPool();
             glBindFramebuffer(GL_FRAMEBUFFER, app.fboBackground);
@@ -563,7 +693,7 @@ static void onKey(GLFWwindow *, int key, int, int action, int) {
     }
 }
 
-int main() {
+int main(int argc, char **argv) {
     if (!glfwInit()) { std::fprintf(stderr, "glfwInit failed\n"); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
@@ -595,6 +725,8 @@ int main() {
     glfwSetMouseButtonCallback(win, onMouseButton);
     glfwSetCursorPosCallback(win, onCursor);
     glfwSetKeyCallback(win, onKey);
+    glfwSetDropCallback(win, onDrop);
+    if (argc > 1) app.importImage(argv[1]);
 
     double last = glfwGetTime();
     double titleAt = 0;
@@ -610,11 +742,22 @@ int main() {
         if (now - titleAt > 0.25) {
             titleAt = now;
             char title[256];
-            std::snprintf(title, sizeof title,
-                "MaxPaint  |  flow %.0f/s [W/S]  settle %.1fs [E/D]  "
-                "inherit %.0f%% [R/F]  drag %.0f%%/s [T/G]  cohesion %.0f [Q/A]  clear [C]",
-                app.flip.flowRate, app.flip.settleTime, app.flip.flipRatio * 100,
-                (1.0 - std::exp(-app.flip.particleDrag)) * 100, app.flip.cohesion);
+            if (app.tool == 0)
+                std::snprintf(title, sizeof title,
+                    "MaxPaint  paint [1]  |  flow %.0f/s [W/S]  settle %.1fs [E/D]  "
+                    "inherit %.0f%% [R/F]  drag %.0f%%/s [T/G]  cohesion %.0f [Q/A]  "
+                    "size %.3f [ ]  clear [C]  |  drop an image to load it",
+                    app.flip.flowRate, app.flip.settleTime, app.flip.flipRatio * 100,
+                    (1.0 - std::exp(-app.flip.particleDrag)) * 100, app.flip.cohesion,
+                    app.flip.brushRadius);
+            else
+                std::snprintf(title, sizeof title,
+                    "MaxPaint  glitch: pixel sort [2]  |  band %.2f-%.2f [H/J K/L]  %s [V]  %s [B]  "
+                    "size %.3f [ ]  clear [C]  |  drop an image to load it",
+                    app.glitchLo, app.glitchHi,
+                    app.glitchVertical ? "vertical" : "horizontal",
+                    app.glitchDescending ? "light to dark" : "dark to light",
+                    app.flip.brushRadius);
             glfwSetWindowTitle(win, title);
         }
     }
