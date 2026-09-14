@@ -180,6 +180,8 @@ struct Flip {
     int separationIters = 2;
     int solveIters = 30;
     float omega = 1.5f;
+    float relief = 0.0f;          // downhill pull from the image, 0 off
+    GLuint propsTex = 0;          // owned by the app; sampled in G2P
 
     static const int capacity = 400000;
     int gridRes = 160, gridW = 1, gridH = 1;
@@ -406,11 +408,14 @@ struct Flip {
         pG2P.set("uUOld", 2);
         pG2P.set("uVOld", 3);
         pG2P.set("uDensity", 4);
+        pG2P.set("uProps", 5);
+        pG2P.set("uRelief", propsTex ? relief : 0.0f);
         glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, texU);
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, texV);
         glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, texUOld);
         glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, texVOld);
         glActiveTexture(GL_TEXTURE0 + 4); glBindTexture(GL_TEXTURE_2D, texDensity);
+        glActiveTexture(GL_TEXTURE0 + 5); glBindTexture(GL_TEXTURE_2D, propsTex);
         glActiveTexture(GL_TEXTURE0);
         dispatch1D(span);
         barrier();
@@ -482,7 +487,17 @@ in vec2 vUv;
 out vec4 fragColor;
 layout(binding = 0) uniform sampler2D uBackground;
 layout(binding = 1) uniform sampler2D uLive;
+layout(binding = 2) uniform sampler2D uProps;
+uniform int uView;   // 0 paint, 1 height, 2 normals, 3 occlusion
 void main() {
+    if (uView != 0) {
+        vec4 pr = texture(uProps, vUv);
+        vec3 c = uView == 1 ? vec3(pr.r)
+               : uView == 2 ? vec3(pr.g * 0.5 + 0.5, pr.b * 0.5 + 0.5, 1.0)
+               : vec3(pr.a);
+        fragColor = vec4(c, 1.0);
+        return;
+    }
     // everything is premultiplied: the set layer over white paper, then the
     // live particles (black ink, alpha only) over that
     vec4 bg = texture(uBackground, vUv);
@@ -505,7 +520,12 @@ struct App {
     int tool = 0;
     float glitchLo = 0.25f, glitchHi = 0.85f;
     bool glitchVertical = false, glitchDescending = false;
-    Prog pPixelSort, pCopyRect;
+    Prog pPixelSort, pCopyRect, pProps;
+    GLuint props = 0;
+    int view = 0;                 // 0 paint, 1 height, 2 normals, 3 occlusion
+    bool reliefInvert = false;    // dark is high
+    float aoRadius = 24.0f, slope = 40.0f;
+    int propsFrame = 0;
     bool haveGlitchLast = false;
     float glitchLastX = 0, glitchLastY = 0, glitchCarry = 0;
 
@@ -526,6 +546,9 @@ struct App {
         live = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         pPixelSort.id = computeProgram("pixelsort.comp");
         pCopyRect.id = computeProgram("copy_rect.comp");
+        pProps.id = computeProgram("props.comp");
+        props = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        flip.propsTex = props;
         glGenFramebuffers(1, &fboBackground);
         glBindFramebuffer(GL_FRAMEBUFFER, fboBackground);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, background, 0);
@@ -739,6 +762,8 @@ struct App {
 
         ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
         ImGui::RadioButton("Glitch", &tool, 1);
+        const char *views[] = {"Paint", "Height", "Normals", "Occlusion"};
+        ImGui::Combo("View", &view, views, 4);
         ImGui::Separator();
 
         ImGui::SliderFloat("Brush size", &flip.brushRadius, 0.004f, 0.17f, "%.3f");
@@ -767,8 +792,16 @@ struct App {
             if (ImGui::SliderFloat("Motion inheritance", &inh, 0, 100, "%.0f%%"))
                 flip.flipRatio = inh / 100;
             ImGui::SliderFloat("Drop size", &flip.pointSize, 0.5f, 48, "%.1f px");
-            ImGui::TextWrapped("Paint travels on the momentum of the stroke. "
-                               "There is no gravity - a canvas has no up.");
+            ImGui::Separator();
+            ImGui::Text("Image relief");
+            ImGui::SliderFloat("Relief", &flip.relief, 0, 20, "%.1f");
+            ImGui::Checkbox("Dark is high", &reliefInvert);
+            ImGui::SliderFloat("Steepness", &slope, 5, 200, "%.0f");
+            ImGui::SliderFloat("AO radius", &aoRadius, 4, 96, "%.0f px");
+            ImGui::TextWrapped("Relief makes the picture the gravity field: paint "
+                               "runs downhill on it. Set View to Height, Normals or "
+                               "Occlusion to see what the brushes see. There is no "
+                               "gravity otherwise - a canvas has no up.");
         } else {
             const char *modes[] = {"Pixel sort"};
             int mode = 0;
@@ -799,8 +832,24 @@ struct App {
         ImGui::End();
     }
 
+    void updateProps() {
+        pProps.use();
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, background);
+        pProps.set("uSrc", 0);
+        glBindImageTexture(0, props, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pProps.set("uInvert", reliefInvert ? 1.0f : 0.0f);
+        pProps.set("uAoRadius", aoRadius);
+        pProps.set("uSlope", slope);
+        glDispatchCompute((fbW + 7) / 8, (fbH + 7) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    }
+
     void frame(float dt) {
         painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
+        // the set layer changes as paint bakes; refresh the maps every few
+        // frames, always when they are on screen or driving the paint
+        bool wanted = view != 0 || flip.relief > 0.0f;
+        if (wanted && (propsFrame++ % 4) == 0) updateProps();
         if (tool == 1) glitchStroke();
         else pour(dt);
         if (flip.emitted > 0) flip.step(dt);
@@ -815,7 +864,9 @@ struct App {
         glUseProgram(compositeProgram);
         glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, live);
+        glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, props);
         glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uView"), view);
         glBindVertexArray(emptyVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);

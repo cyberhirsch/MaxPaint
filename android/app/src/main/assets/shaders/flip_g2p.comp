@@ -34,6 +34,8 @@ layout(binding = 1) uniform highp sampler2D uVNew;
 layout(binding = 2) uniform highp sampler2D uUOld;   // before the solve
 layout(binding = 3) uniform highp sampler2D uVOld;
 layout(binding = 4) uniform highp sampler2D uDensity;
+// image properties (props.comp): height, normal.xy, occlusion
+layout(binding = 5) uniform highp sampler2D uProps;
 
 uniform float uDt;
 uniform int   uCapacity;
@@ -45,6 +47,7 @@ uniform float uCohesionSpeed;  // world units/s the surface may creep
 uniform float uRestMass;       // emission density, particles per cell
 uniform float uMaxSpeed;       // CFL guard
 uniform vec2  uTexel;
+uniform float uRelief;         // downhill pull from the image's height field, 0 off
 
 int cellType(ivec2 c) {
     if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return 0;
@@ -140,6 +143,15 @@ void main() {
             float rate = min(1.0, 30.0 * uDt);
             vel += dirHat * (target - along) * rate;
         }
+    }
+
+    // Relief: the picture as the gravity field. The height-field normal's xy
+    // points downhill, so paint runs off bright ridges into dark valleys
+    // (or the reverse with the height inverted) -- a canvas has no up, but
+    // an image can lend it one.
+    if (uRelief > 0.0) {
+        vec2 down = texture(uProps, pos).gb;
+        vel += down * uRelief * uDt;
     }
 
     vel *= 1.0 / (1.0 + uDrag * uDt);

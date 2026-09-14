@@ -1,0 +1,71 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Image properties, derived from the layer as if brightness were height --
+// the relief-map trick. Brushes read these to react to the picture: paint
+// can run downhill on a photo, sort along its ridges, settle in its shade.
+//
+//   R  height     brightness over white paper, lightly blurred, 0 dark .. 1 light
+//   G  normal.x   surface normal of the height field, xy (z is implied)
+//   B  normal.y
+//   A  occlusion  horizon-based ambient occlusion, 1 open .. 0 buried
+//
+// No neural network here: true depth needs one (a later, Windows-side step).
+// Everything below is what the pixels themselves can say.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uProps;
+
+uniform float uInvert;    // 1: dark is high (ink as relief), 0: light is high
+uniform float uAoRadius;  // texels
+uniform float uSlope;     // normal steepness scale
+
+float heightAt(ivec2 p, ivec2 size) {
+    p = clamp(p, ivec2(0), size - 1);
+    vec4 c = texelFetch(uSrc, p, 0);
+    float lum = dot(c.rgb + vec3(1.0 - clamp(c.a, 0.0, 1.0)), vec3(0.299, 0.587, 0.114));
+    return uInvert > 0.5 ? 1.0 - lum : lum;
+}
+
+// 3x3 box blur: normals from raw pixels are all noise
+float smoothHeight(ivec2 p, ivec2 size) {
+    float s = 0.0;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            s += heightAt(p + ivec2(dx, dy), size);
+    return s / 9.0;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = textureSize(uSrc, 0);
+    if (p.x >= size.x || p.y >= size.y) return;
+
+    float h = smoothHeight(p, size);
+    float hl = smoothHeight(p - ivec2(1, 0), size);
+    float hr = smoothHeight(p + ivec2(1, 0), size);
+    float hb = smoothHeight(p - ivec2(0, 1), size);
+    float ht = smoothHeight(p + ivec2(0, 1), size);
+    vec3 n = normalize(vec3(-(hr - hl) * uSlope, -(ht - hb) * uSlope, 1.0));
+
+    // horizon-based occlusion: in eight directions, how far above this
+    // point does the terrain rise within the radius
+    float occ = 0.0;
+    for (int d = 0; d < 8; d++) {
+        float a = float(d) * 0.7853982;
+        vec2 dir = vec2(cos(a), sin(a));
+        float best = 0.0;
+        for (int s = 1; s <= 6; s++) {
+            float dist = uAoRadius * float(s) / 6.0;
+            float hs = heightAt(p + ivec2(round(dir * dist)), size);
+            // elevation angle, in height units per texel, falling off with distance
+            best = max(best, (hs - h) / (dist / uAoRadius + 0.25));
+        }
+        occ += clamp(best, 0.0, 1.0);
+    }
+    float ao = 1.0 - occ / 8.0;
+
+    imageStore(uProps, p, vec4(h, n.x, n.y, ao));
+}
