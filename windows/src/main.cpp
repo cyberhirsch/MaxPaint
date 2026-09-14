@@ -4,22 +4,36 @@
 // rewrites the version header and drops standalone precision statements.
 // The Python harness in ../tools/ remains the behavioural reference.
 //
-// Tools: 1 paint (the streamed pour with motion inheritance), 2 glitch
-// (pixel sorting under the brush). Drop an image file onto the window, or
-// pass its path on the command line, to load it as set paint.
-//   W/S flow    E/D settle    R/F motion inheritance   T/G drag
-//   Q/A cohesion   [ ] brush size   C clears the canvas
-//   glitch: H/J band low   K/L band high   V direction   B order
-// Current values live in the window title.
+// A Dear ImGui panel carries the tools: paint (the streamed pour with
+// motion inheritance) with the Android presets and sliders, and glitch
+// (pixel sorting under the brush). Open loads a picture as set paint --
+// dropping a file on the window or passing its path on the command line
+// does the same -- and Save PNG writes the canvas next to the executable.
+// The keys from the first build still work: W/S flow, E/D settle, R/F
+// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1/2 tool, C clear.
+
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  define NOMINMAX
+#  include <windows.h>
+#  include <commdlg.h>
+#endif
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 #include "gl43.h"
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+#include <ctime>
 
 #include <algorithm>
 #include <cmath>
@@ -431,6 +445,28 @@ struct Flip {
     }
 };
 
+// ------------------------------------------------------------ presets
+
+// The Android Flip presets (android/.../Presets.kt), value for value.
+struct FlipPreset {
+    const char *name;
+    float flow, inherit, drag, settle, cohesion, pointSize, density;
+};
+static const FlipPreset FLIP_PRESETS[] = {
+    {"Wet Paint", 40, 0.60f, 0.25f, 2.0f, 30, 3, 120},
+    {"Splatter",  12, 0.99f, 0.02f, 1.5f,  6, 3,  51},
+    {"Fling",     24, 0.97f, 0.05f, 1.5f,  8, 4,  29},
+    {"Honey",     10, 0.45f, 1.60f, 2.5f, 26, 6,  51},
+    {"Mercury",   24, 0.97f, 0.04f, 2.5f, 38, 5,  61},
+};
+struct GlitchPreset { const char *name; float lo, hi; bool vertical; };
+static const GlitchPreset GLITCH_PRESETS[] = {
+    {"Midtones",   0.25f, 0.85f, false},
+    {"Shadows",    0.00f, 0.50f, false},
+    {"Highlights", 0.50f, 1.00f, false},
+    {"Rain",       0.20f, 0.90f, true},
+};
+
 // ------------------------------------------------------------ composite
 
 static const char *COMPOSITE_VERT = R"(#version 430
@@ -473,8 +509,12 @@ struct App {
     bool haveGlitchLast = false;
     float glitchLastX = 0, glitchLastY = 0, glitchCarry = 0;
 
-    bool mouseDown = false;
+    bool mouseDown = false;      // the button, as GLFW reports it
+    bool painting = false;       // the button, and not over the panel
     double mouseX = 0, mouseY = 0;
+    bool savePending = false;
+    int flipPreset = 0, glitchPreset = 0;
+    char status[256] = "";
     bool havePourLast = false;
     float pourLastX = 0, pourLastY = 0, pourLastVx = 0, pourLastVy = 0;
     float pourDebt = 0;
@@ -502,7 +542,7 @@ struct App {
 
     // the particle medium's one emitter, streamed along the cursor's path
     void pour(float dt) {
-        if (!mouseDown || flip.flowRate <= 0 || fbW == 0) {
+        if (!painting || flip.flowRate <= 0 || fbW == 0) {
             havePourLast = false;
             pourDebt = 0;
             return;
@@ -565,7 +605,7 @@ struct App {
 
     // dabs strung along the mouse path half a radius apart, as on Android
     void glitchStroke() {
-        if (!mouseDown || fbW == 0) { haveGlitchLast = false; return; }
+        if (!painting || fbW == 0) { haveGlitchLast = false; return; }
         float cx = (float)(mouseX / fbW);
         float cy = 1.0f - (float)(mouseY / fbH);
         if (!haveGlitchLast) {
@@ -625,7 +665,142 @@ struct App {
         return true;
     }
 
+    void clearCanvas() {
+        flip.clearPool();
+        for (GLuint fbo : {fboBackground, fboLive}) {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+        }
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    void applyFlipPreset(int i) {
+        const FlipPreset &p = FLIP_PRESETS[i];
+        flip.flowRate = p.flow; flip.flipRatio = p.inherit; flip.particleDrag = p.drag;
+        flip.settleTime = p.settle; flip.cohesion = p.cohesion;
+        flip.pointSize = p.pointSize; flip.particlesPerCell = p.density;
+        flip.compensate = 1.0f;
+    }
+
+    void applyGlitchPreset(int i) {
+        const GlitchPreset &p = GLITCH_PRESETS[i];
+        glitchLo = p.lo; glitchHi = p.hi; glitchVertical = p.vertical;
+    }
+
+    // reads the composited canvas back and writes it as a PNG next to the exe
+    void savePng() {
+        std::vector<unsigned char> px((size_t)fbW * fbH * 4);
+        glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        // GL rows are bottom-up
+        std::vector<unsigned char> flipped((size_t)fbW * fbH * 4);
+        for (int y = 0; y < fbH; y++)
+            std::memcpy(&flipped[(size_t)y * fbW * 4],
+                        &px[(size_t)(fbH - 1 - y) * fbW * 4], (size_t)fbW * 4);
+        char name[64];
+        std::time_t now = std::time(nullptr);
+        std::strftime(name, sizeof name, "maxpaint-%Y%m%d-%H%M%S.png", std::localtime(&now));
+        if (stbi_write_png(name, fbW, fbH, 4, flipped.data(), fbW * 4))
+            std::snprintf(status, sizeof status, "saved %s", name);
+        else
+            std::snprintf(status, sizeof status, "could not write %s", name);
+    }
+
+    void openDialog() {
+#ifdef _WIN32
+        char path[MAX_PATH] = "";
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof ofn;
+        ofn.lpstrFilter = "Images\0*.png;*.jpg;*.jpeg;*.bmp;*.tga;*.gif;*.psd\0All files\0*.*\0";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = sizeof path;
+        ofn.Flags = OFN_FILEMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameA(&ofn)) {
+            if (importImage(path)) std::snprintf(status, sizeof status, "loaded %s", path);
+            else std::snprintf(status, sizeof status, "could not read %s", path);
+        }
+#else
+        std::snprintf(status, sizeof status, "drop an image onto the window");
+#endif
+    }
+
+    void panel() {
+        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
+        ImGui::Begin("MaxPaint", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+
+        if (ImGui::Button("Open...")) openDialog();
+        ImGui::SameLine();
+        if (ImGui::Button("Save PNG")) savePending = true;
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) clearCanvas();
+        if (status[0]) ImGui::TextWrapped("%s", status);
+        ImGui::Separator();
+
+        ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
+        ImGui::RadioButton("Glitch", &tool, 1);
+        ImGui::Separator();
+
+        ImGui::SliderFloat("Brush size", &flip.brushRadius, 0.004f, 0.17f, "%.3f");
+
+        if (tool == 0) {
+            if (ImGui::BeginCombo("Preset", FLIP_PRESETS[flipPreset].name)) {
+                for (int i = 0; i < (int)(sizeof FLIP_PRESETS / sizeof *FLIP_PRESETS); i++) {
+                    if (ImGui::Selectable(FLIP_PRESETS[i].name, i == flipPreset)) {
+                        flipPreset = i;
+                        applyFlipPreset(i);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ImGui::SliderFloat("Flow", &flip.flowRate, 0, 40, "%.0f dabs/s");
+            ImGui::SliderFloat("Volume", &flip.compensate, 0, 4, "%.2f");
+            float dragPct = (float)((1.0 - std::exp(-flip.particleDrag)) * 100.0);
+            if (ImGui::SliderFloat("Drag", &dragPct, 0, 99, "%.0f%%/s"))
+                flip.particleDrag = (float)-std::log(1.0 - std::min(dragPct, 99.0f) / 100.0);
+            ImGui::SliderFloat("Density", &flip.particlesPerCell, 1, 400, "%.0f per cell");
+            ImGui::SliderInt("Separation", &flip.separationIters, 0, 4);
+            ImGui::SliderInt("Pressure", &flip.solveIters, 1, 200, "%d sweeps");
+            ImGui::SliderFloat("Settle", &flip.settleTime, 0, 10, "%.1f s wet");
+            ImGui::SliderFloat("Cohesion", &flip.cohesion, 0, 200, "%.0f");
+            float inh = flip.flipRatio * 100;
+            if (ImGui::SliderFloat("Motion inheritance", &inh, 0, 100, "%.0f%%"))
+                flip.flipRatio = inh / 100;
+            ImGui::SliderFloat("Drop size", &flip.pointSize, 0.5f, 48, "%.1f px");
+            ImGui::TextWrapped("Paint travels on the momentum of the stroke. "
+                               "There is no gravity - a canvas has no up.");
+        } else {
+            const char *modes[] = {"Pixel sort"};
+            int mode = 0;
+            ImGui::Combo("Mode", &mode, modes, 1);
+            if (ImGui::BeginCombo("Preset", GLITCH_PRESETS[glitchPreset].name)) {
+                for (int i = 0; i < (int)(sizeof GLITCH_PRESETS / sizeof *GLITCH_PRESETS); i++) {
+                    if (ImGui::Selectable(GLITCH_PRESETS[i].name, i == glitchPreset)) {
+                        glitchPreset = i;
+                        applyGlitchPreset(i);
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            int dir = glitchVertical ? 1 : 0;
+            const char *dirs[] = {"Horizontal", "Vertical"};
+            if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
+            int ord = glitchDescending ? 1 : 0;
+            const char *ords[] = {"Dark to light", "Light to dark"};
+            if (ImGui::Combo("Order", &ord, ords, 2)) glitchDescending = ord == 1;
+            ImGui::SliderFloat("Low", &glitchLo, 0, 1, "%.2f");
+            ImGui::SliderFloat("High", &glitchHi, 0, 1, "%.2f");
+            if (glitchHi < glitchLo) glitchHi = glitchLo;
+            ImGui::TextWrapped("Sorts the pixels under the brush by brightness along "
+                               "each row or column. Runs inside the band get sorted; "
+                               "everything outside it holds its place. Open a photo "
+                               "and take it apart.");
+        }
+        ImGui::End();
+    }
+
     void frame(float dt) {
+        painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
         if (tool == 1) glitchStroke();
         else pour(dt);
         if (flip.emitted > 0) flip.step(dt);
@@ -644,6 +819,8 @@ struct App {
         glBindVertexArray(emptyVao);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
+
+        if (savePending) { savePending = false; savePng(); }
     }
 };
 
@@ -661,6 +838,7 @@ static void onDrop(GLFWwindow *, int count, const char **paths) {
 }
 static void onKey(GLFWwindow *, int key, int, int action, int) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+    if (ImGui::GetIO().WantCaptureKeyboard) return;
     Flip &f = app.flip;
     switch (key) {
         case GLFW_KEY_W: f.flowRate = std::min(40.0f, f.flowRate + 2); break;
@@ -683,13 +861,7 @@ static void onKey(GLFWwindow *, int key, int, int action, int) {
         case GLFW_KEY_L: app.glitchHi = std::min(1.0f, app.glitchHi + 0.05f); break;
         case GLFW_KEY_V: app.glitchVertical = !app.glitchVertical; break;
         case GLFW_KEY_B: app.glitchDescending = !app.glitchDescending; break;
-        case GLFW_KEY_C:
-            f.clearPool();
-            glBindFramebuffer(GL_FRAMEBUFFER, app.fboBackground);
-            glClearColor(0, 0, 0, 0);
-            glClear(GL_COLOR_BUFFER_BIT);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            break;
+        case GLFW_KEY_C: app.clearCanvas(); break;
     }
 }
 
@@ -728,6 +900,13 @@ int main(int argc, char **argv) {
     glfwSetDropCallback(win, onDrop);
     if (argc > 1) app.importImage(argv[1]);
 
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::StyleColorsDark();
+    ImGui::GetIO().IniFilename = nullptr;   // no imgui.ini next to the exe
+    ImGui_ImplGlfw_InitForOpenGL(win, true);   // chains to the callbacks above
+    ImGui_ImplOpenGL3_Init("#version 430");
+
     double last = glfwGetTime();
     double titleAt = 0;
     while (!glfwWindowShouldClose(win)) {
@@ -735,32 +914,29 @@ int main(int argc, char **argv) {
         float dt = (float)std::min(std::max(now - last, 1.0 / 120.0), 1.0 / 20.0);
         last = now;
 
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        app.panel();
+
         app.frame(dt);
+
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(win);
         glfwPollEvents();
 
-        if (now - titleAt > 0.25) {
+        if (now - titleAt > 0.5) {
             titleAt = now;
-            char title[256];
-            if (app.tool == 0)
-                std::snprintf(title, sizeof title,
-                    "MaxPaint  paint [1]  |  flow %.0f/s [W/S]  settle %.1fs [E/D]  "
-                    "inherit %.0f%% [R/F]  drag %.0f%%/s [T/G]  cohesion %.0f [Q/A]  "
-                    "size %.3f [ ]  clear [C]  |  drop an image to load it",
-                    app.flip.flowRate, app.flip.settleTime, app.flip.flipRatio * 100,
-                    (1.0 - std::exp(-app.flip.particleDrag)) * 100, app.flip.cohesion,
-                    app.flip.brushRadius);
-            else
-                std::snprintf(title, sizeof title,
-                    "MaxPaint  glitch: pixel sort [2]  |  band %.2f-%.2f [H/J K/L]  %s [V]  %s [B]  "
-                    "size %.3f [ ]  clear [C]  |  drop an image to load it",
-                    app.glitchLo, app.glitchHi,
-                    app.glitchVertical ? "vertical" : "horizontal",
-                    app.glitchDescending ? "light to dark" : "dark to light",
-                    app.flip.brushRadius);
+            char title[128];
+            std::snprintf(title, sizeof title, "MaxPaint  |  %s",
+                          app.tool == 0 ? "paint" : "glitch: pixel sort");
             glfwSetWindowTitle(win, title);
         }
     }
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+    ImGui::DestroyContext();
     glfwTerminate();
     return 0;
 }

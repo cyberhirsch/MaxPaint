@@ -7,21 +7,23 @@ loader only rewrites the `#version` line and drops standalone precision
 statements. The Python harness in `../tools/` is the behavioural
 reference.
 
-Two tools: **1** paints (the streamed pour with motion inheritance), **2**
-is the glitch brush (pixel sorting under the cursor -- runs of pixels in
-a brightness band get sorted along each row or column). Drop an image
-file onto the window, or pass its path on the command line, to load it
-as set paint and take it apart. Keys tune the medium and the window
-title shows the current values:
+A panel on the left carries the tools. **Paint** is the streamed pour
+with motion inheritance, with the Android presets (Wet Paint, Splatter,
+Fling, Honey, Mercury) and every slider from the Flip panel. **Glitch**
+is pixel sorting under the brush: runs of pixels in a brightness band get
+sorted along each row or column, everything else holds its place.
+**Open...** loads a picture as set paint (dropping a file onto the window
+or passing its path on the command line does the same), **Save PNG**
+writes the canvas next to the executable, **Clear** starts over.
 
-    W/S flow    E/D settle    R/F motion inheritance   T/G drag
-    Q/A cohesion   [ ] brush size   C clears the canvas
-    glitch: H/J band low   K/L band high   V direction   B order
+Keys still work: W/S flow, E/D settle, R/F motion inheritance, T/G drag,
+Q/A cohesion, [ ] brush size, 1/2 tool, C clear.
 
 ## Building
 
 Requires CMake 3.20+, a C++17 compiler, and an OpenGL 4.3 GPU/driver
-(any desktop GPU from the last decade). GLFW is fetched automatically.
+(any desktop GPU from the last decade). GLFW and Dear ImGui are fetched
+automatically.
 
     cd windows
     cmake -B build -DCMAKE_BUILD_TYPE=Release

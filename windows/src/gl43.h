@@ -47,6 +47,7 @@ typedef void GLvoid;
 #define GL_TEXTURE0 0x84C0
 #define GL_RGBA16F 0x881A
 #define GL_RGBA 0x1908
+#define GL_UNSIGNED_BYTE 0x1401
 #define GL_R32F 0x822E
 #define GL_VERTEX_SHADER 0x8B31
 #define GL_FRAGMENT_SHADER 0x8B30
@@ -114,7 +115,8 @@ typedef void GLvoid;
     X(void, glBindVertexArray, (GLuint)) \
     X(void, glEnableVertexAttribArray, (GLuint)) \
     X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *)) \
-    X(void, glDrawArrays, (GLenum, GLint, GLsizei))
+    X(void, glDrawArrays, (GLenum, GLint, GLsizei)) \
+    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *))
 
 #define MAXPAINT_GL_DECLARE(ret, name, args) extern ret (APIENTRY *name) args;
 MAXPAINT_GL_FUNCS(MAXPAINT_GL_DECLARE)
