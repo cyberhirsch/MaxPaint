@@ -1,6 +1,6 @@
 # MaxPaint
 
-Fluid-simulation painting for Android. See [docs/PRD.md](docs/PRD.md) for the product spec.
+Fluid-simulation painting for Android, Windows and iOS. See [docs/PRD.md](docs/PRD.md) for the product spec and [docs/ROADMAP.md](docs/ROADMAP.md) for where it is going.
 
 ## Where it is
 
