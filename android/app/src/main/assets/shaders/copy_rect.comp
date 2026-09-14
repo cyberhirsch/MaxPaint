@@ -1,0 +1,23 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Copies one rectangle of a texture into another. The glitch brush writes
+// its dab into the layer's back buffer and this brings just that region
+// forward, so a dab costs its own footprint rather than a full-canvas pass.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uOrigin;
+uniform ivec2 uSize;
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (g.x >= uSize.x || g.y >= uSize.y) return;
+    ivec2 p = uOrigin + g;
+    ivec2 lim = textureSize(uSrc, 0);
+    if (p.x < 0 || p.y < 0 || p.x >= lim.x || p.y >= lim.y) return;
+    imageStore(uDst, p, texelFetch(uSrc, p, 0));
+}

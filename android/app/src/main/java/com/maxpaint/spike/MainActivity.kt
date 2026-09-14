@@ -39,6 +39,55 @@ class MainActivity : AppCompatActivity() {
 
     private val toolButtons = HashMap<Brush, Button>()
 
+    private val OPEN_IMAGE = 41
+
+    /** Opens a picture into the active layer. Decoded off the UI thread. */
+    private fun pickImage() {
+        val intent = android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(android.content.Intent.CATEGORY_OPENABLE)
+            type = "image/*"
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(intent, OPEN_IMAGE)
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: android.content.Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != OPEN_IMAGE || resultCode != RESULT_OK) return
+        val uri = data?.data ?: return
+        toast("Loading…")
+        Thread {
+            val bmp = runCatching {
+                // bound the decode: the canvas is at most a few thousand pixels
+                // across, so a 40MP photo can come in at a quarter
+                val bounds = android.graphics.BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                contentResolver.openInputStream(uri)?.use {
+                    android.graphics.BitmapFactory.decodeStream(it, null, bounds)
+                }
+                val longest = maxOf(bounds.outWidth, bounds.outHeight)
+                var sample = 1
+                while (longest / sample > 4096) sample *= 2
+                contentResolver.openInputStream(uri)?.use {
+                    android.graphics.BitmapFactory.decodeStream(
+                        it, null,
+                        android.graphics.BitmapFactory.Options().apply {
+                            inSampleSize = sample
+                            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+                        }
+                    )
+                }
+            }.getOrNull()
+            ui.post {
+                if (bmp == null) toast("Could not read that image")
+                else renderer.pendingImport = bmp
+            }
+        }.start()
+    }
+
     private lateinit var layerRail: LinearLayout
     private lateinit var layerPanel: LinearLayout
     private lateinit var layerPanelBody: LinearLayout
@@ -368,6 +417,7 @@ class MainActivity : AppCompatActivity() {
         if (!::layerRail.isInitialized) return
         layerRail.removeAllViews()
 
+        layerRail.addView(toolButton("open") { pickImage() })
         layerRail.addView(toolButton("png") {
             toast("Saving…")
             renderer.exportRequested = true
@@ -767,6 +817,30 @@ class MainActivity : AppCompatActivity() {
             Brush.FREEZE, Brush.THAW -> {
                 panelBody.addView(hint("Paint over the canvas to " +
                     (if (selected == Brush.FREEZE) "set" else "lift") + " just that area."))
+            }
+
+            Brush.GLITCH -> {
+                panelBody.addView(labeled("Mode", spinner(listOf("Pixel sort"), 0) { }))
+                panelBody.addView(labeled("Direction", spinner(
+                    listOf("Horizontal", "Vertical"),
+                    if (renderer.sim.glitchVertical) 1 else 0
+                ) { i -> renderer.sim.glitchVertical = i == 1 }))
+                panelBody.addView(labeled("Order", spinner(
+                    listOf("Dark to light", "Light to dark"),
+                    if (renderer.sim.glitchDescending) 1 else 0
+                ) { i -> renderer.sim.glitchDescending = i == 1 }))
+                panelBody.addView(slider("Low", (renderer.sim.glitchLo * 100).toInt(), 100) { p, l ->
+                    renderer.sim.glitchLo = p / 100f
+                    l.text = String.format("Low: %.2f  (darker than this stays put)", p / 100f)
+                })
+                panelBody.addView(slider("High", (renderer.sim.glitchHi * 100).toInt(), 100) { p, l ->
+                    renderer.sim.glitchHi = p / 100f
+                    l.text = String.format("High: %.2f  (lighter than this stays put)", p / 100f)
+                })
+                panelBody.addView(hint("Sorts the pixels under the brush by brightness, " +
+                    "along each row or column. Runs of pixels inside the band get " +
+                    "sorted; everything outside it holds its place. Open a photo " +
+                    "with the button on the right and take it apart."))
             }
 
         }

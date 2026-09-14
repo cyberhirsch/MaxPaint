@@ -1429,6 +1429,71 @@ def main():
           f"max abs diff = {np.abs(a-b).max():.3e}")
     print()
 
+    # --- the glitch brush: pixel sorting ---
+    print("Glitch (pixel sort):")
+    sort_p = compile_compute("pixelsort.comp")
+    W = 64
+    rng = np.random.default_rng(3)
+    # opaque grey noise: brightness over paper is just the grey level
+    grey = rng.random((W, W)).astype(np.float32)
+    img = np.zeros((W, W, 4), dtype=np.float32)
+    img[:, :, 0] = img[:, :, 1] = img[:, :, 2] = grey
+    img[:, :, 3] = 1.0
+    src = Tex(W, W, GL_RGBA16F, GL_NEAREST)
+    dst = Tex(W, W, GL_RGBA16F, GL_NEAREST)
+    src.upload(img)
+    dst.upload(img)
+    cx, cy, r, lo, hi = 32, 32, 12, 0.3, 0.8
+    glUseProgram(sort_p)
+    src.sampler(0)
+    glUniform1i(uni(sort_p, "uSrc"), 0)
+    dst.image(0, GL_WRITE_ONLY)
+    glUniform2i(uni(sort_p, "uCentre"), cx, cy)
+    glUniform1i(uni(sort_p, "uRadius"), r)
+    glUniform1i(uni(sort_p, "uVertical"), 0)
+    glUniform1f(uni(sort_p, "uLo"), lo)
+    glUniform1f(uni(sort_p, "uHi"), hi)
+    glUniform1i(uni(sort_p, "uDescending"), 0)
+    glDispatchCompute(2 * r + 1, 1, 1)
+    glMemoryBarrier(GL_ALL_BARRIER_BITS)
+    out = dst.read()[:, :, 0]
+    inp = grey
+
+    # a run is a maximal stretch of in-band pixels inside the disc on one row
+    runs_ok, outside_ok, band_ok = True, True, True
+    for y in range(W):
+        dy = y - cy
+        for x in range(W):
+            inside = dy * dy + (x - cx) ** 2 <= r * r
+            in_band = lo <= inp[y, x] <= hi
+            if not inside or not in_band:
+                # everything outside the disc or the band holds its place
+                if abs(out[y, x] - inp[y, x]) > 2e-3:
+                    outside_ok = False
+        if abs(dy) <= r:
+            half = int(np.sqrt(r * r - dy * dy))
+            x = cx - half
+            while x <= cx + half:
+                if lo <= inp[y, x] <= hi:
+                    x0 = x
+                    while x <= cx + half and lo <= inp[y, x] <= hi:
+                        x += 1
+                    seg = out[y, x0:x]
+                    if np.any(np.diff(seg) < -2e-3):
+                        runs_ok = False
+                    # the run's pixels are the same set, reordered
+                    if not np.allclose(np.sort(seg), np.sort(inp[y, x0:x]), atol=2e-3):
+                        band_ok = False
+                else:
+                    x += 1
+    check("in-band runs under the brush come out sorted dark to light",
+          runs_ok, "every run monotonic")
+    check("a run keeps its pixels, only reordered", band_ok,
+          "sorted multisets match")
+    check("pixels outside the band or the disc hold their place", outside_ok,
+          "unchanged to 2e-3")
+    print()
+
     if FAILURES:
         print(f"{len(FAILURES)} CHECK(S) FAILED: {', '.join(FAILURES)}")
         return 1

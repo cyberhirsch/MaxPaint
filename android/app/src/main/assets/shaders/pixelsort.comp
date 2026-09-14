@@ -1,0 +1,102 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 256) in;
+
+// Pixel sorting -- the Glitch brush's first mode.
+//
+// The classic effect (Kim Asendorf's): along each row (or column), pixels
+// whose brightness falls inside a band form "runs"; every run is sorted by
+// brightness in place, and everything outside the band stays put. Under a
+// brush it becomes a mark: each dab sorts the segments of every line that
+// cross its disc.
+//
+// One workgroup per line, 256 threads per workgroup -- one pixel each, so a
+// disc up to 255 pixels across. The line is loaded into shared memory, run
+// membership is resolved with a serial scan (256 steps, trivial), and a
+// bitonic sort orders by (run, brightness): runs are contiguous and their
+// ids increase along the line, so sorting by run id first keeps every run
+// where it was, and every out-of-band pixel is a run of its own, so it never
+// moves at all.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uCentre;    // disc centre, texels
+uniform int   uRadius;    // disc radius, texels (<= 127)
+uniform int   uVertical;  // 0: sort along rows, 1: along columns
+uniform float uLo;        // brightness band, over white paper
+uniform float uHi;
+uniform int   uDescending;
+
+shared vec4  sCol[256];
+shared float sKey[256];
+shared int   sIdx[256];
+shared int   sMask[256];
+
+ivec2 texelFor(int line, int along) {
+    return uVertical == 0 ? ivec2(along, line) : ivec2(line, along);
+}
+
+void main() {
+    int t = int(gl_LocalInvocationID.x);
+    ivec2 size = textureSize(uSrc, 0);
+
+    // this workgroup's line, and the segment of it inside the disc
+    int lineOffset = int(gl_WorkGroupID.x) - uRadius;
+    int line = (uVertical == 0 ? uCentre.y : uCentre.x) + lineOffset;
+    int halfSpan = int(sqrt(max(float(uRadius * uRadius - lineOffset * lineOffset), 0.0)));
+    int centreAlong = uVertical == 0 ? uCentre.x : uCentre.y;
+    int start = centreAlong - halfSpan;
+    int len = 2 * halfSpan + 1;
+
+    int along = start + t;
+    ivec2 p = texelFor(line, along);
+    int limitAlong = uVertical == 0 ? size.x : size.y;
+    int limitLine = uVertical == 0 ? size.y : size.x;
+    bool valid = t < len && line >= 0 && line < limitLine &&
+                 along >= 0 && along < limitAlong;
+
+    vec4 c = valid ? texelFetch(uSrc, p, 0) : vec4(0.0);
+    // brightness as seen on the page: premultiplied paint over white paper
+    float lum = dot(c.rgb + vec3(1.0 - c.a), vec3(0.299, 0.587, 0.114));
+    bool inBand = valid && lum >= uLo && lum <= uHi;
+
+    sCol[t] = c;
+    sMask[t] = inBand ? 1 : 0;
+    sIdx[t] = t;
+    sKey[t] = uDescending == 1 ? -lum : lum;
+    barrier();
+
+    // run ids: a band pixel continues the previous band pixel's run; every
+    // out-of-band pixel is a run of its own
+    if (t == 0) {
+        int run = 0;
+        for (int i = 0; i < 256; i++) {
+            if (i > 0 && !(sMask[i] == 1 && sMask[i - 1] == 1)) run++;
+            // brightness sits in [-1, 1]; runs are spaced 4 apart so it can
+            // never cross into the neighbouring run
+            sKey[i] = float(run) * 4.0 + (sMask[i] == 1 ? sKey[i] : 0.0);
+        }
+    }
+    barrier();
+
+    // bitonic sort of 256 keys, payload is the original index
+    for (int k = 2; k <= 256; k <<= 1) {
+        for (int j = k >> 1; j > 0; j >>= 1) {
+            int partner = t ^ j;
+            if (partner > t) {
+                bool ascending = (t & k) == 0;
+                float a = sKey[t];
+                float b = sKey[partner];
+                if ((a > b) == ascending) {
+                    sKey[t] = b; sKey[partner] = a;
+                    int ia = sIdx[t]; sIdx[t] = sIdx[partner]; sIdx[partner] = ia;
+                }
+            }
+            barrier();
+        }
+    }
+
+    if (valid) imageStore(uDst, p, sCol[sIdx[t]]);
+}

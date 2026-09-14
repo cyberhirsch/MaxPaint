@@ -29,6 +29,8 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
     @Volatile var freezeRequested = false
     @Volatile var thawRequested = false
     @Volatile var exportRequested = false
+    /** An image picked by the user, waiting for the GL thread to load it. */
+    @Volatile var pendingImport: android.graphics.Bitmap? = null
     @Volatile var undoRequested = false
     @Volatile var redoRequested = false
 
@@ -191,6 +193,11 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         if (exportRequested) {
             exportRequested = false
             exportPng()
+        }
+        pendingImport?.let { bmp ->
+            pendingImport = null
+            sim.importImage(bmp)
+            bmp.recycle()
         }
 
         if (freezeRequested) {

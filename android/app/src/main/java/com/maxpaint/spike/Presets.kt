@@ -157,6 +157,21 @@ object Presets {
 
     private val none = listOf(Preset("Default") { })
 
+    private val glitch = listOf(
+        Preset("Midtones") { s ->
+            s.glitchLo = 0.25f; s.glitchHi = 0.85f; s.glitchVertical = false
+        },
+        Preset("Shadows") { s ->
+            s.glitchLo = 0f; s.glitchHi = 0.5f; s.glitchVertical = false
+        },
+        Preset("Highlights") { s ->
+            s.glitchLo = 0.5f; s.glitchHi = 1f; s.glitchVertical = false
+        },
+        Preset("Rain") { s ->
+            s.glitchLo = 0.2f; s.glitchHi = 0.9f; s.glitchVertical = true
+        }
+    )
+
     fun forBrush(b: Brush): List<Preset> = when (b) {
         Brush.GAS -> gas
         Brush.NIB -> nib
@@ -166,5 +181,6 @@ object Presets {
         Brush.SOLVENT -> solvent
         Brush.SMEAR -> smear
         Brush.FREEZE, Brush.THAW -> none
+        Brush.GLITCH -> glitch
     }
 }

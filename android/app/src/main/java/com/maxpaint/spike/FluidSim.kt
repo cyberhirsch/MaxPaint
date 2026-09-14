@@ -141,6 +141,13 @@ class FluidSim(private val ctx: Context) {
     var smearStrength = 0.85f
     var smearReach = 0.05f
 
+    /** Glitch brush, pixel-sort mode: the brightness band that gets sorted
+     *  (over white paper, 0 black .. 1 white) and the sort direction. */
+    var glitchLo = 0.25f
+    var glitchHi = 0.85f
+    var glitchVertical = false
+    var glitchDescending = false
+
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
 
@@ -219,6 +226,8 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pNib: ComputeProgram
     private lateinit var pSoak: ComputeProgram
     private lateinit var pSmear: ComputeProgram
+    private lateinit var pPixelSort: ComputeProgram
+    private lateinit var pCopyRect: ComputeProgram
     private lateinit var pBlit: ComputeProgram
     private lateinit var pComposite: ComputeProgram
     /**
@@ -302,6 +311,8 @@ class FluidSim(private val ctx: Context) {
         pNib = ComputeProgram(ctx, "shaders/nib.comp")
         pSoak = ComputeProgram(ctx, "shaders/soak.comp")
         pSmear = ComputeProgram(ctx, "shaders/smear.comp")
+        pPixelSort = ComputeProgram(ctx, "shaders/pixelsort.comp")
+        pCopyRect = ComputeProgram(ctx, "shaders/copy_rect.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
         pComposite = ComputeProgram(ctx, "shaders/composite.comp")
         flip.init()
@@ -549,6 +560,7 @@ class FluidSim(private val ctx: Context) {
             Brush.GAS -> splat(u, v, du, dv, r, g, b)
             Brush.NIB -> nib(u, v, prevU, prevV)
             Brush.SMEAR -> smear(u, v, prevU, prevV)
+            Brush.GLITCH -> glitch(u, v)
             Brush.FLIP -> {
                 // The stroke itself emits nothing: pouring is the particle
                 // medium's one emitter, and it runs on the clock in pour().
@@ -593,6 +605,106 @@ class FluidSim(private val ctx: Context) {
      * Drags set pigment along the stroke. Warps the background, and the wet nib
      * field too when it is in use, so a charcoal line and a pen line both smudge.
      */
+    /**
+     * One glitch dab: pixel-sorts every row (or column) of the active layer
+     * that crosses the brush disc. The sort reads the layer's front buffer
+     * and writes into its back buffer, and only the dab's bounding box is
+     * copied forward -- a dab costs its footprint, not the canvas. Undo comes
+     * for free: the stroke snapshot was taken before the first dab.
+     */
+    fun glitch(u: Float, v: Float) {
+        if (!allocated) return
+        val src = background.read
+        val dst = background.write
+        val cx = (u * dyeW).toInt()
+        val cy = (v * dyeH).toInt()
+        // the sort holds one line of the disc in a 256-wide workgroup
+        val r = (splatRadius * dyeH).toInt().coerceIn(2, 127)
+
+        pPixelSort.use()
+        src.bindSampler(0)
+        pPixelSort.set("uSrc", 0)
+        dst.bindImage(0, GLES31.GL_WRITE_ONLY)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pPixelSort.id, "uCentre"), cx, cy)
+        pPixelSort.set("uRadius", r)
+        pPixelSort.set("uVertical", if (glitchVertical) 1 else 0)
+        pPixelSort.set("uLo", glitchLo)
+        pPixelSort.set("uHi", glitchHi)
+        pPixelSort.set("uDescending", if (glitchDescending) 1 else 0)
+        // one workgroup per line of the disc
+        GLES31.glDispatchCompute(2 * r + 1, 1, 1)
+        GLES31.glMemoryBarrier(
+            GLES31.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT or GLES31.GL_TEXTURE_FETCH_BARRIER_BIT
+        )
+
+        pCopyRect.use()
+        dst.bindSampler(0)
+        pCopyRect.set("uSrc", 0)
+        src.bindImage(0, GLES31.GL_WRITE_ONLY)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pCopyRect.id, "uOrigin"), cx - r, cy - r)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pCopyRect.id, "uSize"), 2 * r + 1, 2 * r + 1)
+        pCopyRect.dispatch(2 * r + 1, 2 * r + 1)
+        layersDirty = true
+    }
+
+    /**
+     * Loads a picture into the active layer as set paint, centre-cropped to
+     * fill the canvas. Recorded as one undo step. The layer holds
+     * premultiplied colour over transparent paper, so an opaque photo simply
+     * covers the paper -- and the glitch brush can then take it apart.
+     */
+    fun importImage(bitmap: android.graphics.Bitmap) {
+        if (!allocated) return
+        beginStroke()
+        endStroke()
+
+        // centre-crop to the canvas aspect, then scale to its resolution
+        val bw = bitmap.width
+        val bh = bitmap.height
+        val canvasAspect = dyeW.toFloat() / dyeH
+        val srcAspect = bw.toFloat() / bh
+        val cropW: Int
+        val cropH: Int
+        if (srcAspect > canvasAspect) {
+            cropH = bh; cropW = (bh * canvasAspect).toInt().coerceIn(1, bw)
+        } else {
+            cropW = bw; cropH = (bw / canvasAspect).toInt().coerceIn(1, bh)
+        }
+        val cropped = android.graphics.Bitmap.createBitmap(
+            bitmap, (bw - cropW) / 2, (bh - cropH) / 2, cropW, cropH
+        )
+        val scaled = android.graphics.Bitmap.createScaledBitmap(cropped, dyeW, dyeH, true)
+        if (cropped !== bitmap) cropped.recycle()
+
+        val pixels = IntArray(dyeW * dyeH)
+        scaled.getPixels(pixels, 0, dyeW, 0, 0, dyeW, dyeH)
+        if (scaled !== bitmap) scaled.recycle()
+
+        // GL rows run bottom-up; premultiply on the way in
+        val buf = java.nio.ByteBuffer.allocateDirect(dyeW * dyeH * 16)
+            .order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+        for (y in dyeH - 1 downTo 0) {
+            val row = y * dyeW
+            for (x in 0 until dyeW) {
+                val c = pixels[row + x]
+                val a = ((c ushr 24) and 0xFF) / 255f
+                buf.put(((c ushr 16) and 0xFF) / 255f * a)
+                buf.put(((c ushr 8) and 0xFF) / 255f * a)
+                buf.put((c and 0xFF) / 255f * a)
+                buf.put(a)
+            }
+        }
+        buf.rewind()
+        GLES31.glBindTexture(GLES31.GL_TEXTURE_2D, background.read.id)
+        GLES31.glTexSubImage2D(
+            GLES31.GL_TEXTURE_2D, 0, 0, 0, dyeW, dyeH,
+            GLES31.GL_RGBA, GLES31.GL_FLOAT, buf
+        )
+        GLES31.glBindTexture(GLES31.GL_TEXTURE_2D, 0)
+        layersDirty = true
+        GLUtil.checkError("importImage")
+    }
+
     fun smear(u: Float, v: Float, prevU: Float, prevV: Float) {
         if (!allocated) return
 

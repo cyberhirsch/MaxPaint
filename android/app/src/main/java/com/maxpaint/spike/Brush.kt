@@ -40,7 +40,13 @@ enum class Brush(val label: String, val carriesPigment: Boolean, val short: Stri
     FREEZE("Freeze", false, "set"),
 
     /** The inverse: lifts baked paint back into the simulation. */
-    THAW("Thaw", false, "melt");
+    THAW("Thaw", false, "melt"),
+
+    /**
+     * Rearranges pixels that are already down rather than painting: the
+     * first mode is pixel sorting. Set paint and imported photos alike.
+     */
+    GLITCH("Glitch", false, "glitch");
 
     companion object {
         val labels: List<String> get() = entries.map { it.label }
