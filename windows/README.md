@@ -18,7 +18,7 @@ drawn as a capsule from the previous sample so a fast stroke stays a line, and
 a capillary pass creeps it into the paper and dries it onto the layer. Both
 keep running after you switch brushes, because paint has to go on settling.
 
-**Paint** is the streamed FLIP pour with motion inheritance, carrying the
+**Fluid** is the streamed FLIP pour with motion inheritance, carrying the
 Android presets (Wet Paint, Splatter, Fling, Honey, Mercury) and every slider
 from the Flip panel. **Glitch**
 is pixel sorting under the brush: runs of pixels in a brightness band get
@@ -94,7 +94,7 @@ pool, since particles hold positions in canvas space and cannot follow.
 Up to 8192 px a side and 32 megapixels. **Save PNG** writes the canvas
 at its own resolution, not at the size of the window showing it.
 
-**Image relief** (under the Paint tool): the app derives height, normals
+**Image relief** (under the Fluid tool): the app derives height, normals
 and ambient occlusion from the layer as if brightness were height --
 switch **View** to see each map -- and the picture then drives the brushes.
 **Relief** makes that height field the paint's gravity, so it runs downhill on

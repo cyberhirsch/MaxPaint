@@ -4,9 +4,10 @@
 // rewrites the version header and drops standalone precision statements.
 // The Python harness in ../tools/ remains the behavioural reference.
 //
-// A Dear ImGui panel carries the tools: paint (the streamed pour with
-// motion inheritance) with the Android presets and sliders, and glitch
-// (pixel sorting under the brush). Open loads a picture as set paint --
+// A Dear ImGui panel carries the tools: fluid (the streamed FLIP pour
+// with motion inheritance) with the Android presets and sliders, and
+// glitch (pixel sorting under the brush). Open loads a picture as set
+// paint --
 // dropping a file on the window or passing its path on the command line
 // does the same -- and Save PNG writes the canvas next to the executable,
 // at the canvas's own resolution. The window and the canvas are separate:
@@ -2016,7 +2017,7 @@ struct App {
         layerPanel();
         ImGui::Separator();
 
-        ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
+        ImGui::RadioButton("Fluid", &tool, 0); ImGui::SameLine();
         ImGui::RadioButton("Glitch", &tool, 1); ImGui::SameLine();
         ImGui::RadioButton("Reaction", &tool, 2); ImGui::SameLine();
         ImGui::RadioButton("Gas", &tool, 3); ImGui::SameLine();
@@ -2486,7 +2487,7 @@ int main(int argc, char **argv) {
                                                  "block shuffle", "slit-scan",
                                                  "bit crush"};
             std::snprintf(title, sizeof title, "MaxPaint  |  %s",
-                          app.tool == 0 ? "paint"
+                          app.tool == 0 ? "fluid"
                         : app.tool == 2 ? "reaction"
                         : app.tool == 4 ? "nib"
                         : app.tool == 3 ? "gas"
