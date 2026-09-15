@@ -1,0 +1,81 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// The direction field, smoothed so that strong features carry.
+//
+// A brush that reads the picture one texel at a time has nothing to say about
+// flat ground: no gradient, no direction, no reason to stretch. But a bare
+// patch beside a jawline is not really directionless -- it belongs to the
+// jawline. This pass lets an edge speak for the ground around it, out to a
+// radius, falling off with distance.
+//
+// Orientation is averaged at DOUBLE angle. A box has no head or tail -- turned
+// half a turn it is the same box -- so two edges at +80 and -80 degrees should
+// average to vertical, not cancel to nothing, and they only do that if each is
+// carried as (cos 2t, sin 2t) and the result halved at the end. This is the
+// structure tensor's trick and there is no cheaper way to be right.
+//
+// The average is weighted by edge strength as well as distance, so a contour
+// dominates its neighbourhood instead of being diluted by the flat ground it
+// runs through -- which is the whole point.
+
+layout(binding = 0) uniform highp sampler2D uProps;   // r h, gb normal, a occlusion
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uSize;
+uniform int   uRadius;   // 0 leaves every texel speaking only for itself
+
+// Same measure the scatter brush uses: tan(tilt), folded into 0..1 without a
+// cliff. sin(tilt) saturates and would call every texture a wall.
+float edgeAt(ivec2 q, out vec2 dir) {
+    vec2 n = texelFetch(uProps, clamp(q, ivec2(0), uSize - ivec2(1)), 0).gb;
+    float sinT = min(length(n), 0.9999);
+    dir = sinT > 1e-4 ? vec2(-n.y, n.x) / sinT : vec2(1.0, 0.0);
+    float tanT = sinT / max(sqrt(1.0 - sinT * sinT), 1e-4);
+    return clamp(tanT / (tanT + 1.0), 0.0, 1.0);
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= uSize.x || p.y >= uSize.y) return;
+
+    vec2 dir;
+    float own = edgeAt(p, dir);
+    float ownAng = atan(dir.y, dir.x);
+
+    if (uRadius <= 0) {
+        imageStore(uDst, p, vec4(cos(2.0 * ownAng) * own, sin(2.0 * ownAng) * own,
+                                 own, own));
+        return;
+    }
+
+    // a 5x5 lattice stretched over the radius: enough taps to find a contour,
+    // few enough to run every frame the maps are rebuilt
+    int step = max(1, uRadius / 2);
+    vec2 acc = vec2(0.0);
+    float wDir = 0.0, eSum = 0.0, wSum = 0.0;
+    for (int j = -2; j <= 2; j++) {
+        for (int i = -2; i <= 2; i++) {
+            vec2 tdir;
+            float e = edgeAt(p + ivec2(i, j) * step, tdir);
+            float d = length(vec2(float(i), float(j))) / 2.0;
+            float sw = exp(-d * d * 1.6);          // the falloff with distance
+            float ang = atan(tdir.y, tdir.x);
+            acc += sw * e * vec2(cos(2.0 * ang), sin(2.0 * ang));
+            wDir += sw * e;
+            eSum += sw * e;
+            wSum += sw;
+        }
+    }
+
+    // length of the averaged double-angle vector is how much the neighbours
+    // agree; a scattered field shrinks toward nothing on its own
+    vec2 ori = wDir > 1e-6 ? acc / wDir : vec2(cos(2.0 * ownAng), sin(2.0 * ownAng));
+    float coherence = wDir > 1e-6 ? length(acc) / wDir : 0.0;
+    float spread = eSum / max(wSum, 1e-6);
+
+    // an edge may lend its strength to the ground around it, never take any
+    imageStore(uDst, p, vec4(ori * coherence, max(own, spread), own));
+}

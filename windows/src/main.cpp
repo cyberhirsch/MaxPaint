@@ -997,6 +997,9 @@ struct App {
     float scatterSize = 14.0f;
     float scatterStretch = 2.5f;
     float scatterBias = 2.0f;     // above 1 saves the stretch for real edges
+    int scatterReach = 12;        // how far a strong feature speaks for the flat
+    Prog pStructure;
+    GLuint structure = 0;         // rg orientation at double angle, b edge
     float scatterAlign = 1.0f;
     float scatterOpacity = 1.0f;
     float scatterJitter = 0.45f;
@@ -1044,7 +1047,7 @@ struct App {
     // resized, so everything it made last time has to go back first.
     void allocate(int w, int h) {
         canvasW = w; canvasH = h;
-        for (GLuint *t : {&background, &backgroundB, &live, &props})
+        for (GLuint *t : {&background, &backgroundB, &live, &props, &structure})
             if (*t) { glDeleteTextures(1, t); *t = 0; }
         for (GLuint *f : {&fboBackground, &fboLive})
             if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
@@ -1055,6 +1058,7 @@ struct App {
         if (!pCopyRect.id) pCopyRect.id = computeProgram("copy_rect.comp");
         if (!pProps.id) pProps.id = computeProgram("props.comp");
         if (!pScatter.id) pScatter.id = computeProgram("scatter.comp");
+        if (!pStructure.id) pStructure.id = computeProgram("structure.comp");
         if (!pDrift.id) pDrift.id = computeProgram("glitch_drift.comp");
         if (!pBlocks.id) pBlocks.id = computeProgram("glitch_blocks.comp");
         if (!pSlit.id) pSlit.id = computeProgram("glitch_slit.comp");
@@ -1068,6 +1072,7 @@ struct App {
             rdTex[i] = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         }
         props = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        structure = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         flip.propsTex = props;
         glGenFramebuffers(1, &fboBackground);
         glBindFramebuffer(GL_FRAMEBUFFER, fboBackground);
@@ -1605,11 +1610,11 @@ struct App {
 
         pScatter.use();
         glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
-        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, props);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, structure);
         glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, referenceTex());
         glActiveTexture(GL_TEXTURE0);
         pScatter.set("uSrc", 0);
-        pScatter.set("uProps", 1);
+        pScatter.set("uStruct", 1);
         pScatter.set("uRef", 2);
         glBindImageTexture(0, backgroundB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         pScatter.set2i("uCentre", cx, cy);
@@ -1800,7 +1805,7 @@ struct App {
     // file is something you come back to.
 
     static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
-    static const uint32_t FILE_VERSION = 4;   // 2 the stack, 3 the reference, 4 edge bias
+    static const uint32_t FILE_VERSION = 5;   // 2 stack, 3 reference, 4 bias, 5 reach
 
     template <class T> static void put(std::ofstream &f, const T &v) {
         f.write(reinterpret_cast<const char *>(&v), sizeof v);
@@ -1828,7 +1833,7 @@ struct App {
         put(f, referenceLayer);
         put(f, scatterCount); put(f, scatterSize); put(f, scatterStretch);
         put(f, scatterAlign); put(f, scatterOpacity); put(f, scatterJitter);
-        put(f, scatterBias);
+        put(f, scatterBias); put(f, scatterReach);
         put(f, scatterColour);
     }
 
@@ -1851,7 +1856,7 @@ struct App {
         get(f, referenceLayer);
         get(f, scatterCount); get(f, scatterSize); get(f, scatterStretch);
         get(f, scatterAlign); get(f, scatterOpacity); get(f, scatterJitter);
-        get(f, scatterBias);
+        get(f, scatterBias); get(f, scatterReach);
         get(f, scatterColour);
     }
 
@@ -2294,6 +2299,8 @@ struct App {
             ImGui::SliderFloat("Align", &scatterAlign, 0, 1, "%.2f");
             ImGui::SliderFloat("Stretch", &scatterStretch, 0, 8, "%.2f");
             ImGui::SliderFloat("Edge bias", &scatterBias, 0.25f, 6, "%.2f");
+            if (ImGui::SliderInt("Feature reach", &scatterReach, 0, 64, "%d px"))
+                propsFrame = 0;
             ImGui::Separator();
             const char *from[] = {"Under the box", "Elsewhere in the disc",
                                   "Anywhere in the picture"};
@@ -2409,6 +2416,17 @@ struct App {
         pProps.set("uInvert", reliefInvert ? 1.0f : 0.0f);
         pProps.set("uAoRadius", aoRadius);
         pProps.set("uSlope", slope);
+        glDispatchCompute((canvasW + 7) / 8, (canvasH + 7) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+        // and the direction field that rides on them: strong features lending
+        // their orientation and their stretch to the flat ground nearby
+        pStructure.use();
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, props);
+        pStructure.set("uProps", 0);
+        glBindImageTexture(0, structure, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pStructure.set2i("uSize", canvasW, canvasH);
+        pStructure.set("uRadius", scatterReach);
         glDispatchCompute((canvasW + 7) / 8, (canvasH + 7) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
