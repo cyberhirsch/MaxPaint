@@ -20,12 +20,23 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // anywhere in the picture -- so a blank canvas stays blank and a photograph
 // comes apart into its own palette.
 
-layout(binding = 0) uniform highp sampler2D uSrc;     // the layer: colour and destination
+// uSrc is the layer being painted, and is only read so an uncovered texel can
+// keep what was there. uRef is the picture the brush LOOKS at: where the
+// colour comes from, and what the property map was derived from. They are the
+// same texture until a reference layer is chosen, and separating them is what
+// lets you scatter a photograph onto an empty layer above it.
+layout(binding = 0) uniform highp sampler2D uSrc;
 layout(binding = 1) uniform highp sampler2D uProps;   // r h, gb normal, a occlusion
+layout(binding = 2) uniform highp sampler2D uRef;
 layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
 
 uniform ivec2 uCentre;
-uniform int   uRadius;
+uniform int   uRadius;      // where box CENTRES are scattered
+// How far this pass may write. The disc decides where boxes start, not where
+// they are allowed to end: a box whose centre sits near the rim still gets
+// laid down whole, so the brush outline never saws one in half. uReach is the
+// radius plus the largest a box can grow, and the host works it out.
+uniform int   uReach;
 uniform float uFalloff;
 uniform ivec2 uSize;        // the canvas
 uniform int   uCount;       // boxes in this dab
@@ -50,12 +61,10 @@ float edgeWeight(vec2 d) {
 
 void main() {
     ivec2 g = ivec2(gl_GlobalInvocationID.xy);
-    int span = 2 * uRadius + 1;
+    int span = 2 * uReach + 1;
     if (g.x >= span || g.y >= span) return;
 
-    ivec2 d = g - ivec2(uRadius);
-    if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
-
+    ivec2 d = g - ivec2(uReach);
     ivec2 p = uCentre + d;
     if (p.x < 0 || p.y < 0 || p.x >= uSize.x || p.y >= uSize.y) return;
 
@@ -101,7 +110,7 @@ void main() {
             cpos = ivec2(hash(s + 7.3) * float(uSize.x),
                          hash(s + 8.9) * float(uSize.y));
         }
-        vec4 c = texelFetch(uSrc, clamp(cpos, ivec2(0), uSize - ivec2(1)), 0) * uOpacity;
+        vec4 c = texelFetch(uRef, clamp(cpos, ivec2(0), uSize - ivec2(1)), 0) * uOpacity;
 
         // premultiplied, so a box over a box is a plain "over"
         outc = c + outc * (1.0 - clamp(c.a, 0.0, 1.0));

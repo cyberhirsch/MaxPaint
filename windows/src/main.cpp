@@ -939,6 +939,11 @@ struct App {
     };
     std::vector<CanvasLayer> layers;
     int activeLayer = 0;
+    // The layer the brushes LOOK at, as against the one they paint into.
+    // -1 means the flattened stack, which is what they always used. Point it
+    // at a photograph and you can scatter that photograph onto an empty layer
+    // above it, or let its relief steer paint poured somewhere else.
+    int referenceLayer = -1;
     GLuint flatA = 0, flatB = 0, fboScratch = 0, flatResult = 0;
     Prog pLayerOver;
 
@@ -1119,6 +1124,12 @@ struct App {
         return i == activeLayer ? background : layers[i].tex;
     }
 
+    GLuint referenceTex() const {
+        if (referenceLayer >= 0 && referenceLayer < (int)layers.size())
+            return layerTex(referenceLayer);
+        return flatResult ? flatResult : background;
+    }
+
     // The raw switch, with no history side effects: an undo restoring a step
     // taken on another layer has to go there without committing anything.
     void switchLayerRaw(int i) {
@@ -1143,6 +1154,7 @@ struct App {
         l.tex = makeTexture(canvasW, canvasH, GL_RGBA16F, GL_LINEAR);
         clearLayer(l.tex);
         std::snprintf(l.name, sizeof l.name, "Layer %d", (int)layers.size() + 1);
+        if (referenceLayer > activeLayer) referenceLayer++;
         layers.insert(layers.begin() + activeLayer + 1, l);
         activeLayer++;
         background = layers[activeLayer].tex;
@@ -1156,6 +1168,8 @@ struct App {
         commitIfDirty();
         glDeleteTextures(1, &background);
         layers.erase(layers.begin() + activeLayer);
+        if (referenceLayer == activeLayer) referenceLayer = -1;
+        else if (referenceLayer > activeLayer) referenceLayer--;
         activeLayer = std::min(activeLayer, (int)layers.size() - 1);
         background = layers[activeLayer].tex;
         rebindBackgroundFbo();
@@ -1167,6 +1181,8 @@ struct App {
         int to = activeLayer + delta;
         if (to < 0 || to >= (int)layers.size()) return;
         layers[activeLayer].tex = background;
+        if (referenceLayer == activeLayer) referenceLayer = to;
+        else if (referenceLayer == to) referenceLayer = activeLayer;
         std::swap(layers[activeLayer], layers[to]);
         activeLayer = to;
         background = layers[activeLayer].tex;
@@ -1580,16 +1596,24 @@ struct App {
     void scatterDab(float u, float v) {
         int cx = (int)(u * canvasW), cy = (int)(v * canvasH);
         int r = std::min(127, std::max(2, (int)(flip.brushRadius * canvasH)));
+        // A box centred on the rim still lands whole, so the pass has to reach
+        // out by the largest a box can grow: full jitter, full stretch.
+        int margin = (int)std::ceil(scatterSize * (1.0f + scatterJitter) *
+                                    (1.0f + scatterStretch)) + 2;
+        int reach = std::min(511, r + margin);
 
         pScatter.use();
         glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, props);
+        glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, referenceTex());
         glActiveTexture(GL_TEXTURE0);
         pScatter.set("uSrc", 0);
         pScatter.set("uProps", 1);
+        pScatter.set("uRef", 2);
         glBindImageTexture(0, backgroundB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         pScatter.set2i("uCentre", cx, cy);
         pScatter.set("uRadius", r);
+        pScatter.set("uReach", reach);
         pScatter.set("uFalloff", glitchFalloff);
         pScatter.set2i("uSize", canvasW, canvasH);
         pScatter.set("uCount", scatterCount);
@@ -1601,17 +1625,20 @@ struct App {
         pScatter.set("uJitter", scatterJitter);
         pScatter.set("uSeed", scatterSeed);
         scatterSeed += 3.7f;
-        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        glDispatchCompute((2 * reach + 8) / 8, (2 * reach + 8) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
+        // The whole square comes forward, not a disc: the pass seeded every
+        // texel from the layer, so the ones no box reached copy back unchanged
+        // and a box hanging over the rim survives intact.
         pCopyRect.use();
         glBindTexture(GL_TEXTURE_2D, backgroundB);
         pCopyRect.set("uSrc", 0);
         glBindImageTexture(0, background, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-        pCopyRect.set2i("uOrigin", cx - r, cy - r);
-        pCopyRect.set2i("uSize", 2 * r + 1, 2 * r + 1);
-        pCopyRect.set("uRadius", r);
-        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        pCopyRect.set2i("uOrigin", cx - reach, cy - reach);
+        pCopyRect.set2i("uSize", 2 * reach + 1, 2 * reach + 1);
+        pCopyRect.set("uRadius", 0);
+        glDispatchCompute((2 * reach + 8) / 8, (2 * reach + 8) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
         canvasDirty = true;
     }
@@ -1771,7 +1798,7 @@ struct App {
     // file is something you come back to.
 
     static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
-    static const uint32_t FILE_VERSION = 2;   // 2 carries the layer stack
+    static const uint32_t FILE_VERSION = 3;   // 2 added the stack, 3 the reference
 
     template <class T> static void put(std::ofstream &f, const T &v) {
         f.write(reinterpret_cast<const char *>(&v), sizeof v);
@@ -1796,6 +1823,10 @@ struct App {
         put(f, slitStretch); put(f, crushLevels);
         put(f, rdFeed); put(f, rdKill); put(f, rdCouple); put(f, rdIters);
         put(f, rdInk); put(f, rdLo); put(f, rdHi); put(f, rdRun);
+        put(f, referenceLayer);
+        put(f, scatterCount); put(f, scatterSize); put(f, scatterStretch);
+        put(f, scatterAlign); put(f, scatterOpacity); put(f, scatterJitter);
+        put(f, scatterColour);
     }
 
     void readSettings(std::ifstream &f) {
@@ -1814,6 +1845,10 @@ struct App {
         get(f, slitStretch); get(f, crushLevels);
         get(f, rdFeed); get(f, rdKill); get(f, rdCouple); get(f, rdIters);
         get(f, rdInk); get(f, rdLo); get(f, rdHi); get(f, rdRun);
+        get(f, referenceLayer);
+        get(f, scatterCount); get(f, scatterSize); get(f, scatterStretch);
+        get(f, scatterAlign); get(f, scatterOpacity); get(f, scatterJitter);
+        get(f, scatterColour);
     }
 
     std::vector<unsigned short> readLayer(GLuint tex) const {
@@ -2000,9 +2035,35 @@ struct App {
             ImGui::SliderFloat("##op", &layers[i].opacity, 0, 1, "%.2f");
             ImGui::PopID();
         }
+        ImGui::Separator();
+        const char *refName = referenceLayer >= 0 && referenceLayer < (int)layers.size()
+                            ? layers[referenceLayer].name : "The whole stack";
+        int wasRef = referenceLayer;
+        if (ImGui::BeginCombo("Reference", refName)) {
+            if (ImGui::Selectable("The whole stack", referenceLayer < 0))
+                referenceLayer = -1;
+            for (int i = (int)layers.size() - 1; i >= 0; i--) {
+                ImGui::PushID(i);
+                if (ImGui::Selectable(layers[i].name, referenceLayer == i))
+                    referenceLayer = i;
+                ImGui::PopID();
+            }
+            ImGui::EndCombo();
+        }
+        // the maps describe a different picture now; rebuild them next frame
+        if (referenceLayer != wasRef) propsFrame = 0;
+
         ImGui::TextWrapped("Brushes paint into the selected layer; the tick hides "
                            "one without discarding it. Undo steps remember the "
-                           "layer they were taken on and go back there.");
+                           "layer they were taken on and go back there.\n\n"
+                           "Reference is the layer the brushes LOOK at, as against "
+                           "the one they paint into: where Scatter takes its "
+                           "colours and what the height, normal and occlusion maps "
+                           "are derived from. Point it at a photograph and you can "
+                           "scatter that photograph onto an empty layer above it, "
+                           "or let its relief steer paint poured somewhere else. "
+                           "The whole stack is the default and is what they always "
+                           "used.");
     }
 
     // Canvas size and window size, which are no longer the same question.
@@ -2337,7 +2398,7 @@ struct App {
     void updateProps() {
         pProps.use();
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, flatResult ? flatResult : background);
+        glBindTexture(GL_TEXTURE_2D, referenceTex());
         pProps.set("uSrc", 0);
         glBindImageTexture(0, props, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         pProps.set("uInvert", reliefInvert ? 1.0f : 0.0f);
