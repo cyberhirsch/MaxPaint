@@ -68,6 +68,8 @@ typedef void GLvoid;
 #define GL_RGBA8 0x8058
 #define GL_PACK_ALIGNMENT 0x0D05
 #define GL_MAX_TEXTURE_SIZE 0x0D33
+#define GL_HALF_FLOAT 0x140B
+#define GL_UNPACK_ALIGNMENT 0x0CF5
 #define GL_PROGRAM_POINT_SIZE 0x8642
 #define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
 #define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000
@@ -94,6 +96,7 @@ typedef void GLvoid;
     X(void, glUniform1f, (GLint, GLfloat)) \
     X(void, glUniform2f, (GLint, GLfloat, GLfloat)) \
     X(void, glUniform2i, (GLint, GLint, GLint)) \
+    X(void, glUniform4f, (GLint, GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(void, glGenBuffers, (GLsizei, GLuint *)) \
     X(void, glBindBuffer, (GLenum, GLuint)) \
     X(void, glBufferData, (GLenum, GLsizeiptr, const void *, GLenum)) \
@@ -127,7 +130,11 @@ typedef void GLvoid;
     X(void, glDeleteFramebuffers, (GLsizei, const GLuint *)) \
     X(void, glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
     X(void, glPixelStorei, (GLenum, GLint)) \
-    X(void, glGetIntegerv, (GLenum, GLint *))
+    X(void, glGetIntegerv, (GLenum, GLint *)) \
+    X(void, glGetTexImage, (GLenum, GLint, GLenum, GLenum, void *)) \
+    X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, \
+                                 GLuint, GLenum, GLint, GLint, GLint, GLint, \
+                                 GLsizei, GLsizei, GLsizei))
 
 #define MAXPAINT_GL_DECLARE(ret, name, args) extern ret (APIENTRY *name) args;
 MAXPAINT_GL_FUNCS(MAXPAINT_GL_DECLARE)

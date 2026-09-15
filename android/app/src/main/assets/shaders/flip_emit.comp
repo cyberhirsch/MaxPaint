@@ -1,5 +1,6 @@
 #version 310 es
 precision highp float;
+precision highp sampler2D;
 layout(local_size_x = 64) in;
 
 // Emits particles into a fixed pool as a ring buffer. The write head is managed
@@ -29,6 +30,13 @@ uniform vec2  uAxis;      // unit vector along the contact's long axis, world sp
 uniform float uMinor;     // minor over major; 1.0 is a circle
 uniform float uInk;
 uniform float uJitterSeed;
+// The picture decides how much pigment a particle carries: height reads 1 on
+// the lit side and 0 in shadow, so with this up a stroke loads on the bright
+// planes and runs thin over the dark ones. The count per dab is the same --
+// it is the charge on each drop that varies, which is what a loaded brush
+// does anyway. 0 keeps every particle equally inked.
+layout(binding = 0) uniform highp sampler2D uProps;
+uniform float uHeightInk;
 
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -66,6 +74,12 @@ void main() {
     // chain of knots, one per frame. Spread the clocks and drying is
     // continuous along the stroke.
     float age0 = hash(s + 11.7) * 0.05;
+    float ink = uInk;
+    if (uHeightInk > 0.0) {
+        float h = clamp(texture(uProps, pos).r, 0.0, 1.0);
+        ink *= mix(1.0, h, clamp(uHeightInk, 0.0, 1.0));
+    }
+
     data[slot * 2]     = vec4(pos, vel);
-    data[slot * 2 + 1] = vec4(uInk, age0, 1.0, hash(s + 5.9));   // state 1 = live
+    data[slot * 2 + 1] = vec4(ink, age0, 1.0, hash(s + 5.9));   // state 1 = live
 }

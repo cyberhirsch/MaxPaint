@@ -670,6 +670,29 @@ class MainActivity : AppCompatActivity() {
             }
 
             Brush.FLIP -> {
+                panelBody.addView(slider("Relief",
+                    (renderer.sim.relief * 5).toInt(), 100) { p, l ->
+                    renderer.sim.relief = p / 5f
+                    l.text = if (p == 0) "Relief: 0  (a canvas has no up)"
+                             else String.format(
+                                 "Relief: %.1f  (paint runs downhill on the picture)",
+                                 p / 5f)
+                })
+                panelBody.addView(slider("Dry in shade",
+                    (renderer.sim.shadeDry * 100).toInt(), 100) { p, l ->
+                    renderer.sim.shadeDry = p / 100f
+                    l.text = String.format(
+                        "Dry in shade: %.2f  (paint sets first where it is buried)",
+                        p / 100f)
+                })
+                panelBody.addView(slider("Ink from height",
+                    (renderer.sim.heightInk * 100).toInt(), 100) { p, l ->
+                    renderer.sim.heightInk = p / 100f
+                    l.text = String.format(
+                        "Ink from height: %.2f  (bright planes take more pigment)",
+                        p / 100f)
+                })
+
                 // Coarse on purpose. A cell has to hold several particles or
                 // the pressure solve couples each one to nothing; measured
                 // coupling peaks near eight per occupied cell.
@@ -820,27 +843,88 @@ class MainActivity : AppCompatActivity() {
             }
 
             Brush.GLITCH -> {
-                panelBody.addView(labeled("Mode", spinner(listOf("Pixel sort"), 0) { }))
-                panelBody.addView(labeled("Direction", spinner(
-                    listOf("Horizontal", "Vertical"),
-                    if (renderer.sim.glitchVertical) 1 else 0
-                ) { i -> renderer.sim.glitchVertical = i == 1 }))
-                panelBody.addView(labeled("Order", spinner(
-                    listOf("Dark to light", "Light to dark"),
-                    if (renderer.sim.glitchDescending) 1 else 0
-                ) { i -> renderer.sim.glitchDescending = i == 1 }))
-                panelBody.addView(slider("Low", (renderer.sim.glitchLo * 100).toInt(), 100) { p, l ->
-                    renderer.sim.glitchLo = p / 100f
-                    l.text = String.format("Low: %.2f  (darker than this stays put)", p / 100f)
+                panelBody.addView(labeled("Mode", spinner(
+                    listOf("Pixel sort", "Channel drift", "Block shuffle",
+                           "Slit-scan", "Bit crush"),
+                    renderer.sim.glitchMode
+                ) { i -> renderer.sim.glitchMode = i; showToolSettings() }))
+
+                val directional = renderer.sim.glitchMode.let { it == 0 || it == 1 || it == 3 }
+                if (directional) {
+                    panelBody.addView(labeled("Direction", spinner(
+                        listOf("Horizontal", "Vertical"),
+                        if (renderer.sim.glitchVertical) 1 else 0
+                    ) { i -> renderer.sim.glitchVertical = i == 1 }))
+                }
+
+                when (renderer.sim.glitchMode) {
+                    0 -> {
+                        panelBody.addView(labeled("Order", spinner(
+                            listOf("Dark to light", "Light to dark"),
+                            if (renderer.sim.glitchDescending) 1 else 0
+                        ) { i -> renderer.sim.glitchDescending = i == 1 }))
+                        panelBody.addView(slider("Low", (renderer.sim.glitchLo * 100).toInt(), 100) { p, l ->
+                            renderer.sim.glitchLo = p / 100f
+                            l.text = String.format("Low: %.2f  (darker than this stays put)", p / 100f)
+                        })
+                        panelBody.addView(slider("High", (renderer.sim.glitchHi * 100).toInt(), 100) { p, l ->
+                            renderer.sim.glitchHi = p / 100f
+                            l.text = String.format("High: %.2f  (lighter than this stays put)", p / 100f)
+                        })
+                    }
+                    1 -> panelBody.addView(slider("Separation",
+                        renderer.sim.driftAmount.toInt(), 40) { p, l ->
+                        renderer.sim.driftAmount = p.toFloat()
+                        l.text = "Separation: $p px"
+                    })
+                    2 -> {
+                        panelBody.addView(slider("Block", renderer.sim.blockSize, 64) { p, l ->
+                            renderer.sim.blockSize = p.coerceAtLeast(2)
+                            l.text = "Block: ${p.coerceAtLeast(2)} px"
+                        })
+                        panelBody.addView(slider("Displacement",
+                            renderer.sim.blockAmount.toInt(), 64) { p, l ->
+                            renderer.sim.blockAmount = p.toFloat()
+                            l.text = "Displacement: $p px"
+                        })
+                    }
+                    3 -> panelBody.addView(slider("Stretch",
+                        (renderer.sim.slitStretch * 100).toInt(), 100) { p, l ->
+                        renderer.sim.slitStretch = p / 100f
+                        l.text = String.format("Stretch: %.2f", p / 100f)
+                    })
+                    4 -> panelBody.addView(slider("Levels", renderer.sim.crushLevels, 32) { p, l ->
+                        renderer.sim.crushLevels = p.coerceAtLeast(2)
+                        l.text = "Levels: ${p.coerceAtLeast(2)} per channel"
+                    })
+                }
+
+                panelBody.addView(slider("Edge falloff",
+                    (renderer.sim.glitchFalloff * 100).toInt(), 100) { p, l ->
+                    renderer.sim.glitchFalloff = p / 100f
+                    l.text = String.format("Edge falloff: %.2f  (0 is a hard edge)", p / 100f)
                 })
-                panelBody.addView(slider("High", (renderer.sim.glitchHi * 100).toInt(), 100) { p, l ->
-                    renderer.sim.glitchHi = p / 100f
-                    l.text = String.format("High: %.2f  (lighter than this stays put)", p / 100f)
-                })
-                panelBody.addView(hint("Sorts the pixels under the brush by brightness, " +
-                    "along each row or column. Runs of pixels inside the band get " +
-                    "sorted; everything outside it holds its place. Open a photo " +
-                    "with the button on the right and take it apart."))
+
+                panelBody.addView(hint(when (renderer.sim.glitchMode) {
+                    1 -> "Pulls red and blue apart along the stroke axis and leaves " +
+                         "green where it was: the colour fringing of a misregistered " +
+                         "scan. It shows on a grey photograph too -- the separation " +
+                         "is what makes the colour."
+                    2 -> "Reads the picture on a fixed grid and lets each block fetch " +
+                         "from a displaced one. The grid is anchored to the canvas, so " +
+                         "overlapping dabs keep breaking on the same seams. Set Block " +
+                         "to 8 for a JPEG's own lattice."
+                    3 -> "Extrudes the single line under the centre of the brush across " +
+                         "the disc, the way a slit-scan camera draws time. Hold still " +
+                         "and it keeps reaching further out."
+                    4 -> "Quantises each channel to a few levels, with a 4x4 ordered " +
+                         "dither deciding which way a value rounds, so flats break into " +
+                         "crosshatch rather than banding."
+                    else -> "Sorts the pixels under the brush by brightness, along each " +
+                            "row or column. Runs of pixels inside the band get sorted; " +
+                            "everything outside it holds its place. Open a photo with " +
+                            "the button on the right and take it apart."
+                }))
             }
 
         }

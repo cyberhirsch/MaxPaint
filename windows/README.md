@@ -7,9 +7,20 @@ loader only rewrites the `#version` line and drops standalone precision
 statements. The Python harness in `../tools/` is the behavioural
 reference.
 
-A panel on the left carries the three tools. **Paint** is the streamed pour
-with motion inheritance, with the Android presets (Wet Paint, Splatter,
-Fling, Honey, Mercury) and every slider from the Flip panel. **Glitch**
+A panel on the left carries five tools. **Gas** is the Eulerian medium the
+Android app calls its hero, running the same passes in the same order: a
+velocity field you push pigment through, made incompressible again every frame,
+with vorticity, dye dissipation and a bake that moves settled paint onto the
+layer. Freeze now sets everything at once and Thaw lifts it back into the air;
+Stir only pushes what is already there without adding ink. **Nib** is pen and
+charcoal -- the mark goes into its own field where the fluid cannot smear it,
+drawn as a capsule from the previous sample so a fast stroke stays a line, and
+a capillary pass creeps it into the paper and dries it onto the layer. Both
+keep running after you switch brushes, because paint has to go on settling.
+
+**Paint** is the streamed FLIP pour with motion inheritance, carrying the
+Android presets (Wet Paint, Splatter, Fling, Honey, Mercury) and every slider
+from the Flip panel. **Glitch**
 is pixel sorting under the brush: runs of pixels in a brightness band get
 sorted along each row or column, everything else holds its place. Four more
 modes share that brush and its plumbing: **Channel drift** pulls red and blue
@@ -49,6 +60,20 @@ shows the raw field.
 or passing its path on the command line does the same), **Save PNG**
 writes the canvas next to the executable, **Clear** starts over.
 
+**Save painting** writes the painting rather than a picture of it: the set
+layer at its own precision -- half floats, exactly what the texture holds, so
+a reload is bit-for-bit -- plus the reaction field if one is alive and the
+settings that were in play. **Open painting** brings it back, and a
+`.maxpaint` file dropped on the window or passed on the command line opens the
+same way. Wet particles are not kept; they are a stroke in progress.
+
+**Undo** and **Redo** (ctrl+Z, ctrl+Y) step through whole snapshots of the set
+layer. The newest stroke is committed only when something needs it to be --
+the next stroke starting, or an undo -- because committing at mouse-up would
+catch the paint mid-dry, the FLIP layer going on baking for seconds after the
+hand stops. Depth is whatever fits a memory budget, so a big canvas gets fewer
+steps rather than a gigabyte of them.
+
 **Canvas & window** (a fold in the panel) separates the two things that
 used to be one. The window is freely resizable, and the canvas keeps its
 own resolution inside it -- centred, scaled to fit, on a dark surround.
@@ -61,13 +86,21 @@ at its own resolution, not at the size of the window showing it.
 
 **Image relief** (under the Paint tool): the app derives height, normals
 and ambient occlusion from the layer as if brightness were height --
-switch **View** to see each map -- and the Relief slider makes that
-height field the paint's gravity, so it runs downhill on a photo.
-True depth would need a neural model; these are what the pixels alone
-can say.
+switch **View** to see each map -- and the picture then drives the brushes.
+**Relief** makes that height field the paint's gravity, so it runs downhill on
+a photo. **Dry in shade** shortens the settle time where the occlusion map
+says the picture is buried, so pigment sets in the creases while the open
+planes are still wet. **Ink from height** charges each drop by the brightness
+it was laid on, so a stroke loads on the lit planes and runs thin over the
+dark ones. The pixel sort reads the same maps: **Edge bound** lets the
+picture's own contours stop a run, so silhouettes survive while the smooth
+interiors they enclose liquefy, and **Axis from surface** lets the layer's
+slope choose the sort direction. True depth would need a neural model; these
+are what the pixels alone can say.
 
 Keys still work: W/S flow, E/D settle, R/F motion inheritance, T/G drag,
-Q/A cohesion, [ ] brush size, 1/2/3 tool, M cycles the glitch mode, C clear.
+Q/A cohesion, [ ] brush size, 1-5 tool, M cycles the glitch mode,
+ctrl+Z / ctrl+Y undo and redo, C clear.
 
 ## Building
 

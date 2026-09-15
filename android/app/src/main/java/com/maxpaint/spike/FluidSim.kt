@@ -148,6 +148,24 @@ class FluidSim(private val ctx: Context) {
     var glitchVertical = false
     var glitchDescending = false
 
+    /** How much of the dab's radius the edge fades over. Toward the rim the
+     *  band closes on its own midpoint, so fewer pixels qualify and the runs
+     *  that form are shorter: the mark thins out instead of ending on a
+     *  circle. 0 is the hard edge the first build had. */
+    var glitchFalloff = 0.5f
+
+    /** Glitch mode: 0 pixel sort, 1 channel drift, 2 block shuffle,
+     *  3 slit-scan, 4 bit crush. All five share the back-buffer plumbing --
+     *  work the disc into the layer's spare buffer, copy just that disc
+     *  forward -- so a dab costs its footprint whichever one is chosen. */
+    var glitchMode = 0
+    var driftAmount = 12f       // channel separation, texels
+    var blockSize = 8           // a JPEG's own grid
+    var blockAmount = 14f       // greatest block displacement, texels
+    var slitStretch = 0.6f
+    var crushLevels = 5
+    private var glitchSeed = 1f   // moves per dab, so holding still reshuffles
+
     /** Fraction of pigment the solvent leaves behind at its centre. */
     var solventBite = 0.45f
 
@@ -160,6 +178,36 @@ class FluidSim(private val ctx: Context) {
     var pickup = 2.5f
 
     // --- nib ---
+    /** Image properties as brush input. The layer is read as if brightness
+     *  were height: Relief makes that height field the paint's gravity,
+     *  Dry in shade sets pigment sooner where the occlusion map says the
+     *  picture is buried, and Ink from height charges each drop by the
+     *  brightness it was laid on. All 0 by default, so the medium behaves
+     *  exactly as it did until one of them is turned up. */
+    var relief = 0f
+    var shadeDry = 0f
+    var heightInk = 0f
+    var reliefInvert = false
+    var propsAoRadius = 24f
+    var propsSlope = 40f
+    private var propsFrame = 0
+
+    /** True when any brush is reading the property maps. */
+    private fun propsWanted() = relief > 0f || shadeDry > 0f || heightInk > 0f
+
+    /** The maps describe the layer, and the layer changes as paint bakes;
+     *  a refresh every few frames is enough and costs a full-grid pass. */
+    private fun updateProps() {
+        pProps.use()
+        background.read.bindSampler(0)
+        pProps.set("uSrc", 0)
+        props.bindImage(0, GLES31.GL_WRITE_ONLY)
+        pProps.set("uInvert", if (reliefInvert) 1f else 0f)
+        pProps.set("uAoRadius", propsAoRadius)
+        pProps.set("uSlope", propsSlope)
+        pProps.dispatch(dyeW, dyeH)
+    }
+
     var nibRadius = 0.006f
     var nibHardness = 0.9f
     var nibInk = 1.0f
@@ -228,6 +276,12 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pSmear: ComputeProgram
     private lateinit var pPixelSort: ComputeProgram
     private lateinit var pCopyRect: ComputeProgram
+    private lateinit var pProps: ComputeProgram
+    private lateinit var props: Tex
+    private lateinit var pDrift: ComputeProgram
+    private lateinit var pBlocks: ComputeProgram
+    private lateinit var pSlit: ComputeProgram
+    private lateinit var pCrush: ComputeProgram
     private lateinit var pBlit: ComputeProgram
     private lateinit var pComposite: ComputeProgram
     /**
@@ -313,6 +367,11 @@ class FluidSim(private val ctx: Context) {
         pSmear = ComputeProgram(ctx, "shaders/smear.comp")
         pPixelSort = ComputeProgram(ctx, "shaders/pixelsort.comp")
         pCopyRect = ComputeProgram(ctx, "shaders/copy_rect.comp")
+        pProps = ComputeProgram(ctx, "shaders/props.comp")
+        pDrift = ComputeProgram(ctx, "shaders/glitch_drift.comp")
+        pBlocks = ComputeProgram(ctx, "shaders/glitch_blocks.comp")
+        pSlit = ComputeProgram(ctx, "shaders/glitch_slit.comp")
+        pCrush = ComputeProgram(ctx, "shaders/glitch_crush.comp")
         pBlit = ComputeProgram(ctx, "shaders/blit.comp")
         pComposite = ComputeProgram(ctx, "shaders/composite.comp")
         flip.init()
@@ -419,6 +478,7 @@ class FluidSim(private val ctx: Context) {
         water = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA32F, GLES31.GL_NEAREST)
         // live particles are drawn here each frame, then composited
         flipInk = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        props = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         nibInkField = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
 
         // FLIP keeps its own grid: sharing the gas brush's pressure field would
@@ -621,21 +681,54 @@ class FluidSim(private val ctx: Context) {
         // the sort holds one line of the disc in a 256-wide workgroup
         val r = (splatRadius * dyeH).toInt().coerceIn(2, 127)
 
-        pPixelSort.use()
+        // every mode reads the layer and writes its dab into the spare buffer
+        val mode = when (glitchMode) {
+            1 -> pDrift
+            2 -> pBlocks
+            3 -> pSlit
+            4 -> pCrush
+            else -> pPixelSort
+        }
+        mode.use()
         src.bindSampler(0)
-        pPixelSort.set("uSrc", 0)
+        mode.set("uSrc", 0)
         dst.bindImage(0, GLES31.GL_WRITE_ONLY)
-        GLES31.glUniform2i(GLES31.glGetUniformLocation(pPixelSort.id, "uCentre"), cx, cy)
-        pPixelSort.set("uRadius", r)
-        pPixelSort.set("uVertical", if (glitchVertical) 1 else 0)
-        pPixelSort.set("uLo", glitchLo)
-        pPixelSort.set("uHi", glitchHi)
-        pPixelSort.set("uDescending", if (glitchDescending) 1 else 0)
-        // one workgroup per line of the disc
-        GLES31.glDispatchCompute(2 * r + 1, 1, 1)
-        GLES31.glMemoryBarrier(
-            GLES31.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT or GLES31.GL_TEXTURE_FETCH_BARRIER_BIT
-        )
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(mode.id, "uCentre"), cx, cy)
+        mode.set("uRadius", r)
+        mode.set("uFalloff", glitchFalloff)
+        when (glitchMode) {
+            1 -> {
+                mode.set("uVertical", if (glitchVertical) 1 else 0)
+                mode.set("uAmount", driftAmount)
+            }
+            2 -> {
+                mode.set("uBlock", blockSize)
+                mode.set("uAmount", blockAmount)
+                mode.set("uSeed", glitchSeed)
+                glitchSeed += 1f
+            }
+            3 -> {
+                mode.set("uVertical", if (glitchVertical) 1 else 0)
+                mode.set("uStretch", slitStretch)
+            }
+            4 -> mode.set("uLevels", crushLevels)
+            else -> {
+                mode.set("uVertical", if (glitchVertical) 1 else 0)
+                mode.set("uLo", glitchLo)
+                mode.set("uHi", glitchHi)
+                mode.set("uDescending", if (glitchDescending) 1 else 0)
+            }
+        }
+        if (glitchMode == 0) {
+            // the sort needs one workgroup per line of the disc for its
+            // shared memory; the per-pixel modes just cover the bounding box
+            GLES31.glDispatchCompute(2 * r + 1, 1, 1)
+            GLES31.glMemoryBarrier(
+                GLES31.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT or GLES31.GL_TEXTURE_FETCH_BARRIER_BIT
+            )
+        } else {
+            mode.dispatch(2 * r + 1, 2 * r + 1)
+        }
 
         pCopyRect.use()
         dst.bindSampler(0)
@@ -643,6 +736,10 @@ class FluidSim(private val ctx: Context) {
         src.bindImage(0, GLES31.GL_WRITE_ONLY)
         GLES31.glUniform2i(GLES31.glGetUniformLocation(pCopyRect.id, "uOrigin"), cx - r, cy - r)
         GLES31.glUniform2i(GLES31.glGetUniformLocation(pCopyRect.id, "uSize"), 2 * r + 1, 2 * r + 1)
+        // the disc only: the sort never wrote the corners of the bounding box,
+        // and an untouched back buffer reads there as bare paper -- a white
+        // square around every dab
+        pCopyRect.set("uRadius", r)
         pCopyRect.dispatch(2 * r + 1, 2 * r + 1)
         layersDirty = true
     }
@@ -798,6 +895,7 @@ class FluidSim(private val ctx: Context) {
      * books — before being retired.
      */
     private fun stepFlip(dt: Float) {
+        if (propsWanted() && (propsFrame++ % 4) == 0) updateProps()
         // The reference solver's step order (Ten Minute Physics 18-flip):
         // integrate, separate, particle-to-grid, incompressibility with drift
         // compensation, grid-to-particle. Particles move first, on the
@@ -818,7 +916,9 @@ class FluidSim(private val ctx: Context) {
         flip.solve(flipIterations, flipOmega, flipU, flipV, flipW, flipH)
 
         flip.gridToParticles(dt, flipU, flipV, flipUOld, flipVOld, flipDensity,
-                             flipW, flipH)
+                             flipW, flipH,
+                             props, if (propsWanted()) relief else 0f,
+                             if (propsWanted()) shadeDry else 0f)
 
         // freshly dried particles land in the background layer, permanently
         flip.draw(state = 2f, target = background.read)
@@ -908,6 +1008,8 @@ class FluidSim(private val ctx: Context) {
      */
     fun pour(u: Float, v: Float, du: Float, dv: Float, dt: Float) {
         if (!allocated || brush != Brush.FLIP || flip.flowRate <= 0f) return
+        flip.emitProps = if (propsWanted()) props else null
+        flip.emitHeightInk = heightInk
         if (pourLastU < 0f) {
             pourLastU = u; pourLastV = v
             pourLastDu = du; pourLastDv = dv

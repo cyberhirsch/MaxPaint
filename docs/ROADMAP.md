@@ -27,14 +27,15 @@ testing changes the priorities, which it does constantly.
 
 | Area | State |
 |---|---|
-| Gas brush (Eulerian) | Shipped; the hero medium, with bake lifecycle, presets, heat view |
+| Gas brush (Eulerian) | Shipped on Android and Windows; the hero medium, with bake lifecycle, presets, heat view |
 | FLIP brush (particles) | Rewritten from the reference 2D FLIP; separation, drift compensation, streamed pour with motion inheritance, age-based settling |
-| Nib, watercolor, vortex, solvent, smear, freeze/thaw | Shipped on Android |
+| Nib, watercolor, vortex, solvent, smear, freeze/thaw | Shipped on Android; nib also on Windows |
 | Glitch brush | Pixel sorting on Android and Windows; channel drift, block shuffle, slit-scan and bit crush on Windows, sharing the same back-buffer plumbing. Every mode has an edge falloff |
 | Reaction-diffusion brush | Gray-Scott on Windows: presets, image-steered feed/kill, ink thresholds, raw-field view |
-| Layers, undo/redo, PNG export | Android |
+| Layers, undo/redo, PNG export | Layers on Android; undo/redo and PNG export on both |
+| Save/load the painting | Windows: the set layer at half-float precision, the reaction field and the settings, as .maxpaint |
 | Image import | Android (system picker) and Windows (dialog / drag-and-drop) |
-| Image properties | Height, normals, ambient occlusion derived from the layer; Relief flow (Windows) |
+| Image properties | Height, normals, ambient occlusion on both hosts. Relief flow, occlusion-masked drying and height-driven ink on both; edge-bounded sort runs and normal-chosen sort axis on Windows |
 | Platforms | Android APK, Windows exe, iOS simulator app — all built by CI from one repo |
 
 ## Near term — the next few builds
@@ -42,24 +43,19 @@ testing changes the priorities, which it does constantly.
 These are the items most likely to be picked next; they are small and each
 one has a place to land already.
 
-1. **Relief and properties on Android.** The props pass and the Relief
-   slider exist only in the Windows host; the shader is shared, so this is
-   host wiring.
-2. **Glitch modes on Android.** The four modes added on Windows -- channel
-   drift, block shuffle, slit-scan, bit crush -- are shared shaders already;
-   the Kotlin host needs a mode selector and the new uniforms. It also still
-   needs `uRadius` on the rect copy, without which every dab leaves a white
-   square where the bounding box overran the disc.
-3. **Property-driven glitch**: pixel sort with runs bounded by edges rather
-   than a brightness band (keeps silhouettes, liquefies interiors); sort
-   direction along the normal.
-4. **Property-driven paint**: settling masked by occlusion (paint dries in
-   the shade first); emission density from height; Relief for the gas
-   brush as a force field, not just for particles.
-5. **Windows parity**: undo/redo, layers, the gas and nib brushes. The
-   desktop build is the fastest tuning loop and should not lag the phone.
-6. **Save/load the painting itself**, not just a PNG: the layer stack with
-   its live state, so a session can be resumed.
+1. **The reaction brush on Android.** Gray-Scott ships on Windows and its
+   three shaders sit in Android's own assets folder, unused. The Kotlin side
+   needs a `Brush` entry threaded through presets, the rail and touch
+   routing, the two ping-ponged state textures, and a line in the display
+   shader -- the one piece of this that is not just host wiring.
+2. **Layers on Windows.** The desktop host still has exactly one layer, and
+   history, save/load and the composite all key off it. This is the last
+   real parity gap and the only one that is an architecture change rather
+   than a port.
+3. **Relief for the gas brush** as a force field, not just for particles.
+   Both hosts read the property maps now; the Eulerian medium does not.
+4. **Layer save/load**, once Windows has layers: the stack with its live
+   state rather than a single flattened layer.
 
 ## Medium term
 

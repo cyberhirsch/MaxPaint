@@ -73,6 +73,10 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
     private var head = 0
     private var seed = 1f
 
+    /** Set by the host before a pour when the picture is charging the ink. */
+    var emitProps: Tex? = null
+    var emitHeightInk = 0f
+
     private lateinit var pEmit: ComputeProgram
     private lateinit var pClearGrid: ComputeProgram
     private lateinit var pP2G: ComputeProgram
@@ -218,6 +222,10 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pEmit.set("uMinor", minor)
         pEmit.set("uInk", inkPerParticle * inkScale)
         pEmit.set("uJitterSeed", seed)
+        // the picture charges each drop: bright planes load, dark ones run thin
+        pEmit.set("uProps", 0)
+        pEmit.set("uHeightInk", if (emitProps != null) emitHeightInk else 0f)
+        emitProps?.bindSampler(0)
         GLES31.glDispatchCompute((count + 63) / 64, 1, 1)
         GLES31.glMemoryBarrier(GLES31.GL_SHADER_STORAGE_BARRIER_BIT)
 
@@ -423,7 +431,8 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
      *  [integrate], next frame. */
     fun gridToParticles(dt: Float, texU: Tex, texV: Tex,
                         texUOld: Tex, texVOld: Tex, density: Tex,
-                        gridW: Int, gridH: Int) {
+                        gridW: Int, gridH: Int,
+                        props: Tex? = null, relief: Float = 0f, shadeDry: Float = 0f) {
         if (buffer == 0 || gridBuffer == 0) return
         pG2P.use()
         GLES31.glBindBufferBase(GLES31.GL_SHADER_STORAGE_BUFFER, 0, buffer)
@@ -451,6 +460,11 @@ class FlipSystem(private val ctx: Context, val capacity: Int = 400_000) {
         pG2P.set("uUOld", 2)
         pG2P.set("uVOld", 3)
         pG2P.set("uDensity", 4)
+        // the picture, for downhill flow and for drying in the shade
+        pG2P.set("uProps", 5)
+        pG2P.set("uRelief", if (props != null) relief else 0f)
+        pG2P.set("uShadeDry", if (props != null) shadeDry else 0f)
+        props?.bindSampler(5)
         texU.bindSampler(0)
         texV.bindSampler(1)
         texUOld.bindSampler(2)

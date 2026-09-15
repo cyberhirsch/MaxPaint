@@ -48,6 +48,11 @@ uniform float uRestMass;       // emission density, particles per cell
 uniform float uMaxSpeed;       // CFL guard
 uniform vec2  uTexel;
 uniform float uRelief;         // downhill pull from the image's height field, 0 off
+// Paint dries in the shade first. Ambient occlusion reads 1 in the open and 0
+// where the picture is buried, and it scales the settle time, so pigment that
+// lands in a crease or under an overhang sets while the same paint out on an
+// open plane is still wet. 0 leaves the settle time alone.
+uniform float uShadeDry;
 
 int cellType(ivec2 c) {
     if (c.x < 0 || c.y < 0 || c.x >= uGrid.x || c.y >= uGrid.y) return 0;
@@ -169,7 +174,14 @@ void main() {
     // paint stays workable is a property the artist sets, not one the
     // motion should decide. Drag is what slows the liquid; the timer is
     // what dries it.
-    if (uSettleTime > 0.0 && age > uSettleTime) state = 2.0;
+    if (uSettleTime > 0.0) {
+        float settle = uSettleTime;
+        if (uShadeDry > 0.0) {
+            float ao = clamp(texture(uProps, pos).a, 0.0, 1.0);
+            settle *= mix(1.0, ao, clamp(uShadeDry, 0.0, 1.0));
+        }
+        if (age > settle) state = 2.0;
+    }
 
     data[i * 2]     = vec4(pos, vel);
     data[i * 2 + 1] = vec4(meta.x, age, state, meta.w);

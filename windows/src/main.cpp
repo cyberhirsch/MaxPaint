@@ -13,7 +13,7 @@
 // the window resizes freely, the canvas holds whatever size it was given
 // and sits centred inside it.
 // The keys from the first build still work: W/S flow, E/D settle, R/F
-// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1/2/3 tool, M glitch
+// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1-5 tool, M glitch
 // mode, C clear.
 
 #ifdef _WIN32
@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cctype>
 #include <cstring>
 #include <fstream>
 #include <sstream>
@@ -136,6 +137,9 @@ struct Prog {
     void set(const char *n, float v) const { glUniform1f(glGetUniformLocation(id, n), v); }
     void set(const char *n, float a, float b) const { glUniform2f(glGetUniformLocation(id, n), a, b); }
     void set2i(const char *n, int a, int b) const { glUniform2i(glGetUniformLocation(id, n), a, b); }
+    void set4f(const char *n, float a, float b, float c, float d) const {
+        glUniform4f(glGetUniformLocation(id, n), a, b, c, d);
+    }
 };
 
 // ------------------------------------------------------------ small helpers
@@ -185,7 +189,9 @@ struct Flip {
     int solveIters = 30;
     float omega = 1.5f;
     float relief = 0.0f;          // downhill pull from the image, 0 off
-    GLuint propsTex = 0;          // owned by the app; sampled in G2P
+    float shadeDry = 0.0f;        // paint sets sooner where the picture is buried
+    float heightInk = 0.0f;       // bright planes take more pigment
+    GLuint propsTex = 0;          // owned by the app; sampled in G2P and emit
 
     static const int capacity = 400000;
     int gridRes = 160, gridW = 1, gridH = 1;
@@ -281,6 +287,10 @@ struct Flip {
         pEmit.set("uMinor", 1.0f);
         pEmit.set("uInk", inkPerParticle * inkScale);
         pEmit.set("uJitterSeed", seed);
+        // the picture charges each drop: bright planes load, dark ones run thin
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, propsTex);
+        pEmit.set("uProps", 0);
+        pEmit.set("uHeightInk", propsTex ? heightInk : 0.0f);
         dispatch1D(count);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         head = (head + count) % capacity;
@@ -421,6 +431,7 @@ struct Flip {
         pG2P.set("uDensity", 4);
         pG2P.set("uProps", 5);
         pG2P.set("uRelief", propsTex ? relief : 0.0f);
+        pG2P.set("uShadeDry", propsTex ? shadeDry : 0.0f);
         glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, texU);
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, texV);
         glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, texUOld);
@@ -458,6 +469,336 @@ struct Flip {
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
         head = 0;
         emitted = 0;
+    }
+};
+
+// ------------------------------------------------------------ the gas
+
+// A pair of textures read one way and written the other. Every Eulerian pass
+// reads the whole field and writes the whole field, so none of them can work
+// in place; the pressure solve is the exception and says so.
+struct Duo {
+    GLuint read = 0, write = 0;
+    void make(int w, int h, GLenum fmt, GLint filter) {
+        drop();
+        read = makeTexture(w, h, fmt, filter);
+        write = makeTexture(w, h, fmt, filter);
+    }
+    void drop() {
+        if (read) glDeleteTextures(1, &read);
+        if (write) glDeleteTextures(1, &write);
+        read = write = 0;
+    }
+    void flip() { GLuint t = read; read = write; write = t; }
+};
+
+// The Eulerian medium the Android app calls its hero: a velocity field the
+// brush pushes around, dye carried along by it, and a bake that moves settled
+// dye out of the simulation and onto the layer. Same shaders as the phone,
+// same order, same constants -- this host just drives them.
+struct Gas {
+    // tunables (the Smoke defaults from the Android host)
+    int pressureIters = 30;
+    float vorticity = 22.0f;
+    float velocityDrag = 0.0f;
+    float dyeDissipation = 0.05f;
+    float settleSpeed = 0.6f;
+    float bakeRate = 3.9f;
+    float settleMinAge = 1.2f;
+    float inkPerStroke = 3.47f;
+    float velocityGain = 1.0f;
+    float forceStrength = 1.0f;
+    float combFrequency = 14.0f;
+    float maxSpeed = 8.0f;
+    float brushRadius = 0.05f;
+    int forceMode = 0;            // 0 swirl, 1 push, 2 pinch, 3 comb
+
+    int simW = 0, simH = 0;       // the velocity/pressure grid
+    int dyeW = 0, dyeH = 0;       // dye and age, at canvas resolution
+    float aspect = 1.0f;
+    bool inUse = false;           // dormant until the brush is first used
+
+    Duo velocity, dye, age;
+    GLuint pressure = 0, curl = 0, divergence = 0;
+    Prog pAdvect, pCurl, pVorticity, pDivergence, pPressureRB,
+         pClearP, pGradSub, pBake, pSplat, pForce;
+
+    static void dispatch(int w, int h) {
+        glDispatchCompute((w + 7) / 8, (h + 7) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+    }
+
+    void init() {
+        if (pAdvect.id) return;
+        pAdvect.id = computeProgram("advect.comp");
+        pCurl.id = computeProgram("curl.comp");
+        pVorticity.id = computeProgram("vorticity.comp");
+        pDivergence.id = computeProgram("divergence.comp");
+        pPressureRB.id = computeProgram("pressure_rb.comp");
+        pClearP.id = computeProgram("clearp.comp");
+        pGradSub.id = computeProgram("gradsub.comp");
+        pBake.id = computeProgram("bake.comp");
+        pSplat.id = computeProgram("splat.comp");
+        pForce.id = computeProgram("force.comp");
+    }
+
+    // The sim grid is coarser than the canvas -- pressure is the expensive
+    // part and it does not need the resolution the dye does.
+    void resize(int canvasW, int canvasH) {
+        dyeW = canvasW; dyeH = canvasH;
+        aspect = (float)canvasW / (float)canvasH;
+        simW = std::max(32, ((canvasW / 2) + 1) & ~1);
+        simH = std::max(32, ((canvasH / 2) + 1) & ~1);
+        velocity.make(simW, simH, GL_RGBA16F, GL_LINEAR);
+        dye.make(dyeW, dyeH, GL_RGBA16F, GL_LINEAR);
+        age.make(dyeW, dyeH, GL_RGBA16F, GL_NEAREST);
+        if (pressure) glDeleteTextures(1, &pressure);
+        if (curl) glDeleteTextures(1, &curl);
+        if (divergence) glDeleteTextures(1, &divergence);
+        pressure = makeTexture(simW, simH, GL_R32F, GL_NEAREST);
+        curl = makeTexture(simW, simH, GL_R32F, GL_NEAREST);
+        divergence = makeTexture(simW, simH, GL_R32F, GL_NEAREST);
+        inUse = false;
+    }
+
+    void setContact(const Prog &p) const {
+        p.set("uAxis", 1.0f, 0.0f);
+        p.set("uMinor", 1.0f);
+    }
+
+    // Momentum and pigment in one gesture, exactly as the phone does it:
+    // velocity on the coarse grid, dye a little tighter so the mark reads
+    // crisp, then age reset by lerp so Hold applies to a stroke drawn over
+    // an old one rather than inheriting its clock.
+    void splat(float u, float v, float du, float dv) {
+        inUse = true;
+        pSplat.use();
+        pSplat.set("uPoint", u, v);
+        pSplat.set("uAspect", aspect);
+        setContact(pSplat);
+        pSplat.set("uMode", 0);
+
+        pSplat.set("uRadius", brushRadius);
+        pSplat.set4f("uValue", du * velocityGain * aspect, dv * velocityGain, 0.0f, 0.0f);
+        glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, velocity.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(simW, simH);
+        velocity.flip();
+
+        pSplat.set("uRadius", brushRadius * 0.6f);
+        // black ink, premultiplied by its own coverage
+        pSplat.set4f("uValue", 0.0f, 0.0f, 0.0f, inkPerStroke);
+        glBindImageTexture(0, dye.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, dye.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(dyeW, dyeH);
+        dye.flip();
+
+        pSplat.set("uMode", 1);
+        pSplat.set4f("uValue", 0.0f, 0.0f, 0.0f, 0.0f);
+        glBindImageTexture(0, age.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, age.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(dyeW, dyeH);
+        age.flip();
+    }
+
+    /** Momentum with no pigment: stir, shove, pinch or comb what is there. */
+    void force(float u, float v, float du, float dv, int mode, float strength) {
+        inUse = true;
+        pForce.use();
+        pForce.set("uPoint", u, v);
+        pForce.set("uDir", du * aspect, dv);
+        pForce.set("uRadius", brushRadius * 1.5f);
+        pForce.set("uAspect", aspect);
+        pForce.set("uStrength", strength);
+        pForce.set("uMode", mode);
+        pForce.set("uCombFreq", combFrequency);
+        pForce.set("uDt", 1.0f / 60.0f);
+        glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, velocity.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(simW, simH);
+        velocity.flip();
+    }
+
+    void advect(GLuint srcTex, GLuint dstTex, int w, int h, float dt, float dissipation) {
+        pAdvect.set("uDt", dt);
+        pAdvect.set("uAspect", aspect);
+        pAdvect.set("uDstTexel", 1.0f / w, 1.0f / h);
+        pAdvect.set("uDissipation", dissipation);
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, srcTex);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, velocity.read);
+        pAdvect.set("uSrc", 0);
+        pAdvect.set("uVel", 1);
+        glBindImageTexture(0, dstTex, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(w, h);
+    }
+
+    // One tick of the medium, in the order the phone runs it.
+    void step(float dt, GLuint &bgRead, GLuint &bgWrite, bool freeze, bool thaw) {
+        pCurl.use();
+        glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, curl, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+        dispatch(simW, simH);
+
+        if (vorticity > 0.0f) {
+            pVorticity.use();
+            pVorticity.set("uStrength", vorticity);
+            pVorticity.set("uDt", dt);
+            glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+            glBindImageTexture(1, velocity.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            glBindImageTexture(2, curl, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+            dispatch(simW, simH);
+            velocity.flip();
+        }
+
+        pDivergence.use();
+        glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, divergence, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+        dispatch(simW, simH);
+
+        // a warm start from last frame's pressure beats a cold clear
+        pClearP.use();
+        pClearP.set("uValue", 0.8f);
+        glBindImageTexture(0, pressure, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
+        dispatch(simW, simH);
+
+        // red-black Gauss-Seidel, in place: r32f is the one format an image
+        // may be read and written at once, and each sweep is two half-width
+        // passes so the thread count matches a single Jacobi iteration
+        pPressureRB.use();
+        glBindImageTexture(2, divergence, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        int halfWidth = (simW + 1) / 2;
+        for (int i = 0; i < pressureIters; i++) {
+            for (int parity = 0; parity < 2; parity++) {
+                glBindImageTexture(0, pressure, 0, GL_FALSE, 0, GL_READ_WRITE, GL_R32F);
+                pPressureRB.set("uParity", parity);
+                dispatch(halfWidth, simH);
+            }
+        }
+
+        pGradSub.use();
+        pGradSub.set("uDrag", velocityDrag);
+        pGradSub.set("uDt", dt);
+        pGradSub.set("uMaxSpeed", maxSpeed);
+        glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, velocity.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glBindImageTexture(2, pressure, 0, GL_FALSE, 0, GL_READ_ONLY, GL_R32F);
+        dispatch(simW, simH);
+        velocity.flip();
+
+        pAdvect.use();
+        advect(velocity.read, velocity.write, simW, simH, dt, 0.0f);
+        velocity.flip();
+        advect(dye.read, dye.write, dyeW, dyeH, dt, dyeDissipation);
+        dye.flip();
+        advect(age.read, age.write, dyeW, dyeH, dt, 0.0f);
+        age.flip();
+
+        bake(dt, bgRead, bgWrite, freeze, thaw);
+    }
+
+    // Settled dye leaves the simulation and lands on the layer. Thaw runs it
+    // backwards and lifts baked paint back into the fluid.
+    void bake(float dt, GLuint &bgRead, GLuint &bgWrite, bool freeze, bool thaw) {
+        pBake.use();
+        pBake.set("uDt", dt);
+        pBake.set("uSettleSpeed", settleSpeed);
+        pBake.set("uBakeRate", thaw ? bakeRate * 3.0f : bakeRate);
+        pBake.set("uSettleMinAge", settleMinAge);
+        pBake.set("uForce", freeze ? 1 : 0);
+        pBake.set("uThaw", thaw ? 1 : 0);
+        pBake.set("uAspect", aspect);
+        pBake.set("uMaskPoint", 0.5f, 0.5f);
+        pBake.set("uMaskRadius", -1.0f);
+
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, velocity.read);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, dye.read);
+        glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, bgRead);
+        glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, age.read);
+        glActiveTexture(GL_TEXTURE0);
+        pBake.set("uVel", 0);
+        pBake.set("uDyeSrc", 1);
+        pBake.set("uBgSrc", 2);
+        pBake.set("uAgeSrc", 3);
+        glBindImageTexture(0, dye.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, bgWrite, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glBindImageTexture(2, age.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        dispatch(dyeW, dyeH);
+        dye.flip();
+        age.flip();
+        GLuint t = bgRead; bgRead = bgWrite; bgWrite = t;   // the caller re-points its FBO
+    }
+};
+
+// ------------------------------------------------------------ the nib
+
+// Pen and charcoal. The mark goes into its own field rather than the fluid,
+// so nothing can smear it, and a capillary pass creeps it into the paper and
+// dries it onto the layer. Drawn as a capsule from the previous sample: a
+// fast stroke stays a line instead of becoming a row of dots.
+struct Nib {
+    float radius = 0.006f;
+    float hardness = 0.9f;
+    float ink = 1.0f;
+    float load = 1.0f;          // the desktop's stand-in for pen pressure
+    float soak = 0.9f;
+    float dry = 0.7f;
+    float grain = 0.6f;
+    float paperScale = 0.25f;
+    float threshold = 0.02f;
+
+    int w = 0, h = 0;
+    float aspect = 1.0f;
+    bool active = false;
+    Duo field;
+    Prog pNib, pSoak;
+
+    void init() {
+        if (pNib.id) return;
+        pNib.id = computeProgram("nib.comp");
+        pSoak.id = computeProgram("soak.comp");
+    }
+
+    void resize(int cw, int ch) {
+        w = cw; h = ch;
+        aspect = (float)cw / (float)ch;
+        field.make(cw, ch, GL_RGBA16F, GL_LINEAR);
+        active = false;
+    }
+
+    void mark(float u, float v, float pu, float pv) {
+        active = true;
+        pNib.use();
+        pNib.set("uPoint", u, v);
+        pNib.set("uPrev", pu, pv);
+        pNib.set("uRadius", radius * std::max(load, 0.25f));
+        pNib.set("uAspect", aspect);
+        pNib.set("uInk", ink * load);
+        pNib.set("uHardness", hardness);
+        glBindImageTexture(0, field.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, field.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        Gas::dispatch(w, h);
+        field.flip();
+    }
+
+    // capillary creep, then drying into the layer
+    void step(float dt, GLuint &bgRead, GLuint &bgWrite) {
+        pSoak.use();
+        pSoak.set("uDt", dt);
+        pSoak.set("uSoak", soak);
+        pSoak.set("uDry", dry);
+        pSoak.set("uGrain", grain);
+        pSoak.set("uPaperScale", paperScale);
+        pSoak.set("uThreshold", threshold);
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, field.read);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, bgRead);
+        glActiveTexture(GL_TEXTURE0);
+        pSoak.set("uInkSrc", 0);
+        pSoak.set("uBgSrc", 1);
+        glBindImageTexture(0, field.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        glBindImageTexture(1, bgWrite, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        Gas::dispatch(w, h);
+        field.flip();
+        GLuint t = bgRead; bgRead = bgWrite; bgWrite = t;
     }
 };
 
@@ -512,6 +853,8 @@ layout(binding = 0) uniform sampler2D uBackground;
 layout(binding = 1) uniform sampler2D uLive;
 layout(binding = 2) uniform sampler2D uProps;
 layout(binding = 3) uniform sampler2D uRd;    // rg = the reaction's A, B
+layout(binding = 4) uniform sampler2D uDye;   // the gas still in the air
+layout(binding = 5) uniform sampler2D uNib;   // ink the paper has not dried yet
 uniform int uView;   // 0 paint, 1 height, 2 normals, 3 occlusion, 4 reaction
 uniform float uRdInk;      // 0 hides the reaction
 uniform float uRdLo;
@@ -533,6 +876,11 @@ void main() {
     // live particles (black ink, alpha only) over that
     vec4 bg = texture(uBackground, vUv);
     vec3 paper = bg.rgb + vec3(1.0 - clamp(bg.a, 0.0, 1.0));
+    // media still in play sit over the layer, under the particles
+    vec4 wet = texture(uNib, vUv);
+    paper = wet.rgb + paper * (1.0 - clamp(wet.a, 0.0, 1.0));
+    vec4 gas = texture(uDye, vUv);
+    paper = gas.rgb + paper * (1.0 - clamp(gas.a, 0.0, 1.0));
     vec4 live = texture(uLive, vUv);
     vec3 col = live.rgb + paper * (1.0 - clamp(live.a, 0.0, 1.0));
     // the reaction lies over the picture as ink rather than replacing it, so
@@ -548,6 +896,14 @@ void main() {
 
 struct App {
     Flip flip;
+    Gas gas;
+    Nib nib;
+    bool haveNibLast = false;
+    float nibLastX = 0, nibLastY = 0;
+    bool haveGasLast = false;
+    float gasLastX = 0, gasLastY = 0;
+    bool gasFreeze = false, gasThaw = false;
+    bool gasForceOnly = false;   // stir what is there instead of adding pigment
     GLuint background = 0, backgroundB = 0, live = 0;
     GLuint fboBackground = 0, fboLive = 0;
     GLuint compositeProgram = 0, emptyVao = 0;
@@ -568,6 +924,16 @@ struct App {
     int windowInput[2] = {1280, 720};
     bool windowInputActive = false;
     GLFWwindow *window = nullptr;
+
+    // Undo history. A step is a whole snapshot of the set layer, which is the
+    // only thing that lasts -- wet particles and the reaction field are live
+    // state and are not restored. Depth is whatever fits a memory budget: a
+    // canvas-sized RGBA16F is 8 bytes a pixel, so a big canvas gets fewer
+    // steps rather than a gigabyte of them.
+    static constexpr size_t undoBudget = 512u << 20;
+    std::vector<GLuint> history;
+    int historyLen = 0, historyCur = 0;
+    bool canvasDirty = false;
 
     struct Rect { int x, y, w, h; };
 
@@ -601,6 +967,8 @@ struct App {
     float slitStretch = 0.6f;
     int crushLevels = 5;
     float glitchSeed = 1.0f;      // moves each dab, so holding still reshuffles
+    float glitchEdgeBound = 0.0f; // 0 off: runs stop at the picture's edges
+    bool glitchAutoDir = false;   // the surface picks the sort axis
     Prog pPixelSort, pCopyRect, pProps;
     Prog pDrift, pBlocks, pSlit, pCrush;
 
@@ -674,7 +1042,121 @@ struct App {
         glClear(GL_COLOR_BUFFER_BIT);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         flip.resize((float)w / (float)h);
+        gas.init();
+        gas.resize(w, h);
+        nib.init();
+        nib.resize(w, h);
         rdClear();
+        allocHistory(w, h);
+    }
+
+    // The bake swaps the layer's front and back buffers, so the framebuffer
+    // the FLIP medium draws dried particles into has to follow.
+    void rebindBackgroundFbo() {
+        glBindFramebuffer(GL_FRAMEBUFFER, fboBackground);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, background, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // The nib: a capsule from the last sample to this one, so the line holds
+    // together however fast the hand moves.
+    void nibStroke() {
+        float cx = 0, cy = 0;
+        if (!painting || canvasW == 0 || !canvasUV(cx, cy)) { haveNibLast = false; return; }
+        if (!haveNibLast) { nibLastX = cx; nibLastY = cy; haveNibLast = true; }
+        nib.mark(cx, cy, nibLastX, nibLastY);
+        nibLastX = cx; nibLastY = cy;
+        canvasDirty = true;
+    }
+
+    // The gas brush: pigment and momentum along the cursor's path, or bare
+    // momentum when Stir is on -- a finger dragged through paint already down.
+    void gasStroke(float dt) {
+        float cx = 0, cy = 0;
+        if (!painting || canvasW == 0 || !canvasUV(cx, cy)) { haveGasLast = false; return; }
+        float du = 0, dv = 0;
+        if (haveGasLast && dt > 0) {
+            du = (cx - gasLastX) / std::max(dt, 1e-3f);
+            dv = (cy - gasLastY) / std::max(dt, 1e-3f);
+        }
+        gasLastX = cx; gasLastY = cy;
+        haveGasLast = true;
+        if (gasForceOnly) gas.force(cx, cy, du, dv, gas.forceMode, gas.forceStrength);
+        else gas.splat(cx, cy, du, dv);
+        canvasDirty = true;
+    }
+
+    // ------------------------------------------------------------ undo
+
+    void allocHistory(int w, int h) {
+        for (GLuint t : history) if (t) glDeleteTextures(1, &t);
+        history.clear();
+        size_t perStep = (size_t)w * h * 8;   // RGBA16F
+        int steps = (int)std::min<size_t>(16, std::max<size_t>(2, undoBudget / perStep));
+        history.resize(steps, 0);
+        for (GLuint &t : history) t = makeTexture(w, h, GL_RGBA16F, GL_NEAREST);
+        historyLen = 0;
+        historyCur = 0;
+        canvasDirty = false;
+        pushHistory();        // the canvas as it starts is a state you can return to
+    }
+
+    void copyLayer(GLuint from, GLuint to) {
+        glCopyImageSubData(from, GL_TEXTURE_2D, 0, 0, 0, 0,
+                           to, GL_TEXTURE_2D, 0, 0, 0, 0, canvasW, canvasH, 1);
+    }
+
+    // Appends the canvas as it stands, dropping any redo beyond the cursor.
+    // When the ring is full the oldest step falls off the front.
+    void pushHistory() {
+        if (history.empty() || canvasW <= 0) return;
+        int cap = (int)history.size();
+        if (historyLen > 0 && historyCur < historyLen - 1) historyLen = historyCur + 1;
+        if (historyLen == cap) {
+            GLuint oldest = history[0];
+            history.erase(history.begin());
+            history.push_back(oldest);
+            historyLen--;
+            historyCur--;
+        }
+        copyLayer(background, history[historyLen]);
+        historyCur = historyLen;
+        historyLen++;
+        canvasDirty = false;
+    }
+
+    // The newest stroke is only committed when something needs it to be --
+    // starting the next stroke, or asking to undo this one. Committing at
+    // mouse-up would catch the paint mid-dry, since the FLIP layer keeps
+    // baking for seconds after the hand stops.
+    void commitIfDirty() { if (canvasDirty) pushHistory(); }
+
+    bool canUndo() const { return canvasDirty || historyCur > 0; }
+    bool canRedo() const { return !canvasDirty && historyCur + 1 < historyLen; }
+
+    void undo() {
+        commitIfDirty();
+        if (historyCur <= 0) return;
+        historyCur--;
+        restoreHistory();
+        std::snprintf(status, sizeof status, "undo %d/%d", historyCur + 1, historyLen);
+    }
+
+    void redo() {
+        if (historyCur + 1 >= historyLen) return;
+        historyCur++;
+        restoreHistory();
+        std::snprintf(status, sizeof status, "redo %d/%d", historyCur + 1, historyLen);
+    }
+
+    void restoreHistory() {
+        copyLayer(history[historyCur], background);
+        flip.clearPool();      // wet paint belongs to the stroke being undone
+        havePourLast = false;
+        haveGlitchLast = false;
+        canvasDirty = false;
+        propsFrame = 0;        // the maps describe a layer that just changed
     }
 
     // The reaction's resting state: substrate everywhere, no reagent. Both
@@ -791,6 +1273,13 @@ struct App {
         if (oldFbo) glDeleteFramebuffers(1, &oldFbo);
         if (oldTex) glDeleteTextures(1, &oldTex);
 
+        // allocate() opened the history on an empty canvas; the paint arrived
+        // after it, so the first state has to be taken again
+        historyLen = 0;
+        historyCur = 0;
+        canvasDirty = false;
+        pushHistory();
+
         flip.clearPool();
         havePourLast = false;
         haveGlitchLast = false;
@@ -840,6 +1329,7 @@ struct App {
         flip.emit(fromX, fromY, cx, cy,
                   velAx * inh, velAy * inh, vx * inh, vy * inh,
                   std::min(n, 8192));
+        canvasDirty = true;
     }
 
     // One glitch dab, whichever mode is chosen: work the disc into the back
@@ -886,6 +1376,12 @@ struct App {
                 mode.set("uLo", glitchLo);
                 mode.set("uHi", glitchHi);
                 mode.set("uDescending", glitchDescending ? 1 : 0);
+                // the property map, for edge-bounded runs and the auto axis
+                glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, props);
+                glActiveTexture(GL_TEXTURE0);
+                mode.set("uProps", 1);
+                mode.set("uEdgeBound", glitchEdgeBound);
+                mode.set("uAutoDir", glitchAutoDir ? 1 : 0);
                 break;
         }
         // the sort needs one workgroup per line of the disc for its shared
@@ -903,6 +1399,7 @@ struct App {
         pCopyRect.set("uRadius", r);   // the disc only; the corners are not ours
         glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        canvasDirty = true;
     }
 
     // dabs strung along the mouse path half a radius apart, as on Android
@@ -963,6 +1460,7 @@ struct App {
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, canvasW, canvasH, GL_RGBA, GL_FLOAT, buf.data());
         glBindTexture(GL_TEXTURE_2D, 0);
         std::printf("loaded %s (%dx%d)\n", path, w, h);
+        canvasDirty = true;
         return true;
     }
 
@@ -975,6 +1473,7 @@ struct App {
             glClear(GL_COLOR_BUFFER_BIT);
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        canvasDirty = true;
     }
 
     void applyFlipPreset(int i) {
@@ -1021,6 +1520,164 @@ struct App {
             std::snprintf(status, sizeof status, "saved %s", name);
         else
             std::snprintf(status, sizeof status, "could not write %s", name);
+    }
+
+    // ------------------------------------------------------------ the painting
+    //
+    // A PNG is a picture of the painting; this is the painting. The set layer
+    // goes down at its own precision -- half floats, exactly what the texture
+    // holds, so a reload is bit-for-bit and not a re-quantised copy -- along
+    // with the reaction field if one is alive and the settings that were in
+    // play. Wet particles are not kept: they are a stroke in progress, and a
+    // file is something you come back to.
+
+    static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
+    static const uint32_t FILE_VERSION = 1;
+
+    template <class T> static void put(std::ofstream &f, const T &v) {
+        f.write(reinterpret_cast<const char *>(&v), sizeof v);
+    }
+    template <class T> static void get(std::ifstream &f, T &v) {
+        f.read(reinterpret_cast<char *>(&v), sizeof v);
+    }
+
+    void writeSettings(std::ofstream &f) const {
+        put(f, tool); put(f, view); put(f, glitchMode);
+        put(f, flip.brushRadius); put(f, flip.flowRate); put(f, flip.compensate);
+        put(f, flip.particleDrag); put(f, flip.particlesPerCell);
+        put(f, flip.separationIters); put(f, flip.solveIters);
+        put(f, flip.settleTime); put(f, flip.cohesion); put(f, flip.flipRatio);
+        put(f, flip.pointSize); put(f, flip.relief); put(f, flip.shadeDry);
+        put(f, flip.heightInk);
+        put(f, reliefInvert); put(f, aoRadius); put(f, slope);
+        put(f, glitchLo); put(f, glitchHi); put(f, glitchFalloff);
+        put(f, glitchVertical); put(f, glitchDescending);
+        put(f, glitchEdgeBound); put(f, glitchAutoDir);
+        put(f, driftAmount); put(f, blockSize); put(f, blockAmount);
+        put(f, slitStretch); put(f, crushLevels);
+        put(f, rdFeed); put(f, rdKill); put(f, rdCouple); put(f, rdIters);
+        put(f, rdInk); put(f, rdLo); put(f, rdHi); put(f, rdRun);
+    }
+
+    void readSettings(std::ifstream &f) {
+        get(f, tool); get(f, view); get(f, glitchMode);
+        get(f, flip.brushRadius); get(f, flip.flowRate); get(f, flip.compensate);
+        get(f, flip.particleDrag); get(f, flip.particlesPerCell);
+        get(f, flip.separationIters); get(f, flip.solveIters);
+        get(f, flip.settleTime); get(f, flip.cohesion); get(f, flip.flipRatio);
+        get(f, flip.pointSize); get(f, flip.relief); get(f, flip.shadeDry);
+        get(f, flip.heightInk);
+        get(f, reliefInvert); get(f, aoRadius); get(f, slope);
+        get(f, glitchLo); get(f, glitchHi); get(f, glitchFalloff);
+        get(f, glitchVertical); get(f, glitchDescending);
+        get(f, glitchEdgeBound); get(f, glitchAutoDir);
+        get(f, driftAmount); get(f, blockSize); get(f, blockAmount);
+        get(f, slitStretch); get(f, crushLevels);
+        get(f, rdFeed); get(f, rdKill); get(f, rdCouple); get(f, rdIters);
+        get(f, rdInk); get(f, rdLo); get(f, rdHi); get(f, rdRun);
+    }
+
+    std::vector<unsigned short> readLayer(GLuint tex) const {
+        std::vector<unsigned short> px((size_t)canvasW * canvasH * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_HALF_FLOAT, px.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return px;
+    }
+
+    void uploadLayer(GLuint tex, const std::vector<unsigned short> &px) const {
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, canvasW, canvasH,
+                        GL_RGBA, GL_HALF_FLOAT, px.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    bool savePainting(const char *path) {
+        std::ofstream f(path, std::ios::binary);
+        if (!f) { std::snprintf(status, sizeof status, "could not write %s", path); return false; }
+        uint32_t w = (uint32_t)canvasW, h = (uint32_t)canvasH;
+        uint32_t flags = rdSeeded ? 1u : 0u;
+        put(f, FILE_MAGIC); put(f, FILE_VERSION);
+        put(f, w); put(f, h); put(f, flags);
+        writeSettings(f);
+        std::vector<unsigned short> layer = readLayer(background);
+        f.write(reinterpret_cast<const char *>(layer.data()),
+                (std::streamsize)(layer.size() * sizeof(unsigned short)));
+        if (rdSeeded) {
+            std::vector<unsigned short> rd = readLayer(rdTex[rdCur]);
+            f.write(reinterpret_cast<const char *>(rd.data()),
+                    (std::streamsize)(rd.size() * sizeof(unsigned short)));
+        }
+        bool ok = (bool)f;
+        std::snprintf(status, sizeof status, ok ? "saved %s" : "could not write %s", path);
+        return ok;
+    }
+
+    bool loadPainting(const char *path) {
+        std::ifstream f(path, std::ios::binary);
+        if (!f) { std::snprintf(status, sizeof status, "could not read %s", path); return false; }
+        uint32_t magic = 0, version = 0, w = 0, h = 0, flags = 0;
+        get(f, magic); get(f, version); get(f, w); get(f, h); get(f, flags);
+        if (magic != FILE_MAGIC || version != FILE_VERSION || w == 0 || h == 0) {
+            std::snprintf(status, sizeof status, "%s is not a MaxPaint painting", path);
+            return false;
+        }
+        readSettings(f);
+        if ((int)w != canvasW || (int)h != canvasH) allocate((int)w, (int)h);
+
+        std::vector<unsigned short> layer((size_t)w * h * 4);
+        f.read(reinterpret_cast<char *>(layer.data()),
+               (std::streamsize)(layer.size() * sizeof(unsigned short)));
+        if (!f) { std::snprintf(status, sizeof status, "%s ends early", path); return false; }
+        uploadLayer(background, layer);
+
+        rdClear();
+        if (flags & 1u) {
+            std::vector<unsigned short> rd((size_t)w * h * 4);
+            f.read(reinterpret_cast<char *>(rd.data()),
+                   (std::streamsize)(rd.size() * sizeof(unsigned short)));
+            if (f) {
+                uploadLayer(rdTex[0], rd);
+                uploadLayer(rdTex[1], rd);
+                rdCur = 0;
+                rdSeeded = true;
+            }
+        }
+        flip.clearPool();
+        havePourLast = haveGlitchLast = haveRdLast = false;
+        canvasInput[0] = (int)w; canvasInput[1] = (int)h;
+        historyLen = 0; historyCur = 0; canvasDirty = false;
+        pushHistory();
+        std::snprintf(status, sizeof status, "opened %s (%u x %u)", path, w, h);
+        return true;
+    }
+
+#ifdef _WIN32
+    // one dialog, two directions
+    bool paintingDialog(char *path, size_t n, bool saving) {
+        path[0] = '\0';
+        OPENFILENAMEA ofn = {};
+        ofn.lStructSize = sizeof ofn;
+        ofn.lpstrFilter = "MaxPaint painting\0*.maxpaint\0All files\0*.*\0";
+        ofn.lpstrDefExt = "maxpaint";
+        ofn.lpstrFile = path;
+        ofn.nMaxFile = (DWORD)n;
+        ofn.Flags = OFN_NOCHANGEDIR | (saving ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+        return saving ? GetSaveFileNameA(&ofn) != 0 : GetOpenFileNameA(&ofn) != 0;
+    }
+#endif
+
+    // A path from the command line or a drop: a painting reopens, anything
+    // else is read as a picture to paint on.
+    bool openPath(const char *path) {
+        std::string s(path);
+        size_t dot = s.find_last_of('.');
+        std::string ext = dot == std::string::npos ? "" : s.substr(dot);
+        for (char &c : ext) c = (char)std::tolower((unsigned char)c);
+        if (ext == ".maxpaint") return loadPainting(path);
+        return importImage(path);
     }
 
     void openDialog() {
@@ -1104,6 +1761,29 @@ struct App {
         if (ImGui::Button("Save PNG")) savePending = true;
         ImGui::SameLine();
         if (ImGui::Button("Clear")) clearCanvas();
+
+#ifdef _WIN32
+        char path[MAX_PATH];
+        if (ImGui::Button("Open painting")) {
+            if (paintingDialog(path, sizeof path, false)) loadPainting(path);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Save painting")) {
+            if (paintingDialog(path, sizeof path, true)) savePainting(path);
+        }
+#endif
+
+        ImGui::BeginDisabled(!canUndo());
+        if (ImGui::Button("Undo")) undo();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!canRedo());
+        if (ImGui::Button("Redo")) redo();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::TextDisabled("%d/%d  (ctrl+Z, ctrl+Y)",
+                            historyLen ? historyCur + 1 : 0, historyLen);
+
         if (status[0]) ImGui::TextWrapped("%s", status);
         ImGui::Separator();
         canvasPanel();
@@ -1111,7 +1791,9 @@ struct App {
 
         ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
         ImGui::RadioButton("Glitch", &tool, 1); ImGui::SameLine();
-        ImGui::RadioButton("Reaction", &tool, 2);
+        ImGui::RadioButton("Reaction", &tool, 2); ImGui::SameLine();
+        ImGui::RadioButton("Gas", &tool, 3); ImGui::SameLine();
+        ImGui::RadioButton("Nib", &tool, 4);
         const char *views[] = {"Paint", "Height", "Normals", "Occlusion", "Reaction"};
         ImGui::Combo("View", &view, views, 5);
         ImGui::Separator();
@@ -1148,10 +1830,17 @@ struct App {
             ImGui::Checkbox("Dark is high", &reliefInvert);
             ImGui::SliderFloat("Steepness", &slope, 5, 200, "%.0f");
             ImGui::SliderFloat("AO radius", &aoRadius, 4, 96, "%.0f px");
+            ImGui::SliderFloat("Dry in shade", &flip.shadeDry, 0, 1, "%.2f");
+            ImGui::SliderFloat("Ink from height", &flip.heightInk, 0, 1, "%.2f");
             ImGui::TextWrapped("Relief makes the picture the gravity field: paint "
-                               "runs downhill on it. Set View to Height, Normals or "
-                               "Occlusion to see what the brushes see. There is no "
-                               "gravity otherwise - a canvas has no up.");
+                               "runs downhill on it. Dry in shade shortens the "
+                               "settle time where the occlusion map says the "
+                               "picture is buried, so paint sets in the creases "
+                               "while the open planes are still wet. Ink from "
+                               "height charges each drop by the brightness it was "
+                               "laid on. Set View to Height, Normals or Occlusion "
+                               "to see what the brushes see. There is no gravity "
+                               "otherwise - a canvas has no up.");
         } else if (tool == 1) {
             const char *modes[] = {"Pixel sort", "Channel drift", "Block shuffle",
                                    "Slit-scan", "Bit crush"};
@@ -1177,6 +1866,8 @@ struct App {
                 ImGui::SliderFloat("Low", &glitchLo, 0, 1, "%.2f");
                 ImGui::SliderFloat("High", &glitchHi, 0, 1, "%.2f");
                 if (glitchHi < glitchLo) glitchHi = glitchLo;
+                ImGui::SliderFloat("Edge bound", &glitchEdgeBound, 0, 1, "%.2f");
+                ImGui::Checkbox("Axis from surface", &glitchAutoDir);
             } else if (glitchMode == 1) {
                 if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
                 ImGui::SliderFloat("Separation", &driftAmount, 0, 40, "%.0f px");
@@ -1195,7 +1886,11 @@ struct App {
             const char *blurb =
                 glitchMode == 0 ? "Sorts the pixels under the brush by brightness "
                     "along each row or column. Runs inside the band get sorted; "
-                    "everything outside it holds its place."
+                    "everything outside it holds its place. Edge bound makes the "
+                    "picture's own contours stop a run, so silhouettes survive "
+                    "while the smooth interiors they enclose liquefy; Axis from "
+                    "surface lets the layer's slope choose the direction, so the "
+                    "sort follows the form rather than the screen."
               : glitchMode == 1 ? "Pulls red and blue apart along the stroke axis "
                     "and leaves green where it was: the colour fringing of a "
                     "misregistered scan. It shows on a grey photograph too -- the "
@@ -1213,6 +1908,55 @@ struct App {
             ImGui::TextWrapped("%s Edge falloff eases the mark out at the rim "
                                "instead of ending it on a circle -- 0 is a hard "
                                "edge. Open a photo and take it apart.", blurb);
+        } else if (tool == 4) {
+            ImGui::SliderFloat("Nib size", &nib.radius, 0.001f, 0.05f, "%.4f");
+            ImGui::SliderFloat("Load", &nib.load, 0.1f, 3, "%.2f");
+            ImGui::SliderFloat("Ink", &nib.ink, 0, 4, "%.2f");
+            ImGui::SliderFloat("Hardness", &nib.hardness, 0, 1, "%.2f");
+            ImGui::Separator();
+            ImGui::SliderFloat("Soak", &nib.soak, 0, 3, "%.2f");
+            ImGui::SliderFloat("Dry", &nib.dry, 0, 3, "%.2f");
+            ImGui::SliderFloat("Paper grain", &nib.grain, 0, 1, "%.2f");
+            ImGui::SliderFloat("Paper scale", &nib.paperScale, 0.05f, 2, "%.2f");
+            ImGui::SliderFloat("Thin limit", &nib.threshold, 0, 0.2f, "%.3f");
+            ImGui::TextWrapped("Pen and charcoal. The mark goes into its own "
+                               "field, so the fluid cannot smear it, and a "
+                               "capillary pass creeps it into the paper and dries "
+                               "it onto the layer. Soak is how far ink travels, "
+                               "Paper grain how much the fibre steers it. The "
+                               "paper keeps drinking after the pen lifts.");
+        } else if (tool == 3) {
+            ImGui::SliderFloat("Brush size", &gas.brushRadius, 0.005f, 0.25f, "%.3f");
+            ImGui::SliderFloat("Ink", &gas.inkPerStroke, 0, 10, "%.2f");
+            ImGui::SliderFloat("Push", &gas.velocityGain, 0, 4, "%.2f");
+            ImGui::SliderFloat("Vorticity", &gas.vorticity, 0, 60, "%.0f");
+            ImGui::SliderFloat("Dye fade", &gas.dyeDissipation, 0, 1, "%.2f");
+            ImGui::SliderFloat("Velocity drag", &gas.velocityDrag, 0, 4, "%.2f");
+            ImGui::SliderInt("Pressure", &gas.pressureIters, 1, 80, "%d sweeps");
+            ImGui::Separator();
+            ImGui::SliderFloat("Settle speed", &gas.settleSpeed, 0, 4, "%.2f");
+            ImGui::SliderFloat("Bake rate", &gas.bakeRate, 0, 12, "%.1f");
+            ImGui::SliderFloat("Hold", &gas.settleMinAge, 0, 8, "%.1f s");
+            if (ImGui::Button("Freeze now")) gasFreeze = true;
+            ImGui::SameLine();
+            if (ImGui::Button("Thaw")) gasThaw = true;
+            ImGui::Separator();
+            ImGui::Checkbox("Stir only", &gasForceOnly);
+            if (gasForceOnly) {
+                const char *modes[] = {"Swirl", "Push", "Pinch", "Comb"};
+                ImGui::Combo("Force", &gas.forceMode, modes, 4);
+                ImGui::SliderFloat("Strength", &gas.forceStrength, -4, 4, "%.2f");
+                if (gas.forceMode == 3)
+                    ImGui::SliderFloat("Comb", &gas.combFrequency, 1, 60, "%.0f tines");
+            }
+            ImGui::TextWrapped("The Eulerian medium: a velocity field you push "
+                               "pigment through, incompressible again every frame. "
+                               "Paint that slows below Settle speed and has been "
+                               "live for Hold seconds bakes onto the layer; Thaw "
+                               "lifts it back into the air. Stir only pushes what "
+                               "is already there without adding ink. It keeps "
+                               "running after you switch brushes -- paint has to "
+                               "go on settling.");
         } else {
             if (ImGui::BeginCombo("Pattern", RD_PRESETS[rdPreset].name)) {
                 for (int i = 0; i < (int)(sizeof RD_PRESETS / sizeof *RD_PRESETS); i++) {
@@ -1269,6 +2013,8 @@ struct App {
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, live);
         glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, props);
         glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, rdTex[rdCur]);
+        glActiveTexture(GL_TEXTURE0 + 4); glBindTexture(GL_TEXTURE_2D, gas.dye.read);
+        glActiveTexture(GL_TEXTURE0 + 5); glBindTexture(GL_TEXTURE_2D, nib.field.read);
         glActiveTexture(GL_TEXTURE0);
         glUniform1i(glGetUniformLocation(compositeProgram, "uView"), view);
         glUniform1f(glGetUniformLocation(compositeProgram, "uRdInk"),
@@ -1285,16 +2031,38 @@ struct App {
             resizeCanvas(pendingCanvasW, pendingCanvasH);
             pendingCanvasW = pendingCanvasH = 0;
         }
+        bool wasPainting = painting;
         painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
+        if (painting && !wasPainting) commitIfDirty();
         // the set layer changes as paint bakes; refresh the maps every few
         // frames, always when they are on screen or driving the paint
-        bool wanted = view != 0 || flip.relief > 0.0f;
+        bool sortReadsProps = tool == 1 && glitchMode == 0 &&
+                              (glitchEdgeBound > 0.0f || glitchAutoDir);
+        bool paintReadsProps = flip.relief > 0.0f || flip.shadeDry > 0.0f ||
+                               flip.heightInk > 0.0f;
+        bool wanted = view != 0 || paintReadsProps || sortReadsProps;
         if (wanted && (propsFrame++ % 4) == 0) updateProps();
         if (tool == 1) glitchStroke();
         else if (tool == 2) rdStroke();
+        else if (tool == 3) gasStroke(dt);
+        else if (tool == 4) nibStroke();
         else pour(dt);
         if (rdSeeded && rdRun) rdStep();
         if (flip.emitted > 0) flip.step(dt);
+        // the gas keeps running once touched: paint must go on settling after
+        // the hand moves to another brush
+        if (gas.inUse) {
+            gas.step(dt, background, backgroundB, gasFreeze, gasThaw);
+            gasFreeze = gasThaw = false;
+            rebindBackgroundFbo();
+            canvasDirty = true;
+        }
+        // paper goes on drinking after the pen leaves it
+        if (nib.active) {
+            nib.step(dt, background, backgroundB);
+            rebindBackgroundFbo();
+            canvasDirty = true;
+        }
 
         // freshly dried particles land in the background, permanently
         flip.draw(2.0f, fboBackground, canvasW, canvasH, false);
@@ -1324,14 +2092,20 @@ static void onCursor(GLFWwindow *, double x, double y) {
     app.mouseY = y;
 }
 static void onDrop(GLFWwindow *, int count, const char **paths) {
-    if (count > 0) app.importImage(paths[0]);
+    if (count > 0) app.openPath(paths[0]);
 }
 static void onFramebufferSize(GLFWwindow *, int w, int h) {
     app.winW = w; app.winH = h;   // 0 x 0 while minimised; canvasRect() copes
 }
-static void onKey(GLFWwindow *, int key, int, int action, int) {
+static void onKey(GLFWwindow *, int key, int, int action, int mods) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
     if (ImGui::GetIO().WantCaptureKeyboard) return;
+    if (mods & GLFW_MOD_CONTROL) {
+        // ctrl+Z steps back, ctrl+Y or ctrl+shift+Z steps forward
+        if (key == GLFW_KEY_Z) { (mods & GLFW_MOD_SHIFT) ? app.redo() : app.undo(); }
+        else if (key == GLFW_KEY_Y) app.redo();
+        return;
+    }
     Flip &f = app.flip;
     switch (key) {
         case GLFW_KEY_W: f.flowRate = std::min(40.0f, f.flowRate + 2); break;
@@ -1347,6 +2121,8 @@ static void onKey(GLFWwindow *, int key, int, int action, int) {
         case GLFW_KEY_1: app.tool = 0; break;
         case GLFW_KEY_2: app.tool = 1; break;
         case GLFW_KEY_3: app.tool = 2; break;
+        case GLFW_KEY_4: app.tool = 3; break;
+        case GLFW_KEY_5: app.tool = 4; break;
         case GLFW_KEY_M: app.glitchMode = (app.glitchMode + 1) % 5; break;
         case GLFW_KEY_LEFT_BRACKET: f.brushRadius = std::max(0.004f, f.brushRadius - 0.004f); break;
         case GLFW_KEY_RIGHT_BRACKET: f.brushRadius = std::min(0.17f, f.brushRadius + 0.004f); break;
@@ -1405,12 +2181,15 @@ int main(int argc, char **argv) {
     glfwSetKeyCallback(win, onKey);
     glfwSetDropCallback(win, onDrop);
     glfwSetFramebufferSizeCallback(win, onFramebufferSize);
-    if (argc > 1) app.importImage(argv[1]);
+    if (argc > 1) app.openPath(argv[1]);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGui::StyleColorsDark();
     ImGui::GetIO().IniFilename = nullptr;   // no imgui.ini next to the exe
+    // Only the title bar drags the panel. Missing a slider by a few pixels
+    // otherwise picks the whole panel up and carries it off the window.
+    ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true;
     ImGui_ImplGlfw_InitForOpenGL(win, true);   // chains to the callbacks above
     ImGui_ImplOpenGL3_Init("#version 430");
 
@@ -1450,6 +2229,8 @@ int main(int argc, char **argv) {
             std::snprintf(title, sizeof title, "MaxPaint  |  %s",
                           app.tool == 0 ? "paint"
                         : app.tool == 2 ? "reaction"
+                        : app.tool == 4 ? "nib"
+                        : app.tool == 3 ? "gas"
                                         : GLITCH_NAMES[app.glitchMode]);
             glfwSetWindowTitle(win, title);
         }
