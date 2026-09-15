@@ -7,7 +7,7 @@ loader only rewrites the `#version` line and drops standalone precision
 statements. The Python harness in `../tools/` is the behavioural
 reference.
 
-A panel on the left carries five tools. **Gas** is the Eulerian medium the
+A panel on the left carries six tools. **Gas** is the Eulerian medium the
 Android app calls its hero, running the same passes in the same order: a
 velocity field you push pigment through, made incompressible again every frame,
 with vorticity, dye dissipation and a bake that moves settled paint onto the
@@ -42,6 +42,18 @@ original -- the sort narrows its band so fewer pixels qualify, drift and
 shuffle shorten their displacement, slit-scan pulls a shorter distance, crush
 climbs back toward continuous tone. A dab stays made of pixels that were
 already in the picture.
+
+**Scatter** strews boxes through the brush disc and lets the picture turn each
+one. The property map's gradient runs across an edge, so a box lies along the
+perpendicular -- on a cheekbone they follow the bone, in flat sky they have no
+direction to find and stay square. **Stretch** draws a box out along its
+feature and squeezes it across by the same amount, because those are the same
+fact; **Align** at 0 keeps them square to the screen instead. The brush carries
+no pigment of its own: every box takes a colour already in the layer -- from
+under itself, from elsewhere in the disc, or from anywhere in the picture --
+so a blank canvas stays blank and a photograph comes apart into its own
+palette. Edge falloff thins the scatter at the rim rather than fading it, so
+every box keeps its edges.
 
 **Reaction** is Gray-Scott reaction-diffusion, and it is the one brush that
 does not draw. It seeds a disturbance under the cursor -- substrate down,
@@ -109,7 +121,7 @@ slope choose the sort direction. True depth would need a neural model; these
 are what the pixels alone can say.
 
 Keys still work: W/S flow, E/D settle, R/F motion inheritance, T/G drag,
-Q/A cohesion, [ ] brush size, 1-5 tool, M cycles the glitch mode,
+Q/A cohesion, [ ] brush size, 1-6 tool, M cycles the glitch mode,
 ctrl+Z / ctrl+Y undo and redo, C clear.
 
 ## Building

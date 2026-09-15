@@ -14,7 +14,7 @@
 // the window resizes freely, the canvas holds whatever size it was given
 // and sits centred inside it.
 // The keys from the first build still work: W/S flow, E/D settle, R/F
-// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1-5 tool, M glitch
+// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1-6 tool, M glitch
 // mode, C clear.
 
 #ifdef _WIN32
@@ -987,6 +987,19 @@ struct App {
     float glitchSeed = 1.0f;      // moves each dab, so holding still reshuffles
     float glitchEdgeBound = 0.0f; // 0 off: runs stop at the picture's edges
     bool glitchAutoDir = false;   // the surface picks the sort axis
+    // scatter (tool 5): boxes turned and stretched by the picture under them
+    int scatterCount = 24;
+    float scatterSize = 14.0f;
+    float scatterStretch = 2.5f;
+    float scatterAlign = 1.0f;
+    float scatterOpacity = 1.0f;
+    float scatterJitter = 0.45f;
+    int scatterColour = 0;        // 0 under the box, 1 in the disc, 2 anywhere
+    float scatterSeed = 1.0f;
+    bool haveScatterLast = false;
+    float scatterLastX = 0, scatterLastY = 0, scatterCarry = 0;
+    Prog pScatter;
+
     Prog pPixelSort, pCopyRect, pProps;
     Prog pDrift, pBlocks, pSlit, pCrush;
 
@@ -1035,6 +1048,7 @@ struct App {
         if (!pPixelSort.id) pPixelSort.id = computeProgram("pixelsort.comp");
         if (!pCopyRect.id) pCopyRect.id = computeProgram("copy_rect.comp");
         if (!pProps.id) pProps.id = computeProgram("props.comp");
+        if (!pScatter.id) pScatter.id = computeProgram("scatter.comp");
         if (!pDrift.id) pDrift.id = computeProgram("glitch_drift.comp");
         if (!pBlocks.id) pBlocks.id = computeProgram("glitch_blocks.comp");
         if (!pSlit.id) pSlit.id = computeProgram("glitch_slit.comp");
@@ -1561,6 +1575,72 @@ struct App {
         canvasDirty = true;
     }
 
+    // One scatter dab: boxes into the back buffer, then the disc forward --
+    // the same two passes the glitch brush uses, and for the same reason.
+    void scatterDab(float u, float v) {
+        int cx = (int)(u * canvasW), cy = (int)(v * canvasH);
+        int r = std::min(127, std::max(2, (int)(flip.brushRadius * canvasH)));
+
+        pScatter.use();
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, props);
+        glActiveTexture(GL_TEXTURE0);
+        pScatter.set("uSrc", 0);
+        pScatter.set("uProps", 1);
+        glBindImageTexture(0, backgroundB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pScatter.set2i("uCentre", cx, cy);
+        pScatter.set("uRadius", r);
+        pScatter.set("uFalloff", glitchFalloff);
+        pScatter.set2i("uSize", canvasW, canvasH);
+        pScatter.set("uCount", scatterCount);
+        pScatter.set("uBoxSize", scatterSize);
+        pScatter.set("uStretch", scatterStretch);
+        pScatter.set("uAlign", scatterAlign);
+        pScatter.set("uOpacity", scatterOpacity);
+        pScatter.set("uColourFrom", scatterColour);
+        pScatter.set("uJitter", scatterJitter);
+        pScatter.set("uSeed", scatterSeed);
+        scatterSeed += 3.7f;
+        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+
+        pCopyRect.use();
+        glBindTexture(GL_TEXTURE_2D, backgroundB);
+        pCopyRect.set("uSrc", 0);
+        glBindImageTexture(0, background, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+        pCopyRect.set2i("uOrigin", cx - r, cy - r);
+        pCopyRect.set2i("uSize", 2 * r + 1, 2 * r + 1);
+        pCopyRect.set("uRadius", r);
+        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        canvasDirty = true;
+    }
+
+    void scatterStroke() {
+        float cx = 0, cy = 0;
+        if (!painting || canvasW == 0 || !canvasUV(cx, cy)) { haveScatterLast = false; return; }
+        if (!haveScatterLast) {
+            scatterDab(cx, cy);
+            haveScatterLast = true;
+            scatterLastX = cx; scatterLastY = cy; scatterCarry = 0;
+            return;
+        }
+        float dx = (cx - scatterLastX) * flip.aspect, dy = cy - scatterLastY;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        float spacing = std::max(flip.brushRadius * 0.5f, 0.002f);
+        float next = spacing - scatterCarry;
+        int stamps = 0;
+        while (next <= dist && stamps < 64) {
+            float t = next / dist;
+            scatterDab(scatterLastX + (cx - scatterLastX) * t,
+                       scatterLastY + (cy - scatterLastY) * t);
+            next += spacing;
+            stamps++;
+        }
+        scatterCarry = stamps < 64 ? dist - (next - spacing) : 0;
+        scatterLastX = cx; scatterLastY = cy;
+    }
+
     // dabs strung along the mouse path half a radius apart, as on Android
     void glitchStroke() {
         float cx = 0, cy = 0;
@@ -2021,7 +2101,8 @@ struct App {
         ImGui::RadioButton("Glitch", &tool, 1); ImGui::SameLine();
         ImGui::RadioButton("Reaction", &tool, 2); ImGui::SameLine();
         ImGui::RadioButton("Gas", &tool, 3); ImGui::SameLine();
-        ImGui::RadioButton("Nib", &tool, 4);
+        ImGui::RadioButton("Nib", &tool, 4); ImGui::SameLine();
+        ImGui::RadioButton("Scatter", &tool, 5);
         const char *views[] = {"Paint", "Height", "Normals", "Occlusion", "Reaction"};
         ImGui::Combo("View", &view, views, 5);
         ImGui::Separator();
@@ -2140,6 +2221,33 @@ struct App {
             ImGui::TextWrapped("%s Edge falloff eases the mark out at the rim "
                                "instead of ending it on a circle -- 0 is a hard "
                                "edge. Open a photo and take it apart.", blurb);
+        } else if (tool == 5) {
+            ImGui::SliderInt("Boxes", &scatterCount, 1, 64, "%d a dab");
+            ImGui::SliderFloat("Box size", &scatterSize, 1, 80, "%.0f px");
+            ImGui::SliderFloat("Size spread", &scatterJitter, 0, 1, "%.2f");
+            ImGui::Separator();
+            ImGui::SliderFloat("Align", &scatterAlign, 0, 1, "%.2f");
+            ImGui::SliderFloat("Stretch", &scatterStretch, 0, 8, "%.2f");
+            ImGui::Separator();
+            const char *from[] = {"Under the box", "Elsewhere in the disc",
+                                  "Anywhere in the picture"};
+            ImGui::Combo("Colour", &scatterColour, from, 3);
+            ImGui::SliderFloat("Opacity", &scatterOpacity, 0, 1, "%.2f");
+            ImGui::SliderFloat("Edge falloff", &glitchFalloff, 0, 1, "%.2f");
+            ImGui::TextWrapped("Boxes strewn through the disc, each turned and "
+                               "stretched by the picture it lands on. The property "
+                               "map's gradient runs across an edge, so a box lies "
+                               "along the perpendicular -- on a cheekbone they "
+                               "follow the bone, in flat sky they stay square. "
+                               "Stretch draws a box out along its feature and "
+                               "squeezes it across, by the same amount, because "
+                               "those are the same fact. Align 0 keeps them square "
+                               "to the screen instead.\n\nThe brush carries no "
+                               "pigment: every box takes a colour already in the "
+                               "layer, so a blank canvas stays blank and a "
+                               "photograph comes apart into its own palette. Edge "
+                               "falloff thins the scatter at the rim rather than "
+                               "fading it, so every box keeps its edges.");
         } else if (tool == 4) {
             ImGui::SliderFloat("Nib size", &nib.radius, 0.001f, 0.05f, "%.4f");
             ImGui::SliderFloat("Load", &nib.load, 0.1f, 3, "%.2f");
@@ -2279,6 +2387,7 @@ struct App {
         else if (tool == 2) rdStroke();
         else if (tool == 3) gasStroke(dt);
         else if (tool == 4) nibStroke();
+        else if (tool == 5) scatterStroke();
         else pour(dt);
         if (rdSeeded && rdRun) rdStep();
         if (flip.emitted > 0) flip.step(dt);
@@ -2311,7 +2420,7 @@ struct App {
                               (glitchEdgeBound > 0.0f || glitchAutoDir);
         bool paintReadsProps = flip.relief > 0.0f || flip.shadeDry > 0.0f ||
                                flip.heightInk > 0.0f;
-        bool wanted = view != 0 || paintReadsProps || sortReadsProps;
+        bool wanted = view != 0 || paintReadsProps || sortReadsProps || tool == 5;
         if (wanted && (propsFrame++ % 4) == 0) updateProps();
 
         // the window, then the canvas laid on it
@@ -2368,6 +2477,7 @@ static void onKey(GLFWwindow *, int key, int, int action, int mods) {
         case GLFW_KEY_3: app.tool = 2; break;
         case GLFW_KEY_4: app.tool = 3; break;
         case GLFW_KEY_5: app.tool = 4; break;
+        case GLFW_KEY_6: app.tool = 5; break;
         case GLFW_KEY_M: app.glitchMode = (app.glitchMode + 1) % 5; break;
         case GLFW_KEY_LEFT_BRACKET: f.brushRadius = std::max(0.004f, f.brushRadius - 0.004f); break;
         case GLFW_KEY_RIGHT_BRACKET: f.brushRadius = std::min(0.17f, f.brushRadius + 0.004f); break;
@@ -2489,6 +2599,7 @@ int main(int argc, char **argv) {
             std::snprintf(title, sizeof title, "MaxPaint  |  %s",
                           app.tool == 0 ? "fluid"
                         : app.tool == 2 ? "reaction"
+                        : app.tool == 5 ? "scatter"
                         : app.tool == 4 ? "nib"
                         : app.tool == 3 ? "gas"
                                         : GLITCH_NAMES[app.glitchMode]);
