@@ -1,0 +1,46 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Seeds the reaction under the brush: substrate pushed down, reagent pushed
+// up, which is the disturbance Gray-Scott needs before it will do anything at
+// all. No pattern is painted here -- this only lights the fuse, and the step
+// pass grows whatever the feed and kill rates call for.
+//
+// The seed is weighted by the same edge falloff the other brushes use, so a
+// dab starts the reaction hard in the middle and barely at the rim, and the
+// growth front that follows is ragged rather than a perfect circle.
+//
+// It reads and writes the one state texture in place rather than ping-ponging.
+// That is safe precisely because it is local: every invocation touches only
+// the texel it loaded, so no invocation can observe another's write.
+
+layout(rgba16f, binding = 0) uniform highp image2D uState;
+
+uniform ivec2 uCentre;
+uniform int   uRadius;
+uniform float uFalloff;
+uniform ivec2 uSize;
+
+float edgeWeight(vec2 d) {
+    if (uFalloff <= 0.0) return 1.0;
+    float rim = clamp(length(d) / max(float(uRadius), 1.0), 0.0, 1.0);
+    float w = clamp((1.0 - rim) / uFalloff, 0.0, 1.0);
+    return w * w * (3.0 - 2.0 * w);
+}
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    int span = 2 * uRadius + 1;
+    if (g.x >= span || g.y >= span) return;
+
+    ivec2 d = g - ivec2(uRadius);
+    if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
+
+    ivec2 p = uCentre + d;
+    if (p.x < 0 || p.y < 0 || p.x >= uSize.x || p.y >= uSize.y) return;
+
+    vec4 c = imageLoad(uState, p);
+    float w = edgeWeight(vec2(d));
+    imageStore(uState, p, vec4(mix(c.r, 0.5, w), max(c.g, 0.5 * w), 0.0, 1.0));
+}

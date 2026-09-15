@@ -1,0 +1,68 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// One step of Gray-Scott reaction-diffusion, the engine behind the coral,
+// labyrinth and leopard patterns.
+//
+//   dA/dt = Da*lap(A) - A*B*B + f*(1 - A)
+//   dB/dt = Db*lap(B) + A*B*B - (f + k)*B
+//
+// Two chemicals on the canvas: A is fed in at rate f and consumed where B is
+// present, B is produced by that same reaction and removed at rate f+k. The
+// whole zoo of patterns lives in a narrow window of f and k, which is why the
+// presets matter more than the sliders.
+//
+// The Laplacian is the usual nine-point stencil (0.2 orthogonal, 0.05
+// diagonal, -1 centre). Edges clamp rather than wrap, so the reaction behaves
+// as though the canvas were walled -- a torus would let a pattern crawl off
+// one side and surprise you on the other.
+//
+// uCouple reads the picture underneath and shifts f and k by its brightness,
+// so a photograph steers the chemistry: light skin grows one regime, shadow
+// another, and the pattern finds the face on its own. The shifts are small
+// because this system is delicate -- a hundredth on k is the difference
+// between spots and a field that dies.
+
+layout(binding = 0) uniform highp sampler2D uSrc;     // rg = A, B
+layout(binding = 1) uniform highp sampler2D uLayer;   // the set paint, for tone
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uSize;
+uniform float uDa;
+uniform float uDb;
+uniform float uFeed;
+uniform float uKill;
+uniform float uDt;
+uniform float uCouple;   // 0 ignores the picture
+
+vec2 at(ivec2 p) {
+    return texelFetch(uSrc, clamp(p, ivec2(0), uSize - ivec2(1)), 0).rg;
+}
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= uSize.x || p.y >= uSize.y) return;
+
+    vec2 c = at(p);
+    vec2 lap = (at(p + ivec2(-1,  0)) + at(p + ivec2(1, 0)) +
+                at(p + ivec2( 0, -1)) + at(p + ivec2(0, 1))) * 0.2
+             + (at(p + ivec2(-1, -1)) + at(p + ivec2(1, -1)) +
+                at(p + ivec2(-1,  1)) + at(p + ivec2(1,  1))) * 0.05
+             - c;
+
+    float f = uFeed, k = uKill;
+    if (uCouple > 0.0) {
+        vec4 lc = texelFetch(uLayer, p, 0);
+        float lum = dot(lc.rgb + vec3(1.0 - lc.a), vec3(0.299, 0.587, 0.114));
+        f += (lum - 0.5) * uCouple * 0.012;
+        k += (lum - 0.5) * uCouple * 0.008;
+    }
+
+    float reaction = c.r * c.g * c.g;
+    float a = c.r + (uDa * lap.x - reaction + f * (1.0 - c.r)) * uDt;
+    float b = c.g + (uDb * lap.y + reaction - (f + k) * c.g) * uDt;
+
+    imageStore(uDst, p, vec4(clamp(a, 0.0, 1.0), clamp(b, 0.0, 1.0), 0.0, 1.0));
+}

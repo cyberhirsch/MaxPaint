@@ -62,7 +62,12 @@ typedef void GLvoid;
 #define GL_WRITE_ONLY 0x88B9
 #define GL_READ_WRITE 0x88BA
 #define GL_FRAMEBUFFER 0x8D40
+#define GL_READ_FRAMEBUFFER 0x8CA8
+#define GL_DRAW_FRAMEBUFFER 0x8CA9
 #define GL_COLOR_ATTACHMENT0 0x8CE0
+#define GL_RGBA8 0x8058
+#define GL_PACK_ALIGNMENT 0x0D05
+#define GL_MAX_TEXTURE_SIZE 0x0D33
 #define GL_PROGRAM_POINT_SIZE 0x8642
 #define GL_SHADER_IMAGE_ACCESS_BARRIER_BIT 0x00000020
 #define GL_SHADER_STORAGE_BARRIER_BIT 0x00002000
@@ -116,7 +121,13 @@ typedef void GLvoid;
     X(void, glEnableVertexAttribArray, (GLuint)) \
     X(void, glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void *)) \
     X(void, glDrawArrays, (GLenum, GLint, GLsizei)) \
-    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *))
+    X(void, glReadPixels, (GLint, GLint, GLsizei, GLsizei, GLenum, GLenum, void *)) \
+    X(void, glDeleteBuffers, (GLsizei, const GLuint *)) \
+    X(void, glDeleteTextures, (GLsizei, const GLuint *)) \
+    X(void, glDeleteFramebuffers, (GLsizei, const GLuint *)) \
+    X(void, glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
+    X(void, glPixelStorei, (GLenum, GLint)) \
+    X(void, glGetIntegerv, (GLenum, GLint *))
 
 #define MAXPAINT_GL_DECLARE(ret, name, args) extern ret (APIENTRY *name) args;
 MAXPAINT_GL_FUNCS(MAXPAINT_GL_DECLARE)

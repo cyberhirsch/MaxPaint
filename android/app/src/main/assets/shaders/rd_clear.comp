@@ -1,0 +1,17 @@
+#version 310 es
+precision highp float;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Resets the reaction-diffusion field to its resting state: the substrate A
+// full everywhere, the reagent B absent. Nothing happens in a field like this
+// until a brush seeds it -- Gray-Scott has no dynamics without a disturbance,
+// which is exactly why a blank canvas stays blank until you touch it.
+
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+uniform ivec2 uSize;
+
+void main() {
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= uSize.x || p.y >= uSize.y) return;
+    imageStore(uDst, p, vec4(1.0, 0.0, 0.0, 1.0));
+}

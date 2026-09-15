@@ -8,9 +8,13 @@
 // motion inheritance) with the Android presets and sliders, and glitch
 // (pixel sorting under the brush). Open loads a picture as set paint --
 // dropping a file on the window or passing its path on the command line
-// does the same -- and Save PNG writes the canvas next to the executable.
+// does the same -- and Save PNG writes the canvas next to the executable,
+// at the canvas's own resolution. The window and the canvas are separate:
+// the window resizes freely, the canvas holds whatever size it was given
+// and sits centred inside it.
 // The keys from the first build still work: W/S flow, E/D settle, R/F
-// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1/2 tool, C clear.
+// motion inheritance, T/G drag, Q/A cohesion, [ ] size, 1/2/3 tool, M glitch
+// mode, C clear.
 
 #ifdef _WIN32
 #  define WIN32_LEAN_AND_MEAN
@@ -231,8 +235,14 @@ struct Flip {
     void resize(float asp) {
         aspect = std::min(5.0f, std::max(0.2f, asp));
         float root = std::sqrt(aspect);
-        gridW = std::max(8, (int)(gridRes * root) & ~1);
-        gridH = std::max(8, (int)(gridRes / root) & ~1);
+        int w = std::max(8, (int)(gridRes * root) & ~1);
+        int h = std::max(8, (int)(gridRes / root) & ~1);
+        if (accum && w == gridW && h == gridH) return;
+        gridW = w; gridH = h;
+        // the canvas can be reshaped now, so the old grid has to go back
+        if (accum) glDeleteBuffers(1, &accum);
+        for (GLuint *t : {&texU, &texV, &texUOld, &texVOld, &texDensity})
+            if (*t) { glDeleteTextures(1, t); *t = 0; }
         int cells = gridW * gridH;
         accum = makeBuffer((size_t)cells * 6 * 4, GL_DYNAMIC_COPY);
         texU = makeTexture(gridW, gridH, GL_R32F, GL_NEAREST);
@@ -291,6 +301,7 @@ struct Flip {
         int h = std::max(8, (int)std::ceil(1.0f / spacing));
         if (!sepGrid || w != sepW || h != sepH) {
             sepW = w; sepH = h;
+            if (sepGrid) glDeleteBuffers(1, &sepGrid);
             sepGrid = makeBuffer((size_t)w * h * 13 * 4, GL_DYNAMIC_COPY);
         }
 
@@ -464,6 +475,18 @@ static const FlipPreset FLIP_PRESETS[] = {
     {"Honey",     10, 0.45f, 1.60f, 2.5f, 26, 6,  51},
     {"Mercury",   24, 0.97f, 0.04f, 2.5f, 38, 5,  61},
 };
+// Gray-Scott lives in a narrow window of feed and kill; a hundredth on either
+// is the difference between a pattern and a field that dies. These are the
+// classic pairs, so the presets matter more here than the sliders do.
+struct RdPreset { const char *name; float feed, kill; };
+static const RdPreset RD_PRESETS[] = {
+    {"Coral",         0.0545f, 0.0620f},
+    {"Labyrinth",     0.0290f, 0.0570f},
+    {"Leopard spots", 0.0367f, 0.0649f},
+    {"Worms",         0.0580f, 0.0650f},
+    {"Flower",        0.0250f, 0.0600f},
+};
+
 struct GlitchPreset { const char *name; float lo, hi; bool vertical; };
 static const GlitchPreset GLITCH_PRESETS[] = {
     {"Midtones",   0.25f, 0.85f, false},
@@ -488,8 +511,16 @@ out vec4 fragColor;
 layout(binding = 0) uniform sampler2D uBackground;
 layout(binding = 1) uniform sampler2D uLive;
 layout(binding = 2) uniform sampler2D uProps;
-uniform int uView;   // 0 paint, 1 height, 2 normals, 3 occlusion
+layout(binding = 3) uniform sampler2D uRd;    // rg = the reaction's A, B
+uniform int uView;   // 0 paint, 1 height, 2 normals, 3 occlusion, 4 reaction
+uniform float uRdInk;      // 0 hides the reaction
+uniform float uRdLo;
+uniform float uRdHi;
 void main() {
+    if (uView == 4) {
+        fragColor = vec4(vec3(texture(uRd, vUv).g * 2.5), 1.0);
+        return;
+    }
     if (uView != 0) {
         vec4 pr = texture(uProps, vUv);
         vec3 c = uView == 1 ? vec3(pr.r)
@@ -504,6 +535,12 @@ void main() {
     vec3 paper = bg.rgb + vec3(1.0 - clamp(bg.a, 0.0, 1.0));
     vec4 live = texture(uLive, vUv);
     vec3 col = live.rgb + paper * (1.0 - clamp(live.a, 0.0, 1.0));
+    // the reaction lies over the picture as ink rather than replacing it, so
+    // the photograph stays legible under whatever grows on it
+    if (uRdInk > 0.0) {
+        float b = texture(uRd, vUv).g;
+        col = mix(col, vec3(0.0), smoothstep(uRdLo, uRdHi, b) * uRdInk);
+    }
     fragColor = vec4(col, 1.0);
 })";
 
@@ -514,13 +551,72 @@ struct App {
     GLuint background = 0, backgroundB = 0, live = 0;
     GLuint fboBackground = 0, fboLive = 0;
     GLuint compositeProgram = 0, emptyVao = 0;
-    int fbW = 0, fbH = 0;
+
+    // The canvas is the painting, in texels; the window is the glass we show
+    // it through. They started out the same texture size and no longer are:
+    // the canvas keeps its own resolution and sits letterboxed in the window.
+    int canvasW = 0, canvasH = 0;
+    int winW = 0, winH = 0;              // framebuffer, in pixels
+    float pixelScaleX = 1, pixelScaleY = 1;   // framebuffer px per window px
+    // A side limit from the driver, and an area limit from memory: the canvas
+    // carries four RGBA16F layers, 32 bytes a pixel, so 32 MP is about a
+    // gigabyte of it and far enough for anything a screen will show.
+    int maxCanvas = 8192;                // GL_MAX_TEXTURE_SIZE, read at startup
+    static constexpr int maxCanvasPixels = 32 << 20;
+    int pendingCanvasW = 0, pendingCanvasH = 0;   // applied at the top of frame()
+    int canvasInput[2] = {1280, 720};
+    int windowInput[2] = {1280, 720};
+    bool windowInputActive = false;
+    GLFWwindow *window = nullptr;
+
+    struct Rect { int x, y, w, h; };
+
+    // The canvas, centred and scaled to fit the window without distorting it.
+    // Viewport y counts from the bottom, but centring is symmetric, so the
+    // same margin serves either way up.
+    Rect canvasRect() const {
+        if (canvasW <= 0 || canvasH <= 0 || winW <= 0 || winH <= 0)
+            return {0, 0, winW, winH};
+        float canvasAspect = (float)canvasW / (float)canvasH;
+        int w, h;
+        if ((float)winW / (float)winH > canvasAspect) {
+            h = winH; w = std::max(1, (int)(winH * canvasAspect + 0.5f));
+        } else {
+            w = winW; h = std::max(1, (int)(winW / canvasAspect + 0.5f));
+        }
+        return {(winW - w) / 2, (winH - h) / 2, w, h};
+    }
 
     // tools: 0 paint, 1 glitch (pixel sort)
     int tool = 0;
     float glitchLo = 0.25f, glitchHi = 0.85f;
+    float glitchFalloff = 0.5f;   // fraction of the radius the edge fades over
     bool glitchVertical = false, glitchDescending = false;
+    // glitch modes: 0 pixel sort, 1 channel drift, 2 block shuffle,
+    // 3 slit-scan, 4 bit crush -- all on the same back-buffer plumbing
+    int glitchMode = 0;
+    float driftAmount = 12.0f;    // legible on a grey photo without being silly
+    int blockSize = 8;            // a JPEG's own grid
+    float blockAmount = 14.0f;
+    float slitStretch = 0.6f;
+    int crushLevels = 5;
+    float glitchSeed = 1.0f;      // moves each dab, so holding still reshuffles
     Prog pPixelSort, pCopyRect, pProps;
+    Prog pDrift, pBlocks, pSlit, pCrush;
+
+    // reaction-diffusion (tool 2): two state textures, ping-ponged, holding
+    // the substrate in red and the reagent in green
+    GLuint rdTex[2] = {0, 0};
+    int rdCur = 0;
+    bool rdSeeded = false, rdRun = true;
+    int rdIters = 6, rdPreset = 0;   // fast enough to watch, slow enough to stop
+    float rdFeed = 0.0545f, rdKill = 0.0620f;
+    float rdDa = 1.0f, rdDb = 0.5f, rdDt = 1.0f;
+    float rdCouple = 0.0f;          // how hard the picture steers the chemistry
+    float rdInk = 1.0f, rdLo = 0.10f, rdHi = 0.30f;
+    bool haveRdLast = false;
+    float rdLastX = 0, rdLastY = 0, rdCarry = 0;
+    Prog pRdClear, pRdSeed, pRdStep;
     GLuint props = 0;
     int view = 0;                 // 0 paint, 1 height, 2 normals, 3 occlusion
     bool reliefInvert = false;    // dark is high
@@ -539,14 +635,31 @@ struct App {
     float pourLastX = 0, pourLastY = 0, pourLastVx = 0, pourLastVy = 0;
     float pourDebt = 0;
 
+    // Builds the canvas at w x h. Called again whenever the canvas is
+    // resized, so everything it made last time has to go back first.
     void allocate(int w, int h) {
-        fbW = w; fbH = h;
+        canvasW = w; canvasH = h;
+        for (GLuint *t : {&background, &backgroundB, &live, &props})
+            if (*t) { glDeleteTextures(1, t); *t = 0; }
+        for (GLuint *f : {&fboBackground, &fboLive})
+            if (*f) { glDeleteFramebuffers(1, f); *f = 0; }
         background = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         backgroundB = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         live = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
-        pPixelSort.id = computeProgram("pixelsort.comp");
-        pCopyRect.id = computeProgram("copy_rect.comp");
-        pProps.id = computeProgram("props.comp");
+        if (!pPixelSort.id) pPixelSort.id = computeProgram("pixelsort.comp");
+        if (!pCopyRect.id) pCopyRect.id = computeProgram("copy_rect.comp");
+        if (!pProps.id) pProps.id = computeProgram("props.comp");
+        if (!pDrift.id) pDrift.id = computeProgram("glitch_drift.comp");
+        if (!pBlocks.id) pBlocks.id = computeProgram("glitch_blocks.comp");
+        if (!pSlit.id) pSlit.id = computeProgram("glitch_slit.comp");
+        if (!pCrush.id) pCrush.id = computeProgram("glitch_crush.comp");
+        if (!pRdClear.id) pRdClear.id = computeProgram("rd_clear.comp");
+        if (!pRdSeed.id) pRdSeed.id = computeProgram("rd_seed.comp");
+        if (!pRdStep.id) pRdStep.id = computeProgram("rd_step.comp");
+        for (int i = 0; i < 2; i++) {
+            if (rdTex[i]) glDeleteTextures(1, &rdTex[i]);
+            rdTex[i] = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        }
         props = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
         flip.propsTex = props;
         glGenFramebuffers(1, &fboBackground);
@@ -561,17 +674,150 @@ struct App {
         glClear(GL_COLOR_BUFFER_BIT);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         flip.resize((float)w / (float)h);
+        rdClear();
+    }
+
+    // The reaction's resting state: substrate everywhere, no reagent. Both
+    // buffers, so a step reads a sane field whichever way the ping-pong sits.
+    void rdClear() {
+        if (!pRdClear.id || canvasW <= 0) return;
+        pRdClear.use();
+        pRdClear.set2i("uSize", canvasW, canvasH);
+        for (int i = 0; i < 2; i++) {
+            glBindImageTexture(0, rdTex[i], 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            glDispatchCompute((canvasW + 7) / 8, (canvasH + 7) / 8, 1);
+        }
+        glMemoryBarrier(GL_ALL_BARRIER_BITS);
+        rdCur = 0;
+        rdSeeded = false;
+        haveRdLast = false;
+    }
+
+    // Light the reaction under the brush. In place on the live state, so it
+    // costs the dab's footprint rather than a pass over the canvas.
+    void rdSeedDab(float u, float v) {
+        int cx = (int)(u * canvasW), cy = (int)(v * canvasH);
+        int r = std::min(127, std::max(2, (int)(flip.brushRadius * canvasH)));
+        pRdSeed.use();
+        glBindImageTexture(0, rdTex[rdCur], 0, GL_FALSE, 0, GL_READ_WRITE, GL_RGBA16F);
+        pRdSeed.set2i("uCentre", cx, cy);
+        pRdSeed.set("uRadius", r);
+        pRdSeed.set("uFalloff", glitchFalloff);
+        pRdSeed.set2i("uSize", canvasW, canvasH);
+        glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
+        glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+        rdSeeded = true;
+    }
+
+    // Seeds along the cursor's path at the usual dab spacing, so a quick
+    // stroke lights a continuous fuse rather than a row of dots.
+    void rdStroke() {
+        float cx = 0, cy = 0;
+        if (!painting || canvasW == 0 || !canvasUV(cx, cy)) { haveRdLast = false; return; }
+        if (!haveRdLast) {
+            rdSeedDab(cx, cy);
+            haveRdLast = true;
+            rdLastX = cx; rdLastY = cy; rdCarry = 0;
+            return;
+        }
+        float dx = (cx - rdLastX) * flip.aspect, dy = cy - rdLastY;
+        float dist = std::sqrt(dx * dx + dy * dy);
+        float spacing = std::max(flip.brushRadius * 0.5f, 0.002f);
+        float next = spacing - rdCarry;
+        int stamps = 0;
+        while (next <= dist && stamps < 64) {
+            float t = next / dist;
+            rdSeedDab(rdLastX + (cx - rdLastX) * t, rdLastY + (cy - rdLastY) * t);
+            next += spacing;
+            stamps++;
+        }
+        rdCarry = stamps < 64 ? dist - (next - spacing) : 0;
+        rdLastX = cx; rdLastY = cy;
+    }
+
+    // Several steps a frame: one step of Gray-Scott moves almost nothing, and
+    // the pattern wants to be watched growing rather than waited for.
+    void rdStep() {
+        pRdStep.use();
+        pRdStep.set2i("uSize", canvasW, canvasH);
+        pRdStep.set("uDa", rdDa);
+        pRdStep.set("uDb", rdDb);
+        pRdStep.set("uFeed", rdFeed);
+        pRdStep.set("uKill", rdKill);
+        pRdStep.set("uDt", rdDt);
+        pRdStep.set("uCouple", rdCouple);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, background);
+        pRdStep.set("uLayer", 1);
+        for (int i = 0; i < rdIters; i++) {
+            glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, rdTex[rdCur]);
+            pRdStep.set("uSrc", 0);
+            glBindImageTexture(0, rdTex[1 - rdCur], 0, GL_FALSE, 0,
+                               GL_WRITE_ONLY, GL_RGBA16F);
+            glDispatchCompute((canvasW + 7) / 8, (canvasH + 7) / 8, 1);
+            glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
+                            GL_TEXTURE_FETCH_BARRIER_BIT);
+            rdCur = 1 - rdCur;
+        }
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    // A new canvas size, with the set paint carried across: the dry layer is
+    // rescaled into the new one. Wet particles hold positions in canvas space
+    // and cannot follow, so the pool is emptied.
+    void resizeCanvas(int w, int h) {
+        w = std::min(maxCanvas, std::max(64, w));
+        h = std::min(maxCanvas, std::max(64, h));
+        // too many pixels: keep the shape, lose the scale
+        if ((double)w * h > maxCanvasPixels) {
+            double k = std::sqrt(maxCanvasPixels / ((double)w * h));
+            w = std::max(64, (int)(w * k));
+            h = std::max(64, (int)(h * k));
+        }
+        if (w == canvasW && h == canvasH) return;
+
+        GLuint oldTex = background, oldFbo = fboBackground;
+        int oldW = canvasW, oldH = canvasH;
+        background = 0; fboBackground = 0;   // keep allocate() from freeing them
+        allocate(w, h);
+
+        if (oldTex && oldW > 0 && oldH > 0) {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, oldFbo);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fboBackground);
+            glBlitFramebuffer(0, 0, oldW, oldH, 0, 0, w, h,
+                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        }
+        if (oldFbo) glDeleteFramebuffers(1, &oldFbo);
+        if (oldTex) glDeleteTextures(1, &oldTex);
+
+        flip.clearPool();
+        havePourLast = false;
+        haveGlitchLast = false;
+        canvasInput[0] = w; canvasInput[1] = h;
+        std::snprintf(status, sizeof status, "canvas %d x %d", w, h);
+    }
+
+    // The cursor, in canvas coordinates: 0..1 across, 0..1 up from the
+    // bottom. False when it is out on the surround rather than on the paint.
+    bool canvasUV(float &u, float &v) const {
+        Rect r = canvasRect();
+        if (r.w <= 0 || r.h <= 0) return false;
+        float x = (float)mouseX * pixelScaleX - (float)r.x;
+        float y = (float)mouseY * pixelScaleY - (float)r.y;
+        u = x / (float)r.w;
+        v = 1.0f - y / (float)r.h;
+        return u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f;
     }
 
     // the particle medium's one emitter, streamed along the cursor's path
     void pour(float dt) {
-        if (!painting || flip.flowRate <= 0 || fbW == 0) {
+        float cx = 0, cy = 0;
+        if (!painting || flip.flowRate <= 0 || canvasW == 0 || !canvasUV(cx, cy)) {
             havePourLast = false;
             pourDebt = 0;
             return;
         }
-        float cx = (float)(mouseX / fbW);
-        float cy = 1.0f - (float)(mouseY / fbH);
         float vx = 0, vy = 0;
         if (havePourLast && dt > 0) {
             float scale = 12.0f / (60.0f * dt);
@@ -596,24 +842,56 @@ struct App {
                   std::min(n, 8192));
     }
 
-    // One glitch dab: sort every line crossing the disc into the back
-    // buffer, then copy just the bounding box forward -- same two passes as
-    // the Android host, same shaders.
+    // One glitch dab, whichever mode is chosen: work the disc into the back
+    // buffer, then bring just that disc forward -- two passes, so a dab costs
+    // its own footprint. Same plumbing and same shaders as the Android host.
     void glitchDab(float u, float v) {
-        int cx = (int)(u * fbW), cy = (int)(v * fbH);
-        int r = std::min(127, std::max(2, (int)(flip.brushRadius * fbH)));
+        int cx = (int)(u * canvasW), cy = (int)(v * canvasH);
+        int r = std::min(127, std::max(2, (int)(flip.brushRadius * canvasH)));
 
-        pPixelSort.use();
+        // every mode reads the layer and writes its dab into the back buffer
         glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, background);
-        pPixelSort.set("uSrc", 0);
         glBindImageTexture(0, backgroundB, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-        pPixelSort.set2i("uCentre", cx, cy);
-        pPixelSort.set("uRadius", r);
-        pPixelSort.set("uVertical", glitchVertical ? 1 : 0);
-        pPixelSort.set("uLo", glitchLo);
-        pPixelSort.set("uHi", glitchHi);
-        pPixelSort.set("uDescending", glitchDescending ? 1 : 0);
-        glDispatchCompute(2 * r + 1, 1, 1);
+
+        const Prog &mode = glitchMode == 1 ? pDrift
+                         : glitchMode == 2 ? pBlocks
+                         : glitchMode == 3 ? pSlit
+                         : glitchMode == 4 ? pCrush : pPixelSort;
+        mode.use();
+        mode.set("uSrc", 0);
+        mode.set2i("uCentre", cx, cy);
+        mode.set("uRadius", r);
+        mode.set("uFalloff", glitchFalloff);
+
+        switch (glitchMode) {
+            case 1:
+                mode.set("uVertical", glitchVertical ? 1 : 0);
+                mode.set("uAmount", driftAmount);
+                break;
+            case 2:
+                mode.set("uBlock", blockSize);
+                mode.set("uAmount", blockAmount);
+                mode.set("uSeed", glitchSeed);
+                glitchSeed += 1.0f;
+                break;
+            case 3:
+                mode.set("uVertical", glitchVertical ? 1 : 0);
+                mode.set("uStretch", slitStretch);
+                break;
+            case 4:
+                mode.set("uLevels", crushLevels);
+                break;
+            default:
+                mode.set("uVertical", glitchVertical ? 1 : 0);
+                mode.set("uLo", glitchLo);
+                mode.set("uHi", glitchHi);
+                mode.set("uDescending", glitchDescending ? 1 : 0);
+                break;
+        }
+        // the sort needs one workgroup per line of the disc for its shared
+        // memory; the per-pixel modes just cover the bounding box
+        if (glitchMode == 0) glDispatchCompute(2 * r + 1, 1, 1);
+        else glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
 
         pCopyRect.use();
@@ -622,15 +900,15 @@ struct App {
         glBindImageTexture(0, background, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         pCopyRect.set2i("uOrigin", cx - r, cy - r);
         pCopyRect.set2i("uSize", 2 * r + 1, 2 * r + 1);
+        pCopyRect.set("uRadius", r);   // the disc only; the corners are not ours
         glDispatchCompute((2 * r + 8) / 8, (2 * r + 8) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
 
     // dabs strung along the mouse path half a radius apart, as on Android
     void glitchStroke() {
-        if (!painting || fbW == 0) { haveGlitchLast = false; return; }
-        float cx = (float)(mouseX / fbW);
-        float cy = 1.0f - (float)(mouseY / fbH);
+        float cx = 0, cy = 0;
+        if (!painting || canvasW == 0 || !canvasUV(cx, cy)) { haveGlitchLast = false; return; }
         if (!haveGlitchLast) {
             glitchDab(cx, cy);
             haveGlitchLast = true;
@@ -658,22 +936,22 @@ struct App {
         int w = 0, h = 0, n = 0;
         unsigned char *px = stbi_load(path, &w, &h, &n, 4);
         if (!px) { std::fprintf(stderr, "could not read %s\n", path); return false; }
-        float canvasAspect = (float)fbW / (float)fbH;
+        float canvasAspect = (float)canvasW / (float)canvasH;
         float srcAspect = (float)w / (float)h;
         int cropW = w, cropH = h;
         if (srcAspect > canvasAspect) cropW = std::max(1, (int)(h * canvasAspect));
         else cropH = std::max(1, (int)(w / canvasAspect));
         int ox = (w - cropW) / 2, oy = (h - cropH) / 2;
 
-        std::vector<float> buf((size_t)fbW * fbH * 4);
-        for (int y = 0; y < fbH; y++) {
+        std::vector<float> buf((size_t)canvasW * canvasH * 4);
+        for (int y = 0; y < canvasH; y++) {
             // GL row 0 is the bottom; image row 0 is the top
-            int sy = oy + (int)((float)(fbH - 1 - y) * cropH / fbH);
-            for (int x = 0; x < fbW; x++) {
-                int sx = ox + (int)((float)x * cropW / fbW);
+            int sy = oy + (int)((float)(canvasH - 1 - y) * cropH / canvasH);
+            for (int x = 0; x < canvasW; x++) {
+                int sx = ox + (int)((float)x * cropW / canvasW);
                 const unsigned char *c = px + ((size_t)sy * w + sx) * 4;
                 float a = c[3] / 255.0f;
-                float *o = &buf[((size_t)y * fbW + x) * 4];
+                float *o = &buf[((size_t)y * canvasW + x) * 4];
                 o[0] = c[0] / 255.0f * a;
                 o[1] = c[1] / 255.0f * a;
                 o[2] = c[2] / 255.0f * a;
@@ -682,7 +960,7 @@ struct App {
         }
         stbi_image_free(px);
         glBindTexture(GL_TEXTURE_2D, background);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, fbW, fbH, GL_RGBA, GL_FLOAT, buf.data());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, canvasW, canvasH, GL_RGBA, GL_FLOAT, buf.data());
         glBindTexture(GL_TEXTURE_2D, 0);
         std::printf("loaded %s (%dx%d)\n", path, w, h);
         return true;
@@ -690,6 +968,7 @@ struct App {
 
     void clearCanvas() {
         flip.clearPool();
+        rdClear();
         for (GLuint fbo : {fboBackground, fboLive}) {
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glClearColor(0, 0, 0, 0);
@@ -711,19 +990,34 @@ struct App {
         glitchLo = p.lo; glitchHi = p.hi; glitchVertical = p.vertical;
     }
 
-    // reads the composited canvas back and writes it as a PNG next to the exe
+    // Writes the canvas as a PNG next to the exe, at the canvas's own
+    // resolution: it is composited offscreen rather than read back off the
+    // window, so what gets saved is the painting, not the view of it.
     void savePng() {
-        std::vector<unsigned char> px((size_t)fbW * fbH * 4);
-        glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        if (canvasW <= 0 || canvasH <= 0) return;
+        GLuint tex = makeTexture(canvasW, canvasH, GL_RGBA8, GL_NEAREST);
+        GLuint fbo = 0;
+        glGenFramebuffers(1, &fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glViewport(0, 0, canvasW, canvasH);
+        compositeDraw();
+
+        std::vector<unsigned char> px((size_t)canvasW * canvasH * 4);
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, canvasW, canvasH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDeleteFramebuffers(1, &fbo);
+        glDeleteTextures(1, &tex);
         // GL rows are bottom-up
-        std::vector<unsigned char> flipped((size_t)fbW * fbH * 4);
-        for (int y = 0; y < fbH; y++)
-            std::memcpy(&flipped[(size_t)y * fbW * 4],
-                        &px[(size_t)(fbH - 1 - y) * fbW * 4], (size_t)fbW * 4);
+        std::vector<unsigned char> flipped((size_t)canvasW * canvasH * 4);
+        for (int y = 0; y < canvasH; y++)
+            std::memcpy(&flipped[(size_t)y * canvasW * 4],
+                        &px[(size_t)(canvasH - 1 - y) * canvasW * 4], (size_t)canvasW * 4);
         char name[64];
         std::time_t now = std::time(nullptr);
         std::strftime(name, sizeof name, "maxpaint-%Y%m%d-%H%M%S.png", std::localtime(&now));
-        if (stbi_write_png(name, fbW, fbH, 4, flipped.data(), fbW * 4))
+        if (stbi_write_png(name, canvasW, canvasH, 4, flipped.data(), canvasW * 4))
             std::snprintf(status, sizeof status, "saved %s", name);
         else
             std::snprintf(status, sizeof status, "could not write %s", name);
@@ -747,6 +1041,59 @@ struct App {
 #endif
     }
 
+    // Canvas size and window size, which are no longer the same question.
+    void canvasPanel() {
+        if (!ImGui::CollapsingHeader("Canvas & window")) return;
+
+        ImGui::Text("Canvas %d x %d", canvasW, canvasH);
+        struct Size { const char *name; int w, h; };
+        static const Size SIZES[] = {
+            {"1280 x 720", 1280, 720},   {"1920 x 1080", 1920, 1080},
+            {"2560 x 1440", 2560, 1440}, {"3840 x 2160", 3840, 2160},
+            {"1024 x 1024", 1024, 1024}, {"2048 x 2048", 2048, 2048},
+            {"1080 x 1350", 1080, 1350},
+        };
+        if (ImGui::BeginCombo("Preset", "Choose a size")) {
+            for (const Size &s : SIZES)
+                if (ImGui::Selectable(s.name)) {
+                    canvasInput[0] = s.w; canvasInput[1] = s.h;
+                    pendingCanvasW = s.w; pendingCanvasH = s.h;
+                }
+            ImGui::EndCombo();
+        }
+        ImGui::DragInt2("Size", canvasInput, 8.0f, 64, maxCanvas);
+        if (ImGui::Button("Resize canvas")) {
+            pendingCanvasW = canvasInput[0];
+            pendingCanvasH = canvasInput[1];
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Match window")) {
+            pendingCanvasW = winW; pendingCanvasH = winH;
+        }
+        ImGui::TextWrapped("Resizing rescales the set paint and empties the wet "
+                           "pool -- particles hold canvas coordinates and cannot "
+                           "follow. Up to %d px a side and %d megapixels; past "
+                           "that it is scaled back to fit.",
+                           maxCanvas, maxCanvasPixels >> 20);
+
+        ImGui::Separator();
+        ImGui::Text("Window %d x %d", winW, winH);
+        // the field follows the window until someone takes hold of it
+        if (!windowInputActive && window)
+            glfwGetWindowSize(window, &windowInput[0], &windowInput[1]);
+        ImGui::DragInt2("Window size", windowInput, 8.0f, 320, 16384);
+        windowInputActive = ImGui::IsItemActive();
+        if (ImGui::Button("Resize window") && window)
+            glfwSetWindowSize(window, windowInput[0], windowInput[1]);
+        ImGui::SameLine();
+        if (ImGui::Button("Fit to canvas") && window && pixelScaleX > 0) {
+            glfwSetWindowSize(window, (int)(canvasW / pixelScaleX),
+                              (int)(canvasH / pixelScaleY));
+        }
+        ImGui::TextWrapped("The window is free to be any shape; the canvas keeps "
+                           "its own and sits centred inside it.");
+    }
+
     void panel() {
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
@@ -759,11 +1106,14 @@ struct App {
         if (ImGui::Button("Clear")) clearCanvas();
         if (status[0]) ImGui::TextWrapped("%s", status);
         ImGui::Separator();
+        canvasPanel();
+        ImGui::Separator();
 
         ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
-        ImGui::RadioButton("Glitch", &tool, 1);
-        const char *views[] = {"Paint", "Height", "Normals", "Occlusion"};
-        ImGui::Combo("View", &view, views, 4);
+        ImGui::RadioButton("Glitch", &tool, 1); ImGui::SameLine();
+        ImGui::RadioButton("Reaction", &tool, 2);
+        const char *views[] = {"Paint", "Height", "Normals", "Occlusion", "Reaction"};
+        ImGui::Combo("View", &view, views, 5);
         ImGui::Separator();
 
         ImGui::SliderFloat("Brush size", &flip.brushRadius, 0.004f, 0.17f, "%.3f");
@@ -802,32 +1152,100 @@ struct App {
                                "runs downhill on it. Set View to Height, Normals or "
                                "Occlusion to see what the brushes see. There is no "
                                "gravity otherwise - a canvas has no up.");
+        } else if (tool == 1) {
+            const char *modes[] = {"Pixel sort", "Channel drift", "Block shuffle",
+                                   "Slit-scan", "Bit crush"};
+            ImGui::Combo("Mode", &glitchMode, modes, 5);
+
+            const char *dirs[] = {"Horizontal", "Vertical"};
+            int dir = glitchVertical ? 1 : 0;
+
+            if (glitchMode == 0) {
+                if (ImGui::BeginCombo("Preset", GLITCH_PRESETS[glitchPreset].name)) {
+                    for (int i = 0; i < (int)(sizeof GLITCH_PRESETS / sizeof *GLITCH_PRESETS); i++) {
+                        if (ImGui::Selectable(GLITCH_PRESETS[i].name, i == glitchPreset)) {
+                            glitchPreset = i;
+                            applyGlitchPreset(i);
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+                if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
+                int ord = glitchDescending ? 1 : 0;
+                const char *ords[] = {"Dark to light", "Light to dark"};
+                if (ImGui::Combo("Order", &ord, ords, 2)) glitchDescending = ord == 1;
+                ImGui::SliderFloat("Low", &glitchLo, 0, 1, "%.2f");
+                ImGui::SliderFloat("High", &glitchHi, 0, 1, "%.2f");
+                if (glitchHi < glitchLo) glitchHi = glitchLo;
+            } else if (glitchMode == 1) {
+                if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
+                ImGui::SliderFloat("Separation", &driftAmount, 0, 40, "%.0f px");
+            } else if (glitchMode == 2) {
+                ImGui::SliderInt("Block", &blockSize, 2, 64, "%d px");
+                ImGui::SliderFloat("Displacement", &blockAmount, 0, 64, "%.0f px");
+            } else if (glitchMode == 3) {
+                if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
+                ImGui::SliderFloat("Stretch", &slitStretch, 0, 1, "%.2f");
+            } else {
+                ImGui::SliderInt("Levels", &crushLevels, 2, 32, "%d per channel");
+            }
+
+            ImGui::SliderFloat("Edge falloff", &glitchFalloff, 0, 1, "%.2f");
+
+            const char *blurb =
+                glitchMode == 0 ? "Sorts the pixels under the brush by brightness "
+                    "along each row or column. Runs inside the band get sorted; "
+                    "everything outside it holds its place."
+              : glitchMode == 1 ? "Pulls red and blue apart along the stroke axis "
+                    "and leaves green where it was: the colour fringing of a "
+                    "misregistered scan. It shows on a grey photograph too -- the "
+                    "separation is what makes the colour."
+              : glitchMode == 2 ? "Reads the picture on a fixed grid and lets each "
+                    "block fetch from a displaced one. The grid is anchored to the "
+                    "canvas, so overlapping dabs keep breaking on the same seams. "
+                    "Set Block to 8 for a JPEG's own lattice."
+              : glitchMode == 3 ? "Extrudes the single line under the centre of the "
+                    "brush across the disc, the way a slit-scan camera draws time. "
+                    "Hold still and it keeps reaching further out."
+              : "Quantises each channel to a few levels, with a 4x4 ordered dither "
+                "deciding which way a value rounds, so flats break into crosshatch "
+                "rather than banding.";
+            ImGui::TextWrapped("%s Edge falloff eases the mark out at the rim "
+                               "instead of ending it on a circle -- 0 is a hard "
+                               "edge. Open a photo and take it apart.", blurb);
         } else {
-            const char *modes[] = {"Pixel sort"};
-            int mode = 0;
-            ImGui::Combo("Mode", &mode, modes, 1);
-            if (ImGui::BeginCombo("Preset", GLITCH_PRESETS[glitchPreset].name)) {
-                for (int i = 0; i < (int)(sizeof GLITCH_PRESETS / sizeof *GLITCH_PRESETS); i++) {
-                    if (ImGui::Selectable(GLITCH_PRESETS[i].name, i == glitchPreset)) {
-                        glitchPreset = i;
-                        applyGlitchPreset(i);
+            if (ImGui::BeginCombo("Pattern", RD_PRESETS[rdPreset].name)) {
+                for (int i = 0; i < (int)(sizeof RD_PRESETS / sizeof *RD_PRESETS); i++) {
+                    if (ImGui::Selectable(RD_PRESETS[i].name, i == rdPreset)) {
+                        rdPreset = i;
+                        rdFeed = RD_PRESETS[i].feed;
+                        rdKill = RD_PRESETS[i].kill;
                     }
                 }
                 ImGui::EndCombo();
             }
-            int dir = glitchVertical ? 1 : 0;
-            const char *dirs[] = {"Horizontal", "Vertical"};
-            if (ImGui::Combo("Direction", &dir, dirs, 2)) glitchVertical = dir == 1;
-            int ord = glitchDescending ? 1 : 0;
-            const char *ords[] = {"Dark to light", "Light to dark"};
-            if (ImGui::Combo("Order", &ord, ords, 2)) glitchDescending = ord == 1;
-            ImGui::SliderFloat("Low", &glitchLo, 0, 1, "%.2f");
-            ImGui::SliderFloat("High", &glitchHi, 0, 1, "%.2f");
-            if (glitchHi < glitchLo) glitchHi = glitchLo;
-            ImGui::TextWrapped("Sorts the pixels under the brush by brightness along "
-                               "each row or column. Runs inside the band get sorted; "
-                               "everything outside it holds its place. Open a photo "
-                               "and take it apart.");
+            ImGui::SliderFloat("Feed", &rdFeed, 0.01f, 0.09f, "%.4f");
+            ImGui::SliderFloat("Kill", &rdKill, 0.04f, 0.075f, "%.4f");
+            ImGui::SliderFloat("Image steer", &rdCouple, 0, 1, "%.2f");
+            ImGui::SliderInt("Speed", &rdIters, 1, 40, "%d steps/frame");
+            ImGui::Checkbox("Run", &rdRun);
+            ImGui::SameLine();
+            if (ImGui::Button("Reset reaction")) rdClear();
+            ImGui::Separator();
+            ImGui::SliderFloat("Ink", &rdInk, 0, 1, "%.2f");
+            ImGui::SliderFloat("Ink from", &rdLo, 0, 0.5f, "%.2f");
+            ImGui::SliderFloat("Ink to", &rdHi, 0, 0.5f, "%.2f");
+            if (rdHi < rdLo) rdHi = rdLo;
+            ImGui::SliderFloat("Edge falloff", &glitchFalloff, 0, 1, "%.2f");
+            ImGui::TextWrapped("Gray-Scott reaction-diffusion. The brush does not "
+                               "draw the pattern -- it seeds a disturbance, and the "
+                               "chemistry grows coral, maze or spots out of it while "
+                               "you watch. Feed and kill decide which; the window "
+                               "they live in is narrow, so start from Pattern. "
+                               "Image steer lets the picture underneath shift those "
+                               "rates by its brightness, and the growth finds the "
+                               "face on its own. Set View to Reaction to see the "
+                               "raw field.");
         }
         ImGui::End();
     }
@@ -840,36 +1258,57 @@ struct App {
         pProps.set("uInvert", reliefInvert ? 1.0f : 0.0f);
         pProps.set("uAoRadius", aoRadius);
         pProps.set("uSlope", slope);
-        glDispatchCompute((fbW + 7) / 8, (fbH + 7) / 8, 1);
+        glDispatchCompute((canvasW + 7) / 8, (canvasH + 7) / 8, 1);
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
 
+    // the canvas as it is meant to be seen, into whatever viewport is bound
+    void compositeDraw() {
+        glUseProgram(compositeProgram);
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, live);
+        glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, props);
+        glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, rdTex[rdCur]);
+        glActiveTexture(GL_TEXTURE0);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uView"), view);
+        glUniform1f(glGetUniformLocation(compositeProgram, "uRdInk"),
+                    rdSeeded ? rdInk : 0.0f);
+        glUniform1f(glGetUniformLocation(compositeProgram, "uRdLo"), rdLo);
+        glUniform1f(glGetUniformLocation(compositeProgram, "uRdHi"), rdHi);
+        glBindVertexArray(emptyVao);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+    }
+
     void frame(float dt) {
+        if (pendingCanvasW > 0 && pendingCanvasH > 0) {
+            resizeCanvas(pendingCanvasW, pendingCanvasH);
+            pendingCanvasW = pendingCanvasH = 0;
+        }
         painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
         // the set layer changes as paint bakes; refresh the maps every few
         // frames, always when they are on screen or driving the paint
         bool wanted = view != 0 || flip.relief > 0.0f;
         if (wanted && (propsFrame++ % 4) == 0) updateProps();
         if (tool == 1) glitchStroke();
+        else if (tool == 2) rdStroke();
         else pour(dt);
+        if (rdSeeded && rdRun) rdStep();
         if (flip.emitted > 0) flip.step(dt);
 
         // freshly dried particles land in the background, permanently
-        flip.draw(2.0f, fboBackground, fbW, fbH, false);
+        flip.draw(2.0f, fboBackground, canvasW, canvasH, false);
         // live particles are redrawn from scratch each frame
-        flip.draw(1.0f, fboLive, fbW, fbH, true);
+        flip.draw(1.0f, fboLive, canvasW, canvasH, true);
 
+        // the window, then the canvas laid on it
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glViewport(0, 0, fbW, fbH);
-        glUseProgram(compositeProgram);
-        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
-        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, live);
-        glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, props);
-        glActiveTexture(GL_TEXTURE0);
-        glUniform1i(glGetUniformLocation(compositeProgram, "uView"), view);
-        glBindVertexArray(emptyVao);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
+        glViewport(0, 0, winW, winH);
+        glClearColor(0.11f, 0.11f, 0.12f, 1.0f);   // the desk the canvas lies on
+        glClear(GL_COLOR_BUFFER_BIT);
+        Rect r = canvasRect();
+        glViewport(r.x, r.y, r.w, r.h);
+        compositeDraw();
 
         if (savePending) { savePending = false; savePng(); }
     }
@@ -886,6 +1325,9 @@ static void onCursor(GLFWwindow *, double x, double y) {
 }
 static void onDrop(GLFWwindow *, int count, const char **paths) {
     if (count > 0) app.importImage(paths[0]);
+}
+static void onFramebufferSize(GLFWwindow *, int w, int h) {
+    app.winW = w; app.winH = h;   // 0 x 0 while minimised; canvasRect() copes
 }
 static void onKey(GLFWwindow *, int key, int, int action, int) {
     if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
@@ -904,6 +1346,8 @@ static void onKey(GLFWwindow *, int key, int, int action, int) {
         case GLFW_KEY_A: f.cohesion = std::max(0.0f, f.cohesion - 10); break;
         case GLFW_KEY_1: app.tool = 0; break;
         case GLFW_KEY_2: app.tool = 1; break;
+        case GLFW_KEY_3: app.tool = 2; break;
+        case GLFW_KEY_M: app.glitchMode = (app.glitchMode + 1) % 5; break;
         case GLFW_KEY_LEFT_BRACKET: f.brushRadius = std::max(0.004f, f.brushRadius - 0.004f); break;
         case GLFW_KEY_RIGHT_BRACKET: f.brushRadius = std::min(0.17f, f.brushRadius + 0.004f); break;
         case GLFW_KEY_H: app.glitchLo = std::max(0.0f, app.glitchLo - 0.05f); break;
@@ -921,7 +1365,8 @@ int main(int argc, char **argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);   // a painting keeps its shape
+    // The window is free; the painting keeps its own shape inside it.
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
 
     GLFWwindow *win = glfwCreateWindow(1280, 720, "MaxPaint", nullptr, nullptr);
     if (!win) {
@@ -943,12 +1388,23 @@ int main(int argc, char **argv) {
 
     int fw = 0, fh = 0;
     glfwGetFramebufferSize(win, &fw, &fh);
+    app.window = win;
+    app.winW = fw; app.winH = fh;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &app.maxCanvas);
+    app.maxCanvas = std::min(app.maxCanvas, 16384);
     app.allocate(fw, fh);
+    app.canvasInput[0] = fw; app.canvasInput[1] = fh;
+    {
+        int ww = 0, wh = 0;
+        glfwGetWindowSize(win, &ww, &wh);
+        app.windowInput[0] = ww; app.windowInput[1] = wh;
+    }
 
     glfwSetMouseButtonCallback(win, onMouseButton);
     glfwSetCursorPosCallback(win, onCursor);
     glfwSetKeyCallback(win, onKey);
     glfwSetDropCallback(win, onDrop);
+    glfwSetFramebufferSizeCallback(win, onFramebufferSize);
     if (argc > 1) app.importImage(argv[1]);
 
     IMGUI_CHECKVERSION();
@@ -965,6 +1421,14 @@ int main(int argc, char **argv) {
         float dt = (float)std::min(std::max(now - last, 1.0 / 120.0), 1.0 / 20.0);
         last = now;
 
+        // the cursor arrives in window coordinates; the canvas is measured in
+        // framebuffer pixels, and on a scaled display those differ
+        int ww = 0, wh = 0;
+        glfwGetWindowSize(win, &ww, &wh);
+        glfwGetFramebufferSize(win, &app.winW, &app.winH);
+        app.pixelScaleX = ww > 0 ? (float)app.winW / (float)ww : 1.0f;
+        app.pixelScaleY = wh > 0 ? (float)app.winH / (float)wh : 1.0f;
+
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
@@ -980,8 +1444,13 @@ int main(int argc, char **argv) {
         if (now - titleAt > 0.5) {
             titleAt = now;
             char title[128];
+            static const char *GLITCH_NAMES[] = {"pixel sort", "channel drift",
+                                                 "block shuffle", "slit-scan",
+                                                 "bit crush"};
             std::snprintf(title, sizeof title, "MaxPaint  |  %s",
-                          app.tool == 0 ? "paint" : "glitch: pixel sort");
+                          app.tool == 0 ? "paint"
+                        : app.tool == 2 ? "reaction"
+                                        : GLITCH_NAMES[app.glitchMode]);
             glfwSetWindowTitle(win, title);
         }
     }

@@ -28,6 +28,7 @@ uniform int   uVertical;  // 0: sort along rows, 1: along columns
 uniform float uLo;        // brightness band, over white paper
 uniform float uHi;
 uniform int   uDescending;
+uniform float uFalloff;   // 0: hard edge; 1: fade from the centre out
 
 shared vec4  sCol[256];
 shared float sKey[256];
@@ -60,7 +61,26 @@ void main() {
     vec4 c = valid ? texelFetch(uSrc, p, 0) : vec4(0.0);
     // brightness as seen on the page: premultiplied paint over white paper
     float lum = dot(c.rgb + vec3(1.0 - c.a), vec3(0.299, 0.587, 0.114));
-    bool inBand = valid && lum >= uLo && lum <= uHi;
+
+    // Edge falloff. Toward the rim the band closes on its own midpoint, so
+    // fewer pixels qualify and the runs that do form are shorter: the mark
+    // thins out instead of stopping at a hard circle. This changes only which
+    // pixels take part, so the result stays a permutation of the ones that
+    // did -- nothing is blended and no colour is invented, which is what a
+    // cross-fade against the original would cost. uFalloff is the fraction of
+    // the radius the fade spans, so 0 leaves the band exactly as given.
+    float lo = uLo, hi = uHi;
+    if (uFalloff > 0.0) {
+        float dAlong = float(along - centreAlong);
+        float dist = sqrt(dAlong * dAlong + float(lineOffset * lineOffset));
+        float rim = clamp(dist / max(float(uRadius), 1.0), 0.0, 1.0);
+        float w = clamp((1.0 - rim) / uFalloff, 0.0, 1.0);
+        w = w * w * (3.0 - 2.0 * w);          // smoothstep, so the edge eases
+        float mid = 0.5 * (lo + hi);
+        float halfBand = 0.5 * (hi - lo) * w;
+        lo = mid - halfBand; hi = mid + halfBand;
+    }
+    bool inBand = valid && lum >= lo && lum <= hi;
 
     sCol[t] = c;
     sMask[t] = inBand ? 1 : 0;

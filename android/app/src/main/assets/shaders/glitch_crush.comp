@@ -1,0 +1,61 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Bit crush -- the Glitch brush's fifth mode. Each channel is quantised to a
+// handful of levels, and a 4x4 Bayer matrix decides which way a value rounds,
+// so the flat areas that quantisation would band instead break into the
+// ordered crosshatch of an old indexed-colour display.
+//
+// Unlike the sort, this mode does invent values: quantisation has to. What it
+// will not do is invent a gradient -- the dither is a fixed screen locked to
+// the canvas, so overlapping dabs land on the same lattice and the texture
+// stays coherent instead of turning to noise.
+//
+// The level count rises back toward continuous tone at the rim, so the crush
+// dissolves into the untouched picture.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uCentre;
+uniform int   uRadius;
+uniform float uFalloff;
+uniform int   uLevels;    // steps per channel at full strength
+
+const float BAYER[16] = float[16](
+     0.0,  8.0,  2.0, 10.0,
+    12.0,  4.0, 14.0,  6.0,
+     3.0, 11.0,  1.0,  9.0,
+    15.0,  7.0, 13.0,  5.0);
+
+float edgeWeight(vec2 d) {
+    if (uFalloff <= 0.0) return 1.0;
+    float rim = clamp(length(d) / max(float(uRadius), 1.0), 0.0, 1.0);
+    float w = clamp((1.0 - rim) / uFalloff, 0.0, 1.0);
+    return w * w * (3.0 - 2.0 * w);
+}
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    int span = 2 * uRadius + 1;
+    if (g.x >= span || g.y >= span) return;
+
+    ivec2 d = g - ivec2(uRadius);
+    if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
+
+    ivec2 p = uCentre + d;
+    ivec2 lim = textureSize(uSrc, 0);
+    if (p.x < 0 || p.y < 0 || p.x >= lim.x || p.y >= lim.y) return;
+
+    // full crush in the middle, continuous tone by the rim
+    float steps = mix(255.0, float(max(uLevels, 2)), edgeWeight(vec2(d)));
+    float top = max(steps - 1.0, 1.0);
+    // the screen is anchored to the canvas, not to the dab
+    float th = (BAYER[(p.y & 3) * 4 + (p.x & 3)] + 0.5) / 16.0;
+
+    vec4 c = texelFetch(uSrc, p, 0);
+    vec3 q = floor(clamp(c.rgb, 0.0, 1.0) * top + th) / top;
+    imageStore(uDst, p, vec4(q, c.a));
+}

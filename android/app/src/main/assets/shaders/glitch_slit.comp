@@ -1,0 +1,53 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Slit-scan -- the Glitch brush's fourth mode. The single line running through
+// the centre of the brush is extruded across the disc: every pixel gives up
+// its own row (or column) and takes the one under the brush instead, so the
+// picture stretches into bands the way a slit-scan camera draws time.
+//
+// It is a pull along one axis, not a blend: each pixel still shows a pixel
+// that was already in the layer, only fetched from somewhere else. The edge
+// weight decides how far the fetch travels, so the smear eases off at the rim
+// and the band grows out of the photograph instead of being pasted on it.
+//
+// Each dab reads the layer it has already smeared, so holding the brush still
+// walks the line further out with every stamp -- the extrusion is cumulative.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uCentre;
+uniform int   uRadius;
+uniform float uFalloff;
+uniform int   uVertical;  // 0 extrude the centre row, 1 the centre column
+uniform float uStretch;   // 0 none, 1 all the way to the centre line
+
+float edgeWeight(vec2 d) {
+    if (uFalloff <= 0.0) return 1.0;
+    float rim = clamp(length(d) / max(float(uRadius), 1.0), 0.0, 1.0);
+    float w = clamp((1.0 - rim) / uFalloff, 0.0, 1.0);
+    return w * w * (3.0 - 2.0 * w);
+}
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    int span = 2 * uRadius + 1;
+    if (g.x >= span || g.y >= span) return;
+
+    ivec2 d = g - ivec2(uRadius);
+    if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
+
+    ivec2 p = uCentre + d;
+    ivec2 lim = textureSize(uSrc, 0);
+    if (p.x < 0 || p.y < 0 || p.x >= lim.x || p.y >= lim.y) return;
+
+    float w = clamp(edgeWeight(vec2(d)) * uStretch, 0.0, 1.0);
+    ivec2 q = p;
+    if (uVertical == 1) q.x = int(round(mix(float(p.x), float(uCentre.x), w)));
+    else                q.y = int(round(mix(float(p.y), float(uCentre.y), w)));
+
+    imageStore(uDst, p, texelFetch(uSrc, clamp(q, ivec2(0), lim - ivec2(1)), 0));
+}

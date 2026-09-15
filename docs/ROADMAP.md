@@ -30,7 +30,8 @@ testing changes the priorities, which it does constantly.
 | Gas brush (Eulerian) | Shipped; the hero medium, with bake lifecycle, presets, heat view |
 | FLIP brush (particles) | Rewritten from the reference 2D FLIP; separation, drift compensation, streamed pour with motion inheritance, age-based settling |
 | Nib, watercolor, vortex, solvent, smear, freeze/thaw | Shipped on Android |
-| Glitch brush | Mode 1, pixel sorting, on Android and Windows |
+| Glitch brush | Pixel sorting on Android and Windows; channel drift, block shuffle, slit-scan and bit crush on Windows, sharing the same back-buffer plumbing. Every mode has an edge falloff |
+| Reaction-diffusion brush | Gray-Scott on Windows: presets, image-steered feed/kill, ink thresholds, raw-field view |
 | Layers, undo/redo, PNG export | Android |
 | Image import | Android (system picker) and Windows (dialog / drag-and-drop) |
 | Image properties | Height, normals, ambient occlusion derived from the layer; Relief flow (Windows) |
@@ -44,10 +45,11 @@ one has a place to land already.
 1. **Relief and properties on Android.** The props pass and the Relief
    slider exist only in the Windows host; the shader is shared, so this is
    host wiring.
-2. **More glitch modes**, sharing the pixel-sort plumbing (back buffer +
-   bounding-box copy): channel drift (RGB offset along the stroke), block
-   shuffle / JPEG rot, slit-scan (hold still, the line under the brush
-   extrudes), bit-crush with ordered dither.
+2. **Glitch modes on Android.** The four modes added on Windows -- channel
+   drift, block shuffle, slit-scan, bit crush -- are shared shaders already;
+   the Kotlin host needs a mode selector and the new uniforms. It also still
+   needs `uRadius` on the rect copy, without which every dab leaves a white
+   square where the bounding box overran the disc.
 3. **Property-driven glitch**: pixel sort with runs bounded by edges rather
    than a brightness band (keeps silhouettes, liquefies interiors); sort
    direction along the normal.
@@ -61,9 +63,6 @@ one has a place to land already.
 
 ## Medium term
 
-- **Reaction–diffusion brush** (Gray–Scott over the brush region): coral,
-  leopard, labyrinth patterns growing out of the stroke; iterated compute
-  pass, one shader, mesmerising on photos.
 - **Datamosh**: freeze a region's motion vectors from the fluid velocity
   and keep re-applying them to the layer — codec corruption without the
   codec.

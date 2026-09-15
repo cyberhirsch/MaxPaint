@@ -6,16 +6,28 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // Copies one rectangle of a texture into another. The glitch brush writes
 // its dab into the layer's back buffer and this brings just that region
 // forward, so a dab costs its own footprint rather than a full-canvas pass.
+//
+// A dab is a disc, not a square, and the sort only ever writes the disc --
+// the corners of the bounding box hold whatever the back buffer held, which
+// on a fresh buffer is nothing at all and reads as bare paper. So uRadius
+// masks the copy to the disc inscribed in the rectangle, which is exactly
+// the set of texels the sort touched. Leave it 0 to copy the whole rect.
 
 layout(binding = 0) uniform highp sampler2D uSrc;
 layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
 
 uniform ivec2 uOrigin;
 uniform ivec2 uSize;
+uniform int   uRadius;
 
 void main() {
     ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     if (g.x >= uSize.x || g.y >= uSize.y) return;
+    // the same chord the sort used: |dx| <= floor(sqrt(r*r - dy*dy))
+    if (uRadius > 0) {
+        ivec2 d = g - ivec2(uRadius);
+        if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
+    }
     ivec2 p = uOrigin + g;
     ivec2 lim = textureSize(uSrc, 0);
     if (p.x < 0 || p.y < 0 || p.x >= lim.x || p.y >= lim.y) return;

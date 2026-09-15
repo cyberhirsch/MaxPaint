@@ -1,0 +1,63 @@
+#version 310 es
+precision highp float;
+precision highp sampler2D;
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Block shuffle -- the Glitch brush's third mode, the look of a JPEG coming
+// apart. The layer is read on a fixed grid of blocks (8 px by default, the
+// size a JPEG actually works in) and each block fetches its pixels from a
+// pseudo-randomly displaced block instead of its own.
+//
+// The displacement is decided once per block, from a hash of the block's grid
+// position, and the edge weight is sampled at the block's centre rather than
+// per pixel -- otherwise the falloff would vary across a single block and tear
+// it in half, which is the one thing a block artefact must never do.
+//
+// The grid is anchored to the canvas, not to the brush, so overlapping dabs
+// keep hitting the same block boundaries and the corruption accumulates in
+// register. uSeed changes per dab, so holding still keeps reshuffling.
+
+layout(binding = 0) uniform highp sampler2D uSrc;
+layout(rgba16f, binding = 0) writeonly uniform highp image2D uDst;
+
+uniform ivec2 uCentre;
+uniform int   uRadius;
+uniform float uFalloff;
+uniform int   uBlock;     // block edge in texels
+uniform float uAmount;    // greatest displacement in texels
+uniform float uSeed;
+
+float edgeWeight(vec2 d) {
+    if (uFalloff <= 0.0) return 1.0;
+    float rim = clamp(length(d) / max(float(uRadius), 1.0), 0.0, 1.0);
+    float w = clamp((1.0 - rim) / uFalloff, 0.0, 1.0);
+    return w * w * (3.0 - 2.0 * w);
+}
+
+vec2 hash2(vec2 v) {
+    vec2 f = v + vec2(uSeed);
+    return fract(sin(vec2(dot(f, vec2(127.1, 311.7)),
+                          dot(f, vec2(269.5, 183.3)))) * 43758.5453);
+}
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    int span = 2 * uRadius + 1;
+    if (g.x >= span || g.y >= span) return;
+
+    ivec2 d = g - ivec2(uRadius);
+    if (d.x * d.x + d.y * d.y > uRadius * uRadius) return;
+
+    ivec2 p = uCentre + d;
+    ivec2 lim = textureSize(uSrc, 0);
+    if (p.x < 0 || p.y < 0 || p.x >= lim.x || p.y >= lim.y) return;
+
+    int blk = max(uBlock, 1);
+    vec2 cell = floor(vec2(p) / float(blk));
+    // the block's own centre decides its weight, so the block moves as one
+    vec2 cellMid = (cell + 0.5) * float(blk) - vec2(uCentre);
+    vec2 jump = (hash2(cell) * 2.0 - 1.0) * uAmount * edgeWeight(cellMid);
+
+    ivec2 q = clamp(p + ivec2(round(jump)), ivec2(0), lim - ivec2(1));
+    imageStore(uDst, p, texelFetch(uSrc, q, 0));
+}
