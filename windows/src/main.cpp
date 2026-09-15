@@ -192,7 +192,9 @@ struct Flip {
     float relief = 0.0f;          // downhill pull from the image, 0 off
     float shadeDry = 0.0f;        // paint sets sooner where the picture is buried
     float heightInk = 0.0f;       // bright planes take more pigment
+    bool colourFromRef = false;   // drops carry the picture's colour, not black
     GLuint propsTex = 0;          // owned by the app; sampled in G2P and emit
+    GLuint refTex = 0;            // the reference picture, for picked-up colour
 
     static const int capacity = 400000;
     int gridRes = 160, gridW = 1, gridH = 1;
@@ -289,9 +291,13 @@ struct Flip {
         pEmit.set("uInk", inkPerParticle * inkScale);
         pEmit.set("uJitterSeed", seed);
         // the picture charges each drop: bright planes load, dark ones run thin
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, propsTex);
+        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, propsTex);
+        glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, refTex);
+        glActiveTexture(GL_TEXTURE0);
         pEmit.set("uProps", 0);
         pEmit.set("uHeightInk", propsTex ? heightInk : 0.0f);
+        pEmit.set("uRef", 1);
+        pEmit.set("uColourFrom", (colourFromRef && refTex) ? 1 : 0);
         dispatch1D(count);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         head = (head + count) % capacity;
@@ -454,6 +460,8 @@ struct Flip {
             glUseProgram(drawProgram);
             glUniform1f(glGetUniformLocation(drawProgram, "uPointSize"), pointSize);
             glUniform1f(glGetUniformLocation(drawProgram, "uWantState"), state);
+            glUniform1i(glGetUniformLocation(drawProgram, "uColoured"),
+                        (colourFromRef && refTex) ? 1 : 0);
             glBindVertexArray(vao);
             glDrawArrays(GL_POINTS, 0, liveSpan());
             glBindVertexArray(0);
@@ -513,6 +521,8 @@ struct Gas {
     float maxSpeed = 8.0f;
     float brushRadius = 0.05f;
     int forceMode = 0;            // 0 swirl, 1 push, 2 pinch, 3 comb
+    bool colourFromRef = false;   // the dye lifts the picture it crosses
+    GLuint refTex = 0;
 
     int simW = 0, simH = 0;       // the velocity/pressure grid
     int dyeW = 0, dyeH = 0;       // dye and age, at canvas resolution
@@ -581,6 +591,7 @@ struct Gas {
         pSplat.set("uMode", 0);
 
         pSplat.set("uRadius", brushRadius);
+        pSplat.set("uColourFrom", 0);
         pSplat.set4f("uValue", du * velocityGain * aspect, dv * velocityGain, 0.0f, 0.0f);
         glBindImageTexture(0, velocity.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
         glBindImageTexture(1, velocity.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
@@ -588,14 +599,19 @@ struct Gas {
         velocity.flip();
 
         pSplat.set("uRadius", brushRadius * 0.6f);
-        // black ink, premultiplied by its own coverage
+        // black ink, premultiplied by its own coverage -- unless the dye is
+        // lifting its colour from the reference, which splat.comp does per texel
         pSplat.set4f("uValue", 0.0f, 0.0f, 0.0f, inkPerStroke);
+        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, refTex);
+        pSplat.set("uRef", 0);
+        pSplat.set("uColourFrom", (colourFromRef && refTex) ? 1 : 0);
         glBindImageTexture(0, dye.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
         glBindImageTexture(1, dye.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         dispatch(dyeW, dyeH);
         dye.flip();
 
         pSplat.set("uMode", 1);
+        pSplat.set("uColourFrom", 0);
         pSplat.set4f("uValue", 0.0f, 0.0f, 0.0f, 0.0f);
         glBindImageTexture(0, age.read, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16F);
         glBindImageTexture(1, age.write, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
@@ -1805,7 +1821,7 @@ struct App {
     // file is something you come back to.
 
     static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
-    static const uint32_t FILE_VERSION = 5;   // 2 stack, 3 reference, 4 bias, 5 reach
+    static const uint32_t FILE_VERSION = 6;   // 6 adds picked-up colour
 
     template <class T> static void put(std::ofstream &f, const T &v) {
         f.write(reinterpret_cast<const char *>(&v), sizeof v);
@@ -1834,6 +1850,7 @@ struct App {
         put(f, scatterCount); put(f, scatterSize); put(f, scatterStretch);
         put(f, scatterAlign); put(f, scatterOpacity); put(f, scatterJitter);
         put(f, scatterBias); put(f, scatterReach);
+        put(f, flip.colourFromRef); put(f, gas.colourFromRef);
         put(f, scatterColour);
     }
 
@@ -1857,6 +1874,7 @@ struct App {
         get(f, scatterCount); get(f, scatterSize); get(f, scatterStretch);
         get(f, scatterAlign); get(f, scatterOpacity); get(f, scatterJitter);
         get(f, scatterBias); get(f, scatterReach);
+        get(f, flip.colourFromRef); get(f, gas.colourFromRef);
         get(f, scatterColour);
     }
 
@@ -2215,6 +2233,7 @@ struct App {
             ImGui::SliderFloat("AO radius", &aoRadius, 4, 96, "%.0f px");
             ImGui::SliderFloat("Dry in shade", &flip.shadeDry, 0, 1, "%.2f");
             ImGui::SliderFloat("Ink from height", &flip.heightInk, 0, 1, "%.2f");
+            ImGui::Checkbox("Colour from reference", &flip.colourFromRef);
             ImGui::TextWrapped("Relief makes the picture the gravity field: paint "
                                "runs downhill on it. Dry in shade shortens the "
                                "settle time where the occlusion map says the "
@@ -2354,6 +2373,7 @@ struct App {
             ImGui::SameLine();
             if (ImGui::Button("Thaw")) gasThaw = true;
             ImGui::Separator();
+            ImGui::Checkbox("Colour from reference", &gas.colourFromRef);
             ImGui::Checkbox("Stir only", &gasForceOnly);
             if (gasForceOnly) {
                 const char *modes[] = {"Swirl", "Push", "Pinch", "Comb"};
@@ -2467,6 +2487,9 @@ struct App {
         bool wasPainting = painting;
         painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
         if (painting && !wasPainting) commitIfDirty();
+        // the picture the colour-picking media lift from
+        flip.refTex = referenceTex();
+        gas.refTex = referenceTex();
         if (tool == 1) glitchStroke();
         else if (tool == 2) rdStroke();
         else if (tool == 3) gasStroke(dt);

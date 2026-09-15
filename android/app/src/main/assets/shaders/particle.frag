@@ -1,6 +1,7 @@
 #version 310 es
 precision highp float;
 in float vInk;
+in vec3 vColour;
 out vec4 fragColor;
 
 void main() {
@@ -8,7 +9,8 @@ void main() {
     float r2 = dot(d, d);
     if (r2 > 0.25) discard;
 
-    // soft round kernel; premultiplied black ink, so rgb stays 0
+    // soft round kernel, premultiplied: black ink leaves rgb at 0, and a drop
+    // that picked up a colour carries it in already multiplied by coverage
     float a = vInk * smoothstep(0.25, 0.0, r2);
-    fragColor = vec4(0.0, 0.0, 0.0, a);
+    fragColor = vec4(vColour * a, a);
 }

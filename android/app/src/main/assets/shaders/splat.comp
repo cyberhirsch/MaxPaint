@@ -12,6 +12,12 @@ uniform float uRadius;   // in UV units
 uniform float uAspect;   // width / height
 uniform vec2  uAxis;     // unit vector along the contact's long axis, world space
 uniform float uMinor;    // minor over major; 1.0 is a circle
+// The dye can take its colour from a reference picture instead of carrying
+// uValue's: sampled per texel, so a stroke lifts the photograph it crosses and
+// the solver then swirls it. uValue.a still sets how much goes down. 0 leaves
+// the old behaviour, which is what the phone still asks for.
+layout(binding = 0) uniform highp sampler2D uRef;
+uniform int   uColourFrom;
 uniform int   uMode;     // 0 = add (paint), 1 = lerp toward uValue (reset age),
                          // 2 = scale down (solvent lifting pigment)
 
@@ -39,14 +45,22 @@ void main() {
 
     float falloff = exp(-dot(e, e) / max(uRadius * uRadius, 1e-8));
 
+    vec4 value = uValue;
+    if (uColourFrom == 1) {
+        // premultiplied: take the reference's own colour at its own coverage,
+        // then weigh it by how much ink this dab is laying down
+        vec4 ref = texture(uRef, uv);
+        value = vec4(ref.rgb, max(ref.a, 1e-4)) * uValue.a;
+    }
+
     vec4 result;
     if (uMode == 1) {
-        result = mix(prev, uValue, falloff);
+        result = mix(prev, value, falloff);
     } else if (uMode == 2) {
         // uValue.x is how much is left where the brush bites hardest
-        result = prev * mix(1.0, uValue.x, falloff);
+        result = prev * mix(1.0, value.x, falloff);
     } else {
-        result = prev + uValue * falloff;
+        result = prev + value * falloff;
     }
     imageStore(uDst, c, result);
 }

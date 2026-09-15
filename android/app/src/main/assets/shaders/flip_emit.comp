@@ -38,6 +38,20 @@ uniform float uJitterSeed;
 layout(binding = 0) uniform highp sampler2D uProps;
 uniform float uHeightInk;
 
+// A drop can pick up the colour of the picture it was poured onto and carry it
+// for life. The particle record has no room for a colour -- eight floats, all
+// spoken for -- but the seed it was storing is written once and never read
+// again, so that slot takes six bits a channel instead. 64 levels is more than
+// paint needs and the number stays a plain small integer, which a float holds
+// exactly: bit-packing would have risked denormals being flushed to zero.
+layout(binding = 1) uniform highp sampler2D uRef;
+uniform int uColourFrom;    // 0 black ink, 1 the reference picture
+
+float packColour(vec3 c) {
+    vec3 q = floor(clamp(c, 0.0, 1.0) * 63.0 + 0.5);
+    return q.r * 4096.0 + q.g * 64.0 + q.b;
+}
+
 float hash(float n) { return fract(sin(n) * 43758.5453); }
 
 void main() {
@@ -80,6 +94,13 @@ void main() {
         ink *= mix(1.0, h, clamp(uHeightInk, 0.0, 1.0));
     }
 
+    float carried = hash(s + 5.9);
+    if (uColourFrom == 1) {
+        vec4 r = texture(uRef, pos);
+        // un-premultiply so the drop carries the colour, not the coverage
+        carried = packColour(r.a > 1e-4 ? r.rgb / r.a : vec3(0.0));
+    }
+
     data[slot * 2]     = vec4(pos, vel);
-    data[slot * 2 + 1] = vec4(ink, age0, 1.0, hash(s + 5.9));   // state 1 = live
+    data[slot * 2 + 1] = vec4(ink, age0, 1.0, carried);   // state 1 = live
 }
