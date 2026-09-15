@@ -2369,6 +2369,21 @@ static void onKey(GLFWwindow *, int key, int, int action, int mods) {
 }
 
 int main(int argc, char **argv) {
+    // The shaders ship next to the executable, so find them there rather than
+    // in whatever directory the app happened to be launched from. Double-click
+    // it and the two coincide; run it by path from anywhere else and they do
+    // not, and the app used to die on the first shader it could not open.
+#ifdef _WIN32
+    {
+        char exePath[MAX_PATH];
+        DWORD n = GetModuleFileNameA(nullptr, exePath, (DWORD)sizeof exePath);
+        if (n > 0 && n < sizeof exePath) {
+            std::string p(exePath, n);
+            size_t slash = p.find_last_of("\\/");
+            if (slash != std::string::npos) shaderDir = p.substr(0, slash) + "/shaders";
+        }
+    }
+#endif
     if (!glfwInit()) { std::fprintf(stderr, "glfwInit failed\n"); return 1; }
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
