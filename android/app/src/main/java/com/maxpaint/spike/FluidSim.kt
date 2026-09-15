@@ -208,6 +208,76 @@ class FluidSim(private val ctx: Context) {
         pProps.dispatch(dyeW, dyeH)
     }
 
+    /** Gray-Scott reaction-diffusion. Feed and kill live in a narrow window --
+     *  a hundredth on kill is the difference between spots and a field that
+     *  dies -- so the presets matter more than the sliders. Image steer lets
+     *  the picture underneath shift both by its brightness, and the growth
+     *  finds the face on its own. */
+    var rdFeed = 0.0545f
+    var rdKill = 0.0620f
+    var rdCouple = 0f
+    var rdIters = 6
+    var rdInk = 1f
+    var rdLo = 0.10f
+    var rdHi = 0.30f
+    var rdRun = true
+    var rdSeeded = false; private set
+
+    val rdTexture get() = rd.read
+
+    /** The resting state: substrate everywhere, no reagent. Gray-Scott has no
+     *  dynamics at all until a brush disturbs it, which is why a blank canvas
+     *  stays blank until you touch it. */
+    fun rdClear() {
+        if (!allocated) return
+        pRdClear.use()
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pRdClear.id, "uSize"), dyeW, dyeH)
+        rd.read.bindImage(0, GLES31.GL_WRITE_ONLY)
+        pRdClear.dispatch(dyeW, dyeH)
+        rd.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+        pRdClear.dispatch(dyeW, dyeH)
+        rdSeeded = false
+    }
+
+    /** Lights the fuse under the brush. In place on the live state, so it
+     *  costs the dab's footprint rather than a pass over the canvas. */
+    fun rdSeed(u: Float, v: Float) {
+        if (!allocated) return
+        val cx = (u * dyeW).toInt()
+        val cy = (v * dyeH).toInt()
+        val r = (splatRadius * dyeH).toInt().coerceIn(2, 127)
+        pRdSeed.use()
+        rd.read.bindImage(0, GLES31.GL_READ_WRITE)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pRdSeed.id, "uCentre"), cx, cy)
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pRdSeed.id, "uSize"), dyeW, dyeH)
+        pRdSeed.set("uRadius", r)
+        pRdSeed.set("uFalloff", glitchFalloff)
+        pRdSeed.dispatch(2 * r + 1, 2 * r + 1)
+        rdSeeded = true
+    }
+
+    /** Several steps a frame: one step moves almost nothing, and the pattern
+     *  wants to be watched growing rather than waited for. */
+    private fun rdStep() {
+        pRdStep.use()
+        GLES31.glUniform2i(GLES31.glGetUniformLocation(pRdStep.id, "uSize"), dyeW, dyeH)
+        pRdStep.set("uDa", 1f)
+        pRdStep.set("uDb", 0.5f)
+        pRdStep.set("uFeed", rdFeed)
+        pRdStep.set("uKill", rdKill)
+        pRdStep.set("uDt", 1f)
+        pRdStep.set("uCouple", rdCouple)
+        pRdStep.set("uLayer", 1)
+        background.read.bindSampler(1)
+        for (i in 0 until rdIters) {
+            rd.read.bindSampler(0)
+            pRdStep.set("uSrc", 0)
+            rd.write.bindImage(0, GLES31.GL_WRITE_ONLY)
+            pRdStep.dispatch(dyeW, dyeH)
+            rd.swap()
+        }
+    }
+
     var nibRadius = 0.006f
     var nibHardness = 0.9f
     var nibInk = 1.0f
@@ -276,6 +346,10 @@ class FluidSim(private val ctx: Context) {
     private lateinit var pSmear: ComputeProgram
     private lateinit var pPixelSort: ComputeProgram
     private lateinit var pCopyRect: ComputeProgram
+    private lateinit var pRdClear: ComputeProgram
+    private lateinit var pRdSeed: ComputeProgram
+    private lateinit var pRdStep: ComputeProgram
+    private lateinit var rd: DoubleTex
     private lateinit var pProps: ComputeProgram
     private lateinit var props: Tex
     private lateinit var pDrift: ComputeProgram
@@ -367,6 +441,9 @@ class FluidSim(private val ctx: Context) {
         pSmear = ComputeProgram(ctx, "shaders/smear.comp")
         pPixelSort = ComputeProgram(ctx, "shaders/pixelsort.comp")
         pCopyRect = ComputeProgram(ctx, "shaders/copy_rect.comp")
+        pRdClear = ComputeProgram(ctx, "shaders/rd_clear.comp")
+        pRdSeed = ComputeProgram(ctx, "shaders/rd_seed.comp")
+        pRdStep = ComputeProgram(ctx, "shaders/rd_step.comp")
         pProps = ComputeProgram(ctx, "shaders/props.comp")
         pDrift = ComputeProgram(ctx, "shaders/glitch_drift.comp")
         pBlocks = ComputeProgram(ctx, "shaders/glitch_blocks.comp")
@@ -479,6 +556,7 @@ class FluidSim(private val ctx: Context) {
         // live particles are drawn here each frame, then composited
         flipInk = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         props = Tex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
+        rd = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
         nibInkField = DoubleTex(dyeW, dyeH, GLES31.GL_RGBA16F, GLES31.GL_LINEAR)
 
         // FLIP keeps its own grid: sharing the gas brush's pressure field would
@@ -499,6 +577,7 @@ class FluidSim(private val ctx: Context) {
         divergence = Tex(simW, simH, GLES31.GL_R32F, GLES31.GL_NEAREST)
 
         allocated = true
+        rdClear()
         GLUtil.checkError("allocate(${simW}x${simH}, dye=${dyeW}x${dyeH})")
     }
 
@@ -621,6 +700,7 @@ class FluidSim(private val ctx: Context) {
             Brush.NIB -> nib(u, v, prevU, prevV)
             Brush.SMEAR -> smear(u, v, prevU, prevV)
             Brush.GLITCH -> glitch(u, v)
+            Brush.REACTION -> rdSeed(u, v)
             Brush.FLIP -> {
                 // The stroke itself emits nothing: pouring is the particle
                 // medium's one emitter, and it runs on the clock in pour().
@@ -1169,6 +1249,8 @@ class FluidSim(private val ctx: Context) {
         if (waterActive) stepWatercolor(dt)
         if (flip.inUse) stepFlip(dt)
         if (nibActive) stepNib(dt)
+        // the reaction keeps growing once seeded, whatever brush is in hand
+        if (rdSeeded && rdRun) rdStep()
     }
 
     private fun computeDivergence() {

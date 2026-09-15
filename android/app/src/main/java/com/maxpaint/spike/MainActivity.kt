@@ -842,6 +842,44 @@ class MainActivity : AppCompatActivity() {
                     (if (selected == Brush.FREEZE) "set" else "lift") + " just that area."))
             }
 
+            Brush.REACTION -> {
+                val patterns = listOf(
+                    "Coral" to (0.0545f to 0.0620f),
+                    "Labyrinth" to (0.0290f to 0.0570f),
+                    "Leopard spots" to (0.0367f to 0.0649f),
+                    "Worms" to (0.0580f to 0.0650f),
+                    "Flower" to (0.0250f to 0.0600f)
+                )
+                panelBody.addView(labeled("Pattern", spinner(
+                    patterns.map { it.first }, 0, fireOnInit = false
+                ) { i ->
+                    renderer.sim.rdFeed = patterns[i].second.first
+                    renderer.sim.rdKill = patterns[i].second.second
+                }))
+                panelBody.addView(slider("Image steer",
+                    (renderer.sim.rdCouple * 100).toInt(), 100) { p, l ->
+                    renderer.sim.rdCouple = p / 100f
+                    l.text = String.format(
+                        "Image steer: %.2f  (the picture shifts feed and kill)", p / 100f)
+                })
+                panelBody.addView(slider("Speed", renderer.sim.rdIters, 40) { p, l ->
+                    renderer.sim.rdIters = p.coerceAtLeast(1)
+                    l.text = "Speed: ${p.coerceAtLeast(1)} steps/frame"
+                })
+                panelBody.addView(slider("Ink", (renderer.sim.rdInk * 100).toInt(), 100) { p, l ->
+                    renderer.sim.rdInk = p / 100f
+                    l.text = String.format("Ink: %.2f", p / 100f)
+                })
+                panelBody.addView(button("Reset reaction") { _ -> renderer.sim.rdClear() })
+                panelBody.addView(hint("Gray-Scott reaction-diffusion. The brush " +
+                    "does not draw the pattern -- it seeds a disturbance, and the " +
+                    "chemistry grows coral, maze or spots out of it while you " +
+                    "watch, spreading until you reset it. Feed and kill decide " +
+                    "which; the window they live in is narrow, so start from " +
+                    "Pattern. Image steer lets the picture underneath shift those " +
+                    "rates by its brightness, and the growth finds the face."))
+            }
+
             Brush.GLITCH -> {
                 panelBody.addView(labeled("Mode", spinner(
                     listOf("Pixel sort", "Channel drift", "Block shuffle",

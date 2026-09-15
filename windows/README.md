@@ -60,10 +60,10 @@ shows the raw field.
 or passing its path on the command line does the same), **Save PNG**
 writes the canvas next to the executable, **Clear** starts over.
 
-**Save painting** writes the painting rather than a picture of it: the set
-layer at its own precision -- half floats, exactly what the texture holds, so
-a reload is bit-for-bit -- plus the reaction field if one is alive and the
-settings that were in play. **Open painting** brings it back, and a
+**Save painting** writes the painting rather than a picture of it: every layer
+at its own precision -- half floats, exactly what the textures hold, so a
+reload is bit-for-bit -- with its name, opacity and visibility, plus the
+reaction field if one is alive and the settings that were in play. **Open painting** brings it back, and a
 `.maxpaint` file dropped on the window or passed on the command line opens the
 same way. Wet particles are not kept; they are a stroke in progress.
 
@@ -73,6 +73,16 @@ the next stroke starting, or an undo -- because committing at mouse-up would
 catch the paint mid-dry, the FLIP layer going on baking for seconds after the
 hand stops. Depth is whatever fits a memory budget, so a big canvas gets fewer
 steps rather than a gigabyte of them.
+
+**Layers** (another fold) stacks as many as you want. Brushes paint into the
+selected one, the tick hides a layer without discarding it, and each carries
+its own opacity; the list reads top-down the way the picture does, which is the
+reverse of the order it composites in. Undo steps remember the layer they were
+taken on and go back there. The stack is flattened once a frame -- skipped
+entirely while there is only one layer, which is the common case -- and that
+flattened picture is what the screen shows, what Save PNG writes, and what the
+property maps read, so Relief on a photo on one layer steers paint poured onto
+another.
 
 **Canvas & window** (a fold in the panel) separates the two things that
 used to be one. The window is freely resizable, and the canvas keeps its

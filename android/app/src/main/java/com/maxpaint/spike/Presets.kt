@@ -182,5 +182,6 @@ object Presets {
         Brush.SMEAR -> smear
         Brush.FREEZE, Brush.THAW -> none
         Brush.GLITCH -> glitch
+        Brush.REACTION -> none
     }
 }

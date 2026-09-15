@@ -925,6 +925,21 @@ struct App {
     bool windowInputActive = false;
     GLFWwindow *window = nullptr;
 
+    // The layer stack. The active layer's texture IS `background`, so every
+    // brush keeps painting into the same place it always did and only the
+    // compositor has to know there is more than one. Switching layers hands
+    // `background` over to the new one.
+    struct CanvasLayer {
+        GLuint tex = 0;
+        bool visible = true;
+        float opacity = 1.0f;
+        char name[24] = "Layer";
+    };
+    std::vector<CanvasLayer> layers;
+    int activeLayer = 0;
+    GLuint flatA = 0, flatB = 0, fboScratch = 0, flatResult = 0;
+    Prog pLayerOver;
+
     // Undo history. A step is a whole snapshot of the set layer, which is the
     // only thing that lasts -- wet particles and the reaction field are live
     // state and are not restored. Depth is whatever fits a memory budget: a
@@ -932,6 +947,7 @@ struct App {
     // steps rather than a gigabyte of them.
     static constexpr size_t undoBudget = 512u << 20;
     std::vector<GLuint> history;
+    std::vector<int> historyLayer;
     int historyLen = 0, historyCur = 0;
     bool canvasDirty = false;
 
@@ -1021,6 +1037,7 @@ struct App {
         if (!pBlocks.id) pBlocks.id = computeProgram("glitch_blocks.comp");
         if (!pSlit.id) pSlit.id = computeProgram("glitch_slit.comp");
         if (!pCrush.id) pCrush.id = computeProgram("glitch_crush.comp");
+        if (!pLayerOver.id) pLayerOver.id = computeProgram("composite.comp");
         if (!pRdClear.id) pRdClear.id = computeProgram("rd_clear.comp");
         if (!pRdSeed.id) pRdSeed.id = computeProgram("rd_seed.comp");
         if (!pRdStep.id) pRdStep.id = computeProgram("rd_step.comp");
@@ -1041,6 +1058,28 @@ struct App {
         glClearColor(0, 0, 0, 0);
         glClear(GL_COLOR_BUFFER_BIT);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        // the flatten buffers, and the stack itself
+        for (GLuint *t : {&flatA, &flatB}) if (*t) { glDeleteTextures(1, t); *t = 0; }
+        flatA = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        flatB = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+        if (!fboScratch) glGenFramebuffers(1, &fboScratch);
+        if (layers.empty()) {
+            CanvasLayer first;
+            first.tex = background;
+            std::snprintf(first.name, sizeof first.name, "Layer 1");
+            layers.push_back(first);
+            activeLayer = 0;
+        } else {
+            activeLayer = std::min(activeLayer, (int)layers.size() - 1);
+            for (int i = 0; i < (int)layers.size(); i++) {
+                if (i == activeLayer) { layers[i].tex = background; continue; }
+                if (layers[i].tex) glDeleteTextures(1, &layers[i].tex);
+                layers[i].tex = makeTexture(w, h, GL_RGBA16F, GL_LINEAR);
+                clearLayer(layers[i].tex);
+            }
+        }
+        flatResult = background;
+
         flip.resize((float)w / (float)h);
         gas.init();
         gas.resize(w, h);
@@ -1048,6 +1087,98 @@ struct App {
         nib.resize(w, h);
         rdClear();
         allocHistory(w, h);
+    }
+
+    void clearLayer(GLuint tex) {
+        glBindFramebuffer(GL_FRAMEBUFFER, fboScratch);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    // ------------------------------------------------------------ layers
+
+    GLuint layerTex(int i) const {
+        return i == activeLayer ? background : layers[i].tex;
+    }
+
+    // The raw switch, with no history side effects: an undo restoring a step
+    // taken on another layer has to go there without committing anything.
+    void switchLayerRaw(int i) {
+        if (i < 0 || i >= (int)layers.size() || i == activeLayer) return;
+        layers[activeLayer].tex = background;   // hand it back
+        activeLayer = i;
+        background = layers[i].tex;
+        rebindBackgroundFbo();
+        propsFrame = 0;
+    }
+
+    void setActiveLayer(int i) {
+        if (i < 0 || i >= (int)layers.size() || i == activeLayer) return;
+        commitIfDirty();
+        switchLayerRaw(i);
+    }
+
+    void addLayer() {
+        commitIfDirty();
+        layers[activeLayer].tex = background;
+        CanvasLayer l;
+        l.tex = makeTexture(canvasW, canvasH, GL_RGBA16F, GL_LINEAR);
+        clearLayer(l.tex);
+        std::snprintf(l.name, sizeof l.name, "Layer %d", (int)layers.size() + 1);
+        layers.insert(layers.begin() + activeLayer + 1, l);
+        activeLayer++;
+        background = layers[activeLayer].tex;
+        rebindBackgroundFbo();
+        historyLen = 0; historyCur = 0; canvasDirty = false;
+        pushHistory();
+    }
+
+    void deleteLayer() {
+        if (layers.size() <= 1) return;
+        commitIfDirty();
+        glDeleteTextures(1, &background);
+        layers.erase(layers.begin() + activeLayer);
+        activeLayer = std::min(activeLayer, (int)layers.size() - 1);
+        background = layers[activeLayer].tex;
+        rebindBackgroundFbo();
+        historyLen = 0; historyCur = 0; canvasDirty = false;
+        pushHistory();
+    }
+
+    void moveLayer(int delta) {
+        int to = activeLayer + delta;
+        if (to < 0 || to >= (int)layers.size()) return;
+        layers[activeLayer].tex = background;
+        std::swap(layers[activeLayer], layers[to]);
+        activeLayer = to;
+        background = layers[activeLayer].tex;
+        rebindBackgroundFbo();
+    }
+
+    // The stack as one picture: what the screen shows, what a PNG saves, and
+    // what the property maps read. One pass a layer, skipped entirely while
+    // there is only the one -- which is the common case and the old path.
+    GLuint flatten() {
+        if (layers.size() == 1 && layers[0].visible && layers[0].opacity >= 1.0f)
+            return background;
+        clearLayer(flatA);
+        GLuint accum = flatA, dst = flatB;
+        for (int i = 0; i < (int)layers.size(); i++) {
+            if (!layers[i].visible || layers[i].opacity <= 0.0f) continue;
+            pLayerOver.use();
+            glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, accum);
+            glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, layerTex(i));
+            glActiveTexture(GL_TEXTURE0);
+            pLayerOver.set("uAccum", 0);
+            pLayerOver.set("uLayer", 1);
+            pLayerOver.set("uOpacity", layers[i].opacity);
+            glBindImageTexture(0, dst, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
+            Gas::dispatch(canvasW, canvasH);
+            GLuint t = accum; accum = dst; dst = t;
+        }
+        return accum;
     }
 
     // The bake swaps the layer's front and back buffers, so the framebuffer
@@ -1095,6 +1226,7 @@ struct App {
         size_t perStep = (size_t)w * h * 8;   // RGBA16F
         int steps = (int)std::min<size_t>(16, std::max<size_t>(2, undoBudget / perStep));
         history.resize(steps, 0);
+        historyLayer.assign(steps, 0);
         for (GLuint &t : history) t = makeTexture(w, h, GL_RGBA16F, GL_NEAREST);
         historyLen = 0;
         historyCur = 0;
@@ -1117,10 +1249,14 @@ struct App {
             GLuint oldest = history[0];
             history.erase(history.begin());
             history.push_back(oldest);
+            int firstLayer = historyLayer[0];
+            historyLayer.erase(historyLayer.begin());
+            historyLayer.push_back(firstLayer);
             historyLen--;
             historyCur--;
         }
         copyLayer(background, history[historyLen]);
+        historyLayer[historyLen] = activeLayer;
         historyCur = historyLen;
         historyLen++;
         canvasDirty = false;
@@ -1151,6 +1287,9 @@ struct App {
     }
 
     void restoreHistory() {
+        // a step belongs to the layer it was taken on; go back there first
+        if (historyLayer[historyCur] != activeLayer)
+            switchLayerRaw(historyLayer[historyCur]);
         copyLayer(history[historyCur], background);
         flip.clearPool();      // wet paint belongs to the stroke being undone
         havePourLast = false;
@@ -1257,21 +1396,39 @@ struct App {
         }
         if (w == canvasW && h == canvasH) return;
 
-        GLuint oldTex = background, oldFbo = fboBackground;
+        // Every layer is carried across, not just the one being painted on:
+        // the old textures are kept aside, the stack is rebuilt at the new
+        // size, then each layer's paint is rescaled into its successor.
         int oldW = canvasW, oldH = canvasH;
+        std::vector<GLuint> oldTex;
+        for (int i = 0; i < (int)layers.size(); i++) oldTex.push_back(layerTex(i));
+        GLuint oldFbo = fboBackground;
         background = 0; fboBackground = 0;   // keep allocate() from freeing them
+        for (CanvasLayer &l : layers) l.tex = 0;
         allocate(w, h);
 
-        if (oldTex && oldW > 0 && oldH > 0) {
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, oldFbo);
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fboBackground);
-            glBlitFramebuffer(0, 0, oldW, oldH, 0, 0, w, h,
-                              GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        if (oldW > 0 && oldH > 0 && !oldTex.empty()) {
+            GLuint readFbo = 0, drawFbo = 0;
+            glGenFramebuffers(1, &readFbo);
+            glGenFramebuffers(1, &drawFbo);
+            for (int i = 0; i < (int)layers.size() && i < (int)oldTex.size(); i++) {
+                if (!oldTex[i]) continue;
+                glBindFramebuffer(GL_READ_FRAMEBUFFER, readFbo);
+                glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                       GL_TEXTURE_2D, oldTex[i], 0);
+                glBindFramebuffer(GL_DRAW_FRAMEBUFFER, drawFbo);
+                glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                       GL_TEXTURE_2D, layerTex(i), 0);
+                glBlitFramebuffer(0, 0, oldW, oldH, 0, 0, w, h,
+                                  GL_COLOR_BUFFER_BIT, GL_LINEAR);
+            }
             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(1, &readFbo);
+            glDeleteFramebuffers(1, &drawFbo);
         }
         if (oldFbo) glDeleteFramebuffers(1, &oldFbo);
-        if (oldTex) glDeleteTextures(1, &oldTex);
+        for (GLuint t : oldTex) if (t) glDeleteTextures(1, &t);
 
         // allocate() opened the history on an empty canvas; the paint arrived
         // after it, so the first state has to be taken again
@@ -1532,7 +1689,7 @@ struct App {
     // file is something you come back to.
 
     static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
-    static const uint32_t FILE_VERSION = 1;
+    static const uint32_t FILE_VERSION = 2;   // 2 carries the layer stack
 
     template <class T> static void put(std::ofstream &f, const T &v) {
         f.write(reinterpret_cast<const char *>(&v), sizeof v);
@@ -1601,10 +1758,17 @@ struct App {
         uint32_t flags = rdSeeded ? 1u : 0u;
         put(f, FILE_MAGIC); put(f, FILE_VERSION);
         put(f, w); put(f, h); put(f, flags);
+        uint32_t count = (uint32_t)layers.size(), active = (uint32_t)activeLayer;
+        put(f, count); put(f, active);
         writeSettings(f);
-        std::vector<unsigned short> layer = readLayer(background);
-        f.write(reinterpret_cast<const char *>(layer.data()),
-                (std::streamsize)(layer.size() * sizeof(unsigned short)));
+        for (int i = 0; i < (int)layers.size(); i++) {
+            f.write(layers[i].name, sizeof layers[i].name);
+            put(f, layers[i].visible);
+            put(f, layers[i].opacity);
+            std::vector<unsigned short> px = readLayer(layerTex(i));
+            f.write(reinterpret_cast<const char *>(px.data()),
+                    (std::streamsize)(px.size() * sizeof(unsigned short)));
+        }
         if (rdSeeded) {
             std::vector<unsigned short> rd = readLayer(rdTex[rdCur]);
             f.write(reinterpret_cast<const char *>(rd.data()),
@@ -1624,14 +1788,40 @@ struct App {
             std::snprintf(status, sizeof status, "%s is not a MaxPaint painting", path);
             return false;
         }
+        uint32_t count = 1, active = 0;
+        get(f, count); get(f, active);
+        if (count == 0 || count > 64) {
+            std::snprintf(status, sizeof status, "%s has an impossible stack", path);
+            return false;
+        }
         readSettings(f);
-        if ((int)w != canvasW || (int)h != canvasH) allocate((int)w, (int)h);
 
-        std::vector<unsigned short> layer((size_t)w * h * 4);
-        f.read(reinterpret_cast<char *>(layer.data()),
-               (std::streamsize)(layer.size() * sizeof(unsigned short)));
-        if (!f) { std::snprintf(status, sizeof status, "%s ends early", path); return false; }
-        uploadLayer(background, layer);
+        // rebuild the stack at the file's size, then fill it
+        for (int i = 0; i < (int)layers.size(); i++)
+            if (i != activeLayer && layers[i].tex) glDeleteTextures(1, &layers[i].tex);
+        layers.resize(1);
+        layers[0].tex = background;
+        activeLayer = 0;
+        if ((int)w != canvasW || (int)h != canvasH) allocate((int)w, (int)h);
+        while (layers.size() < count) {
+            CanvasLayer l;
+            l.tex = makeTexture((int)w, (int)h, GL_RGBA16F, GL_LINEAR);
+            clearLayer(l.tex);
+            layers.push_back(l);
+        }
+
+        std::vector<unsigned short> px((size_t)w * h * 4);
+        for (int i = 0; i < (int)count; i++) {
+            f.read(layers[i].name, sizeof layers[i].name);
+            layers[i].name[sizeof layers[i].name - 1] = '\0';
+            get(f, layers[i].visible);
+            get(f, layers[i].opacity);
+            f.read(reinterpret_cast<char *>(px.data()),
+                   (std::streamsize)(px.size() * sizeof(unsigned short)));
+            if (!f) { std::snprintf(status, sizeof status, "%s ends early", path); return false; }
+            uploadLayer(layerTex(i), px);
+        }
+        switchLayerRaw(std::min((int)active, (int)layers.size() - 1));
 
         rdClear();
         if (flags & 1u) {
@@ -1696,6 +1886,41 @@ struct App {
 #else
         std::snprintf(status, sizeof status, "drop an image onto the window");
 #endif
+    }
+
+    // The stack, top of the list being the top of the picture, which is the
+    // way every other paint program shows it and the reverse of the order it
+    // is composited in.
+    void layerPanel() {
+        if (!ImGui::CollapsingHeader("Layers")) return;
+        if (ImGui::Button("Add")) addLayer();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(layers.size() <= 1);
+        if (ImGui::Button("Delete")) deleteLayer();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(activeLayer + 1 >= (int)layers.size());
+        if (ImGui::Button("Raise")) moveLayer(1);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(activeLayer <= 0);
+        if (ImGui::Button("Lower")) moveLayer(-1);
+        ImGui::EndDisabled();
+
+        for (int i = (int)layers.size() - 1; i >= 0; i--) {
+            ImGui::PushID(i);
+            bool vis = layers[i].visible;
+            if (ImGui::Checkbox("##vis", &vis)) layers[i].visible = vis;
+            ImGui::SameLine();
+            if (ImGui::RadioButton(layers[i].name, activeLayer == i)) setActiveLayer(i);
+            ImGui::SameLine();
+            ImGui::SetNextItemWidth(90);
+            ImGui::SliderFloat("##op", &layers[i].opacity, 0, 1, "%.2f");
+            ImGui::PopID();
+        }
+        ImGui::TextWrapped("Brushes paint into the selected layer; the tick hides "
+                           "one without discarding it. Undo steps remember the "
+                           "layer they were taken on and go back there.");
     }
 
     // Canvas size and window size, which are no longer the same question.
@@ -1787,6 +2012,7 @@ struct App {
         if (status[0]) ImGui::TextWrapped("%s", status);
         ImGui::Separator();
         canvasPanel();
+        layerPanel();
         ImGui::Separator();
 
         ImGui::RadioButton("Paint", &tool, 0); ImGui::SameLine();
@@ -1996,7 +2222,8 @@ struct App {
 
     void updateProps() {
         pProps.use();
-        glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, background);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, flatResult ? flatResult : background);
         pProps.set("uSrc", 0);
         glBindImageTexture(0, props, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
         pProps.set("uInvert", reliefInvert ? 1.0f : 0.0f);
@@ -2009,7 +2236,8 @@ struct App {
     // the canvas as it is meant to be seen, into whatever viewport is bound
     void compositeDraw() {
         glUseProgram(compositeProgram);
-        glActiveTexture(GL_TEXTURE0 + 0); glBindTexture(GL_TEXTURE_2D, background);
+        glActiveTexture(GL_TEXTURE0 + 0);
+        glBindTexture(GL_TEXTURE_2D, flatResult ? flatResult : background);
         glActiveTexture(GL_TEXTURE0 + 1); glBindTexture(GL_TEXTURE_2D, live);
         glActiveTexture(GL_TEXTURE0 + 2); glBindTexture(GL_TEXTURE_2D, props);
         glActiveTexture(GL_TEXTURE0 + 3); glBindTexture(GL_TEXTURE_2D, rdTex[rdCur]);
@@ -2034,14 +2262,6 @@ struct App {
         bool wasPainting = painting;
         painting = mouseDown && !ImGui::GetIO().WantCaptureMouse;
         if (painting && !wasPainting) commitIfDirty();
-        // the set layer changes as paint bakes; refresh the maps every few
-        // frames, always when they are on screen or driving the paint
-        bool sortReadsProps = tool == 1 && glitchMode == 0 &&
-                              (glitchEdgeBound > 0.0f || glitchAutoDir);
-        bool paintReadsProps = flip.relief > 0.0f || flip.shadeDry > 0.0f ||
-                               flip.heightInk > 0.0f;
-        bool wanted = view != 0 || paintReadsProps || sortReadsProps;
-        if (wanted && (propsFrame++ % 4) == 0) updateProps();
         if (tool == 1) glitchStroke();
         else if (tool == 2) rdStroke();
         else if (tool == 3) gasStroke(dt);
@@ -2068,6 +2288,18 @@ struct App {
         flip.draw(2.0f, fboBackground, canvasW, canvasH, false);
         // live particles are redrawn from scratch each frame
         flip.draw(1.0f, fboLive, canvasW, canvasH, true);
+
+        // the stack as one picture, for the screen and for the brushes
+        flatResult = flatten();
+
+        // the layer changes as paint bakes; refresh the maps every few frames,
+        // always when they are on screen or driving a brush
+        bool sortReadsProps = tool == 1 && glitchMode == 0 &&
+                              (glitchEdgeBound > 0.0f || glitchAutoDir);
+        bool paintReadsProps = flip.relief > 0.0f || flip.shadeDry > 0.0f ||
+                               flip.heightInk > 0.0f;
+        bool wanted = view != 0 || paintReadsProps || sortReadsProps;
+        if (wanted && (propsFrame++ % 4) == 0) updateProps();
 
         // the window, then the canvas laid on it
         glBindFramebuffer(GL_FRAMEBUFFER, 0);

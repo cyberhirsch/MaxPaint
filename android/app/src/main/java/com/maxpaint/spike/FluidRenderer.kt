@@ -274,6 +274,13 @@ class FluidRenderer(private val ctx: Context) : GLSurfaceView.Renderer {
         sim.waterTexture.bindSampler(3)
         sim.flipTexture.bindSampler(4)
         sim.nibTexture.bindSampler(5)
+        sim.rdTexture.bindSampler(8)
+        GLES31.glUniform1f(
+            GLES31.glGetUniformLocation(displayProgram, "uRdInk"),
+            if (sim.rdSeeded) sim.rdInk else 0f
+        )
+        GLES31.glUniform1f(GLES31.glGetUniformLocation(displayProgram, "uRdLo"), sim.rdLo)
+        GLES31.glUniform1f(GLES31.glGetUniformLocation(displayProgram, "uRdHi"), sim.rdHi)
 
         val under = sim.underlayTexture
         val over = sim.overlayTexture

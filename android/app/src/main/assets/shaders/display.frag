@@ -16,6 +16,14 @@ uniform int   uHeat;         // 1 = tint live fluid by how close it is to settin
 uniform float uSettleSpeed;  // speed below which paint starts to set
 layout(binding = 6) uniform highp sampler2D uUnder;        // layers below the active one, flattened
 layout(binding = 7) uniform highp sampler2D uOver;        // layers above it, flattened
+layout(binding = 8) uniform highp sampler2D uRd;          // rg = the reaction's A, B
+
+// The reaction lies over the picture as ink rather than replacing it, so the
+// photograph stays legible under whatever grows on it. 0 hides it entirely,
+// which is where it sits until a brush seeds the field.
+uniform float uRdInk;
+uniform float uRdLo;
+uniform float uRdHi;
 
 uniform int   uHasUnder;     // 0 = nothing below, do not sample
 uniform int   uHasOver;      // 0 = nothing above
@@ -76,6 +84,11 @@ void main() {
     if (uHasOver == 1) {
         vec4 over = texture(uOver, vUv);
         col = col * (1.0 - clamp(over.a, 0.0, 1.0)) + over.rgb;
+    }
+
+    if (uRdInk > 0.0) {
+        float b = texture(uRd, vUv).g;
+        col = mix(col, vec3(0.0), smoothstep(uRdLo, uRdHi, b) * uRdInk);
     }
 
     fragColor = vec4(col, 1.0);

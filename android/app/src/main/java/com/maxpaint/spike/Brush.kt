@@ -46,7 +46,15 @@ enum class Brush(val label: String, val carriesPigment: Boolean, val short: Stri
      * Rearranges pixels that are already down rather than painting: the
      * first mode is pixel sorting. Set paint and imported photos alike.
      */
-    GLITCH("Glitch", false, "glitch");
+    GLITCH("Glitch", false, "glitch"),
+
+    /**
+     * Gray-Scott reaction-diffusion. The one brush that does not draw: it
+     * seeds a disturbance and the chemistry grows coral, maze or spots out of
+     * it while you watch. Carries no pigment because it deposits none -- what
+     * appears is the reagent, read as ink.
+     */
+    REACTION("Reaction", false, "grow");
 
     companion object {
         val labels: List<String> get() = entries.map { it.label }
