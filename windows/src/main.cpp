@@ -528,6 +528,7 @@ struct Gas {
         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
     }
 
+
     void init() {
         if (pAdvect.id) return;
         pAdvect.id = computeProgram("advect.comp");
@@ -2024,7 +2025,11 @@ struct App {
         ImGui::Combo("View", &view, views, 5);
         ImGui::Separator();
 
-        ImGui::SliderFloat("Brush size", &flip.brushRadius, 0.004f, 0.17f, "%.3f");
+        // The gas and the nib carry their own radius; showing this one as well
+        // put two widgets called "Brush size" in the same window, and ImGui
+        // keys a widget on its label -- they would have shared an identity.
+        if (tool != 3 && tool != 4)
+            ImGui::SliderFloat("Brush size", &flip.brushRadius, 0.004f, 0.17f, "%.3f");
 
         if (tool == 0) {
             if (ImGui::BeginCombo("Preset", FLIP_PRESETS[flipPreset].name)) {
@@ -2152,7 +2157,7 @@ struct App {
                                "Paper grain how much the fibre steers it. The "
                                "paper keeps drinking after the pen lifts.");
         } else if (tool == 3) {
-            ImGui::SliderFloat("Brush size", &gas.brushRadius, 0.005f, 0.25f, "%.3f");
+            ImGui::SliderFloat("Gas size", &gas.brushRadius, 0.005f, 0.25f, "%.3f");
             ImGui::SliderFloat("Ink", &gas.inkPerStroke, 0, 10, "%.2f");
             ImGui::SliderFloat("Push", &gas.velocityGain, 0, 4, "%.2f");
             ImGui::SliderFloat("Vorticity", &gas.vorticity, 0, 60, "%.0f");
@@ -2244,6 +2249,13 @@ struct App {
         glActiveTexture(GL_TEXTURE0 + 4); glBindTexture(GL_TEXTURE_2D, gas.dye.read);
         glActiveTexture(GL_TEXTURE0 + 5); glBindTexture(GL_TEXTURE_2D, nib.field.read);
         glActiveTexture(GL_TEXTURE0);
+        // named explicitly rather than trusting the layout qualifier
+        glUniform1i(glGetUniformLocation(compositeProgram, "uBackground"), 0);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uLive"), 1);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uProps"), 2);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uRd"), 3);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uDye"), 4);
+        glUniform1i(glGetUniformLocation(compositeProgram, "uNib"), 5);
         glUniform1i(glGetUniformLocation(compositeProgram, "uView"), view);
         glUniform1f(glGetUniformLocation(compositeProgram, "uRdInk"),
                     rdSeeded ? rdInk : 0.0f);
