@@ -42,6 +42,11 @@ uniform ivec2 uSize;        // the canvas
 uniform int   uCount;       // boxes in this dab
 uniform float uBoxSize;     // half-extent before the picture gets a say, texels
 uniform float uStretch;     // how hard an edge draws the box out along itself
+// Shapes what counts as an edge. Above 1 the stretch is saved for real
+// contours and everything softer stays square; below 1 it is spread over the
+// faintest texture. The raw measure needs this: a picture is mostly gentle
+// slope, and without a bias the brush stretches everything equally.
+uniform float uBias;
 uniform float uAlign;       // 0 keeps them square to the screen, 1 to the feature
 uniform float uOpacity;
 uniform int   uColourFrom;  // 0 under the box, 1 elsewhere in the disc, 2 anywhere
@@ -82,15 +87,31 @@ void main() {
 
         ivec2 bc = clamp(uCentre + ivec2(round(off)), ivec2(0), uSize - ivec2(1));
 
-        // the feature runs across the gradient, so the box lies along it
+        // The feature runs across the gradient, so the box lies along it.
         vec2 n = texelFetch(uProps, bc, 0).gb;
-        float strength = clamp(length(n), 0.0, 1.0);
-        vec2 along = strength > 1e-4 ? vec2(-n.y, n.x) / strength : vec2(1.0, 0.0);
-        float ang = atan(along.y, along.x) * clamp(uAlign, 0.0, 1.0);
+        float sinT = min(length(n), 0.9999);
+
+        // How much of an edge this is. The stored normal is normalised, so
+        // length(n.xy) is sin(tilt) and it saturates: at Steepness 40 plain
+        // skin texture already reads as 0.97 and every box comes out equally
+        // stretched. tan(tilt) stays proportional to the height step the
+        // picture actually takes, and t/(t+1) folds it back into 0..1 with no
+        // cliff -- gentle slope lands near 0.2, a real contour near 0.8.
+        float tanT = sinT / max(sqrt(1.0 - sinT * sinT), 1e-4);
+        float edge = pow(clamp(tanT / (tanT + 1.0), 0.0, 1.0), max(uBias, 0.01));
+
+        vec2 along = sinT > 1e-4 ? vec2(-n.y, n.x) / sinT : vec2(1.0, 0.0);
+        float ang = atan(along.y, along.x);
+        // A box is the same box turned half a turn, so fold the angle into one
+        // before easing toward it -- otherwise two identical edges reported as
+        // +179 and -179 degrees swing opposite ways at part alignment.
+        if (ang > 1.5707963) ang -= 3.14159265;
+        if (ang < -1.5707963) ang += 3.14159265;
+        ang *= clamp(uAlign, 0.0, 1.0);
         vec2 axis = vec2(cos(ang), sin(ang));
 
         float jit = 1.0 + (hash(s + 4.1) * 2.0 - 1.0) * uJitter;
-        float grow = 1.0 + uStretch * strength;
+        float grow = 1.0 + uStretch * edge;
         float halfAlong = max(uBoxSize * jit * grow, 0.5);
         float halfAcross = max(uBoxSize * jit / grow, 0.5);
 

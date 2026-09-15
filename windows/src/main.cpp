@@ -996,6 +996,7 @@ struct App {
     int scatterCount = 24;
     float scatterSize = 14.0f;
     float scatterStretch = 2.5f;
+    float scatterBias = 2.0f;     // above 1 saves the stretch for real edges
     float scatterAlign = 1.0f;
     float scatterOpacity = 1.0f;
     float scatterJitter = 0.45f;
@@ -1619,6 +1620,7 @@ struct App {
         pScatter.set("uCount", scatterCount);
         pScatter.set("uBoxSize", scatterSize);
         pScatter.set("uStretch", scatterStretch);
+        pScatter.set("uBias", scatterBias);
         pScatter.set("uAlign", scatterAlign);
         pScatter.set("uOpacity", scatterOpacity);
         pScatter.set("uColourFrom", scatterColour);
@@ -1798,7 +1800,7 @@ struct App {
     // file is something you come back to.
 
     static const uint32_t FILE_MAGIC = 0x504D584Du;   // 'MXPM'
-    static const uint32_t FILE_VERSION = 3;   // 2 added the stack, 3 the reference
+    static const uint32_t FILE_VERSION = 4;   // 2 the stack, 3 the reference, 4 edge bias
 
     template <class T> static void put(std::ofstream &f, const T &v) {
         f.write(reinterpret_cast<const char *>(&v), sizeof v);
@@ -1826,6 +1828,7 @@ struct App {
         put(f, referenceLayer);
         put(f, scatterCount); put(f, scatterSize); put(f, scatterStretch);
         put(f, scatterAlign); put(f, scatterOpacity); put(f, scatterJitter);
+        put(f, scatterBias);
         put(f, scatterColour);
     }
 
@@ -1848,6 +1851,7 @@ struct App {
         get(f, referenceLayer);
         get(f, scatterCount); get(f, scatterSize); get(f, scatterStretch);
         get(f, scatterAlign); get(f, scatterOpacity); get(f, scatterJitter);
+        get(f, scatterBias);
         get(f, scatterColour);
     }
 
@@ -2289,6 +2293,7 @@ struct App {
             ImGui::Separator();
             ImGui::SliderFloat("Align", &scatterAlign, 0, 1, "%.2f");
             ImGui::SliderFloat("Stretch", &scatterStretch, 0, 8, "%.2f");
+            ImGui::SliderFloat("Edge bias", &scatterBias, 0.25f, 6, "%.2f");
             ImGui::Separator();
             const char *from[] = {"Under the box", "Elsewhere in the disc",
                                   "Anywhere in the picture"};
