@@ -93,7 +93,7 @@ catch the paint mid-dry, the FLIP layer going on baking for seconds after the
 hand stops. Depth is whatever fits a memory budget, so a big canvas gets fewer
 steps rather than a gigabyte of them.
 
-**Layers** (another fold) stacks as many as you want. Brushes paint into the
+**Layers** stacks as many as you want. Brushes paint into the
 selected one, the tick hides a layer without discarding it, and each carries
 its own opacity; the list reads top-down the way the picture does, which is the
 reverse of the order it composites in. Undo steps remember the layer they were
@@ -103,8 +103,7 @@ flattened picture is what the screen shows, what Save PNG writes, and what the
 property maps read, so Relief on a photo on one layer steers paint poured onto
 another.
 
-**Canvas & window** (a fold in the panel) separates the two things that
-used to be one. The window is freely resizable, and the canvas keeps its
+**Canvas & window** separates the two things that used to be one. The window is freely resizable, and the canvas keeps its
 own resolution inside it -- centred, scaled to fit, on a dark surround.
 Set the canvas from the preset list or type a size; **Match window**
 takes the window's current pixels, **Fit to canvas** does the reverse.
