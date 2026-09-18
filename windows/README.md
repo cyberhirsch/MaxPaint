@@ -7,7 +7,14 @@ loader only rewrites the `#version` line and drops standalone precision
 statements. The Python harness in `../tools/` is the behavioural
 reference.
 
-A panel on the left carries six tools. **Gas** is the Eulerian medium the
+The window is laid out like a paint program: a menu bar across the top, a rail
+of brush buttons down the left, and the canvas in the work area between them,
+framed so it reads as a sheet rather than as whatever is behind the panels.
+Tool properties, Layers and Canvas & window are floating windows -- the
+**Window** menu shows and hides each. The menu bar carries the canvas size and
+the last thing the app had to say.
+
+The rail carries six tools. **Gas** is the Eulerian medium the
 Android app calls its hero, running the same passes in the same order: a
 velocity field you push pigment through, made incompressible again every frame,
 with vorticity, dye dissipation and a bake that moves settled paint onto the

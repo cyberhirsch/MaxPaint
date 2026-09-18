@@ -972,6 +972,7 @@ struct App {
     // at a photograph and you can scatter that photograph onto an empty layer
     // above it, or let its relief steer paint poured somewhere else.
     int referenceLayer = -1;
+    bool showProps = true, showLayers = true, showCanvasWin = false;
     GLuint flatA = 0, flatB = 0, fboScratch = 0, flatResult = 0;
     Prog pLayerOver;
 
@@ -986,22 +987,36 @@ struct App {
     int historyLen = 0, historyCur = 0;
     bool canvasDirty = false;
 
-    struct Rect { int x, y, w, h; };
+    // y is measured from the bottom, the way a viewport wants it; top from the
+    // top, the way a cursor arrives. They stopped being the same number when
+    // the menu bar took a strip off the top, so the rect carries both.
+    struct Rect { int x, y, w, h, top; };
 
-    // The canvas, centred and scaled to fit the window without distorting it.
-    // Viewport y counts from the bottom, but centring is symmetric, so the
-    // same margin serves either way up.
+    // Chrome that the canvas has to sit clear of, in window points.
+    float menuH = 0.0f;
+    float railW = 92.0f;
+
+    // The canvas, centred and scaled to fit the work area -- the window less
+    // the menu bar above it and the tool rail beside it -- without distorting.
     Rect canvasRect() const {
         if (canvasW <= 0 || canvasH <= 0 || winW <= 0 || winH <= 0)
-            return {0, 0, winW, winH};
+            return {0, 0, std::max(winW, 1), std::max(winH, 1), 0};
+        int leftPx = (int)(railW * pixelScaleX + 0.5f);
+        int topPx = (int)(menuH * pixelScaleY + 0.5f);
+        int aw = std::max(1, winW - leftPx);
+        int ah = std::max(1, winH - topPx);
+
         float canvasAspect = (float)canvasW / (float)canvasH;
         int w, h;
-        if ((float)winW / (float)winH > canvasAspect) {
-            h = winH; w = std::max(1, (int)(winH * canvasAspect + 0.5f));
+        if ((float)aw / (float)ah > canvasAspect) {
+            h = ah; w = std::max(1, (int)(ah * canvasAspect + 0.5f));
         } else {
-            w = winW; h = std::max(1, (int)(winW / canvasAspect + 0.5f));
+            w = aw; h = std::max(1, (int)(aw / canvasAspect + 0.5f));
         }
-        return {(winW - w) / 2, (winH - h) / 2, w, h};
+        // the work area reaches the window's bottom, so centring in it is a
+        // plain halving there; from the top the menu bar has to be added back
+        int yFromBottom = (ah - h) / 2;
+        return {leftPx + (aw - w) / 2, yFromBottom, w, h, topPx + (ah - h) / 2};
     }
 
     // tools: 0 paint, 1 glitch (pixel sort)
@@ -1516,7 +1531,7 @@ struct App {
         Rect r = canvasRect();
         if (r.w <= 0 || r.h <= 0) return false;
         float x = (float)mouseX * pixelScaleX - (float)r.x;
-        float y = (float)mouseY * pixelScaleY - (float)r.y;
+        float y = (float)mouseY * pixelScaleY - (float)r.top;
         u = x / (float)r.w;
         v = 1.0f - y / (float)r.h;
         return u >= 0.0f && u <= 1.0f && v >= 0.0f && v <= 1.0f;
@@ -2048,7 +2063,10 @@ struct App {
     // way every other paint program shows it and the reverse of the order it
     // is composited in.
     void layerPanel() {
-        if (!ImGui::CollapsingHeader("Layers")) return;
+        if (!showLayers) return;
+        ImGui::SetNextWindowPos(ImVec2(railW + 20, 640), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(330, 300), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("Layers", &showLayers)) { ImGui::End(); return; }
         if (ImGui::Button("Add")) addLayer();
         ImGui::SameLine();
         ImGui::BeginDisabled(layers.size() <= 1);
@@ -2103,11 +2121,15 @@ struct App {
                            "or let its relief steer paint poured somewhere else. "
                            "The whole stack is the default and is what they always "
                            "used.");
+        ImGui::End();
     }
 
     // Canvas size and window size, which are no longer the same question.
     void canvasPanel() {
-        if (!ImGui::CollapsingHeader("Canvas & window")) return;
+        if (!showCanvasWin) return;
+        ImGui::SetNextWindowPos(ImVec2(railW + 20, 200), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(360, 330), ImGuiCond_FirstUseEver);
+        if (!ImGui::Begin("Canvas & window", &showCanvasWin)) { ImGui::End(); return; }
 
         ImGui::Text("Canvas %d x %d", canvasW, canvasH);
         struct Size { const char *name; int w, h; };
@@ -2156,56 +2178,136 @@ struct App {
         }
         ImGui::TextWrapped("The window is free to be any shape; the canvas keeps "
                            "its own and sits centred inside it.");
+        ImGui::End();
+    }
+
+    // ------------------------------------------------------------ the chrome
+
+    static const char *toolName(int t) {
+        static const char *names[] = {"Fluid", "Glitch", "Reaction",
+                                      "Gas", "Nib", "Scatter"};
+        return (t >= 0 && t < 6) ? names[t] : "Tool";
+    }
+    static const char *toolBlurb(int t) {
+        static const char *blurbs[] = {
+            "FLIP particles: paint that pours, drips and splatters",
+            "Rearranges pixels that are already down",
+            "Gray-Scott: seeds a disturbance and lets it grow",
+            "The Eulerian medium: push pigment through a velocity field",
+            "Pen and charcoal, creeping into the paper",
+            "Boxes the picture turns and stretches",
+        };
+        return (t >= 0 && t < 6) ? blurbs[t] : "";
+    }
+
+    void menuBar() {
+        if (!ImGui::BeginMainMenuBar()) return;
+        menuH = ImGui::GetWindowSize().y;
+#ifdef _WIN32
+        char path[MAX_PATH];
+#endif
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open image...")) openDialog();
+#ifdef _WIN32
+            if (ImGui::MenuItem("Open painting...")) {
+                if (paintingDialog(path, sizeof path, false)) loadPainting(path);
+            }
+            if (ImGui::MenuItem("Save painting...")) {
+                if (paintingDialog(path, sizeof path, true)) savePainting(path);
+            }
+#endif
+            ImGui::Separator();
+            if (ImGui::MenuItem("Save PNG")) savePending = true;
+            ImGui::Separator();
+            if (ImGui::MenuItem("Clear canvas", "C")) clearCanvas();
+            if (ImGui::MenuItem("Quit") && window)
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, canUndo())) undo();
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, canRedo())) redo();
+            ImGui::Separator();
+            ImGui::TextDisabled("step %d of %d",
+                                historyLen ? historyCur + 1 : 0, historyLen);
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("View")) {
+            const char *views[] = {"Paint", "Height", "Normals",
+                                   "Occlusion", "Reaction"};
+            for (int i = 0; i < 5; i++)
+                if (ImGui::MenuItem(views[i], nullptr, view == i)) view = i;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Window")) {
+            ImGui::MenuItem("Tool properties", nullptr, &showProps);
+            ImGui::MenuItem("Layers", nullptr, &showLayers);
+            ImGui::MenuItem("Canvas & window", nullptr, &showCanvasWin);
+            ImGui::EndMenu();
+        }
+        // the canvas size, where it is easiest to read it
+        ImGui::Separator();
+        ImGui::TextDisabled("%d x %d", canvasW, canvasH);
+        if (status[0]) {
+            ImGui::Separator();
+            ImGui::TextDisabled("%s", status);
+        }
+        ImGui::EndMainMenuBar();
+    }
+
+    // One button a brush, down the left edge, the way a paint program does it.
+    void toolRail() {
+        ImGui::SetNextWindowPos(ImVec2(0, menuH));
+        ImGui::SetNextWindowSize(ImVec2(railW, std::max(1.0f, winH / std::max(pixelScaleY, 1e-3f) - menuH)));
+        ImGui::Begin("##rail", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
+        for (int t = 0; t < 6; t++) {
+            bool on = tool == t;
+            if (on) {
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.78f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.86f, 1.0f));
+            }
+            if (ImGui::Button(toolName(t), ImVec2(railW - 16.0f, 34.0f))) tool = t;
+            if (on) ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s  (%d)\n%s", toolName(t), t + 1, toolBlurb(t));
+        }
+        ImGui::End();
+    }
+
+    // A thin frame so the canvas reads as a sheet on a desk rather than as
+    // whatever happens to be behind the windows.
+    void canvasFrame() {
+        if (canvasW <= 0 || winW <= 0) return;
+        Rect r = canvasRect();
+        float sx = pixelScaleX > 1e-3f ? 1.0f / pixelScaleX : 1.0f;
+        float sy = pixelScaleY > 1e-3f ? 1.0f / pixelScaleY : 1.0f;
+        ImGui::GetBackgroundDrawList()->AddRect(
+            ImVec2(r.x * sx - 1.0f, r.top * sy - 1.0f),
+            ImVec2((r.x + r.w) * sx + 1.0f, (r.top + r.h) * sy + 1.0f),
+            IM_COL32(120, 126, 138, 255));
     }
 
     void panel() {
-        ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(300, 0), ImGuiCond_FirstUseEver);
-        ImGui::Begin("MaxPaint", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
-
-        if (ImGui::Button("Open...")) openDialog();
-        ImGui::SameLine();
-        if (ImGui::Button("Save PNG")) savePending = true;
-        ImGui::SameLine();
-        if (ImGui::Button("Clear")) clearCanvas();
-
-#ifdef _WIN32
-        char path[MAX_PATH];
-        if (ImGui::Button("Open painting")) {
-            if (paintingDialog(path, sizeof path, false)) loadPainting(path);
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Save painting")) {
-            if (paintingDialog(path, sizeof path, true)) savePainting(path);
-        }
-#endif
-
-        ImGui::BeginDisabled(!canUndo());
-        if (ImGui::Button("Undo")) undo();
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::BeginDisabled(!canRedo());
-        if (ImGui::Button("Redo")) redo();
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        ImGui::TextDisabled("%d/%d  (ctrl+Z, ctrl+Y)",
-                            historyLen ? historyCur + 1 : 0, historyLen);
-
-        if (status[0]) ImGui::TextWrapped("%s", status);
-        ImGui::Separator();
+        menuBar();
+        toolRail();
         canvasPanel();
         layerPanel();
-        ImGui::Separator();
+        canvasFrame();
+        if (!showProps) return;
 
-        ImGui::RadioButton("Fluid", &tool, 0); ImGui::SameLine();
-        ImGui::RadioButton("Glitch", &tool, 1); ImGui::SameLine();
-        ImGui::RadioButton("Reaction", &tool, 2); ImGui::SameLine();
-        ImGui::RadioButton("Gas", &tool, 3); ImGui::SameLine();
-        ImGui::RadioButton("Nib", &tool, 4); ImGui::SameLine();
-        ImGui::RadioButton("Scatter", &tool, 5);
-        const char *views[] = {"Paint", "Height", "Normals", "Occlusion", "Reaction"};
-        ImGui::Combo("View", &view, views, 5);
+        ImGui::SetNextWindowPos(ImVec2(railW + 20, menuH + 20), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(400, 560), ImGuiCond_FirstUseEver);
+        char title[64];
+        std::snprintf(title, sizeof title, "%s###props", toolName(tool));
+        if (!ImGui::Begin(title, &showProps)) { ImGui::End(); return; }
+        ImGui::TextWrapped("%s", toolBlurb(tool));
         ImGui::Separator();
+        // leave the label column room: "Motion inheritance" is a long name and
+        // ImGui's default split cut it off
+        ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 150.0f);
 
         // The gas and the nib carry their own radius; showing this one as well
         // put two widgets called "Brush size" in the same window, and ImGui
@@ -2436,6 +2538,7 @@ struct App {
                                "face on its own. Set View to Reaction to see the "
                                "raw field.");
         }
+        ImGui::PopItemWidth();
         ImGui::End();
     }
 
