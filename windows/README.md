@@ -10,9 +10,17 @@ reference.
 The window is laid out like a paint program: a menu bar across the top, a rail
 of brush buttons down the left, and the canvas in the work area between them,
 framed so it reads as a sheet rather than as whatever is behind the panels.
-Tool properties, Layers and Canvas & window are floating windows -- the
-**Window** menu shows and hides each. The menu bar carries the canvas size and
-the last thing the app had to say.
+Tool properties, Layers and Canvas & window are floating panels -- the
+**Window** menu shows and hides each. Drag one past the edge of the main
+window and it becomes a real desktop window that can sit on a second monitor,
+or drop it onto another panel to dock the two together. The menu bar carries
+the canvas size and the last thing the app had to say.
+
+The look is the instrument-panel language: a ladder of near-blacks rather than
+a palette, hairline borders, sharp corners, **Inter** throughout, and white as
+the only thing that ever means "active" -- the selected brush inverts to a
+white slab rather than taking an accent colour, because there is no accent
+colour.
 
 The rail carries six tools. **Gas** is the Eulerian medium the
 Android app calls its hero, running the same passes in the same order: a

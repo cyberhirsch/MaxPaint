@@ -2064,7 +2064,9 @@ struct App {
     // is composited in.
     void layerPanel() {
         if (!showLayers) return;
-        ImGui::SetNextWindowPos(ImVec2(railW + 20, 640), ImGuiCond_FirstUseEver);
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + railW + 20,
+                                       vp->WorkPos.y + 600), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(330, 300), ImGuiCond_FirstUseEver);
         if (!ImGui::Begin("Layers", &showLayers)) { ImGui::End(); return; }
         if (ImGui::Button("Add")) addLayer();
@@ -2127,7 +2129,9 @@ struct App {
     // Canvas size and window size, which are no longer the same question.
     void canvasPanel() {
         if (!showCanvasWin) return;
-        ImGui::SetNextWindowPos(ImVec2(railW + 20, 200), ImGuiCond_FirstUseEver);
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + railW + 20,
+                                       vp->WorkPos.y + 200), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(360, 330), ImGuiCond_FirstUseEver);
         if (!ImGui::Begin("Canvas & window", &showCanvasWin)) { ImGui::End(); return; }
 
@@ -2257,20 +2261,35 @@ struct App {
 
     // One button a brush, down the left edge, the way a paint program does it.
     void toolRail() {
-        ImGui::SetNextWindowPos(ImVec2(0, menuH));
-        ImGui::SetNextWindowSize(ImVec2(railW, std::max(1.0f, winH / std::max(pixelScaleY, 1e-3f) - menuH)));
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(vp->WorkPos);
+        ImGui::SetNextWindowSize(ImVec2(railW, vp->WorkSize.y));
+        ImGui::SetNextWindowViewport(vp->ID);
         ImGui::Begin("##rail", nullptr,
                      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
         for (int t = 0; t < 6; t++) {
             bool on = tool == t;
+            // The selected tool inverts to a white slab: there is no accent
+            // hue in this language, and a mid-tone highlight would read as a
+            // third state rather than as "this one".
             if (on) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.22f, 0.45f, 0.78f, 1.0f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.86f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(1, 1, 1, 1));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 1));
+                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.88f, 0.88f, 0.88f, 1));
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 1));
             }
-            if (ImGui::Button(toolName(t), ImVec2(railW - 16.0f, 34.0f))) tool = t;
-            if (on) ImGui::PopStyleColor(2);
+            // short functional labels are set in caps, as every other label
+            // in this language is
+            char caps[16];
+            const char *n = toolName(t);
+            size_t k = 0;
+            for (; n[k] && k < sizeof caps - 1; k++)
+                caps[k] = (char)std::toupper((unsigned char)n[k]);
+            caps[k] = '\0';
+            if (ImGui::Button(caps, ImVec2(railW - 16.0f, 34.0f))) tool = t;
+            if (on) ImGui::PopStyleColor(4);
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s  (%d)\n%s", toolName(t), t + 1, toolBlurb(t));
         }
@@ -2284,10 +2303,14 @@ struct App {
         Rect r = canvasRect();
         float sx = pixelScaleX > 1e-3f ? 1.0f / pixelScaleX : 1.0f;
         float sy = pixelScaleY > 1e-3f ? 1.0f / pixelScaleY : 1.0f;
-        ImGui::GetBackgroundDrawList()->AddRect(
-            ImVec2(r.x * sx - 1.0f, r.top * sy - 1.0f),
-            ImVec2((r.x + r.w) * sx + 1.0f, (r.top + r.h) * sy + 1.0f),
-            IM_COL32(120, 126, 138, 255));
+        // the rect is in framebuffer pixels of the main window; the draw list
+        // wants the viewport's own coordinates, which are the desktop's
+        ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImGui::GetBackgroundDrawList(vp)->AddRect(
+            ImVec2(vp->Pos.x + r.x * sx - 1.0f, vp->Pos.y + r.top * sy - 1.0f),
+            ImVec2(vp->Pos.x + (r.x + r.w) * sx + 1.0f,
+                   vp->Pos.y + (r.top + r.h) * sy + 1.0f),
+            IM_COL32(0x44, 0x44, 0x44, 255));
     }
 
     void panel() {
@@ -2298,7 +2321,9 @@ struct App {
         canvasFrame();
         if (!showProps) return;
 
-        ImGui::SetNextWindowPos(ImVec2(railW + 20, menuH + 20), ImGuiCond_FirstUseEver);
+        const ImGuiViewport *vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + railW + 20,
+                                       vp->WorkPos.y + 16), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(400, 560), ImGuiCond_FirstUseEver);
         char title[64];
         std::snprintf(title, sizeof title, "%s###props", toolName(tool));
@@ -2713,6 +2738,93 @@ static void onKey(GLFWwindow *, int key, int, int action, int mods) {
     }
 }
 
+// ------------------------------------------------------------ the look
+//
+// The instrument-panel language: a ladder of near-blacks rather than a
+// palette, hairline borders, sharp corners, and white as the only thing that
+// ever means "active". No accent hue -- depth comes from which gray, and from
+// brightness on hover. Inter is the typeface; it is installed on this machine
+// and the fallback if it is not there is ImGui's own bitmap font, which is
+// legible but not the intent.
+static void applyTheme() {
+    ImGuiStyle &s = ImGui::GetStyle();
+    ImGui::StyleColorsDark();
+
+    s.WindowRounding = 0.0f;   // sharp everywhere; a viewport window must be
+    s.ChildRounding = 0.0f;    // square anyway or the desktop shows through
+    s.FrameRounding = 0.0f;
+    s.PopupRounding = 0.0f;
+    s.ScrollbarRounding = 0.0f;
+    s.GrabRounding = 0.0f;
+    s.TabRounding = 0.0f;
+    s.WindowBorderSize = 1.0f;
+    s.FrameBorderSize = 1.0f;
+    s.PopupBorderSize = 1.0f;
+    s.ScrollbarSize = 8.0f;
+    s.WindowPadding = ImVec2(12, 12);
+    s.FramePadding = ImVec2(8, 4);
+    s.ItemSpacing = ImVec2(8, 6);
+    s.WindowTitleAlign = ImVec2(0.0f, 0.5f);
+
+    auto g = [](int v, float a = 1.0f) {
+        return ImVec4(v / 255.0f, v / 255.0f, v / 255.0f, a);
+    };
+    ImVec4 *c = s.Colors;
+    c[ImGuiCol_WindowBg]            = g(0x0a);
+    c[ImGuiCol_ChildBg]             = g(0x08);
+    c[ImGuiCol_PopupBg]             = g(0x08);
+    c[ImGuiCol_Border]              = g(0x22);
+    c[ImGuiCol_BorderShadow]        = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_Text]                = g(0xff);
+    c[ImGuiCol_TextDisabled]        = g(0x66);
+    c[ImGuiCol_FrameBg]             = g(0x11);
+    c[ImGuiCol_FrameBgHovered]      = g(0x1a);
+    c[ImGuiCol_FrameBgActive]       = g(0x22);
+    c[ImGuiCol_TitleBg]             = g(0x05);
+    c[ImGuiCol_TitleBgActive]       = g(0x0a);
+    c[ImGuiCol_TitleBgCollapsed]    = g(0x05);
+    c[ImGuiCol_MenuBarBg]           = g(0x05);
+    c[ImGuiCol_ScrollbarBg]         = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ScrollbarGrab]       = g(0x33);
+    c[ImGuiCol_ScrollbarGrabHovered]= g(0x55);
+    c[ImGuiCol_ScrollbarGrabActive] = g(0x66);
+    // white is the active indicator, never a mid-tone highlight
+    c[ImGuiCol_CheckMark]           = g(0xff);
+    c[ImGuiCol_SliderGrab]          = g(0xcc);
+    c[ImGuiCol_SliderGrabActive]    = g(0xff);
+    c[ImGuiCol_Button]              = ImVec4(0, 0, 0, 0);
+    c[ImGuiCol_ButtonHovered]       = g(0x11);
+    c[ImGuiCol_ButtonActive]        = g(0x22);
+    c[ImGuiCol_Header]              = g(0x14);
+    c[ImGuiCol_HeaderHovered]       = g(0x1e);
+    c[ImGuiCol_HeaderActive]        = g(0x28);
+    c[ImGuiCol_Separator]           = g(0x22);
+    c[ImGuiCol_SeparatorHovered]    = g(0x55);
+    c[ImGuiCol_SeparatorActive]     = g(0x66);
+    c[ImGuiCol_ResizeGrip]          = g(0x22);
+    c[ImGuiCol_ResizeGripHovered]   = g(0x55);
+    c[ImGuiCol_ResizeGripActive]    = g(0x88);
+    c[ImGuiCol_Tab]                 = g(0x0a);
+    c[ImGuiCol_TabHovered]          = g(0x22);
+    c[ImGuiCol_DockingPreview]      = g(0xff, 0.25f);
+    c[ImGuiCol_DockingEmptyBg]      = g(0x05);
+
+    // A panel torn off onto the desktop is its own window; it must not be
+    // translucent or rounded or it will not look like one.
+    ImGui::GetStyle().Colors[ImGuiCol_WindowBg].w = 1.0f;
+
+    static const char *faces[] = {
+        "C:/Windows/Fonts/Inter-Medium.ttf",
+        "C:/Windows/Fonts/Inter-Regular.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    };
+    for (const char *f : faces) {
+        std::ifstream probe(f, std::ios::binary);
+        if (!probe) continue;
+        if (ImGui::GetIO().Fonts->AddFontFromFileTTF(f, 15.0f)) break;
+    }
+}
+
 int main(int argc, char **argv) {
     // The shaders ship next to the executable, so find them there rather than
     // in whatever directory the app happened to be launched from. Double-click
@@ -2777,11 +2889,17 @@ int main(int argc, char **argv) {
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGui::StyleColorsDark();
     ImGui::GetIO().IniFilename = nullptr;   // no imgui.ini next to the exe
     // Only the title bar drags the panel. Missing a slider by a few pixels
     // otherwise picks the whole panel up and carries it off the window.
     ImGui::GetIO().ConfigWindowsMoveFromTitleBarOnly = true;
+    // A panel dragged past the edge becomes a real desktop window, so it can
+    // live on a second monitor instead of stealing canvas on the first. Panels
+    // can also dock to each other, which is the same gesture read the other
+    // way round.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_ViewportsEnable |
+                                  ImGuiConfigFlags_DockingEnable;
+    applyTheme();
     ImGui_ImplGlfw_InitForOpenGL(win, true);   // chains to the callbacks above
     ImGui_ImplOpenGL3_Init("#version 430");
 
@@ -2809,6 +2927,15 @@ int main(int argc, char **argv) {
 
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        // Panels living on the desktop are drawn after the main window and
+        // each bring their own GL context; whichever was current has to be
+        // put back or the next frame renders into the wrong one.
+        if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
+            GLFWwindow *restore = glfwGetCurrentContext();
+            ImGui::UpdatePlatformWindows();
+            ImGui::RenderPlatformWindowsDefault();
+            glfwMakeContextCurrent(restore);
+        }
         glfwSwapBuffers(win);
         glfwPollEvents();
 

@@ -13,7 +13,7 @@ FetchContent_Declare(glfw
     GIT_TAG 3.4)
 FetchContent_Declare(imgui
     GIT_REPOSITORY https://github.com/ocornut/imgui.git
-    GIT_TAG v1.91.9)
+    GIT_TAG v1.91.9-docking)
 FetchContent_MakeAvailable(glfw imgui)
 
 add_executable(maxpaint
