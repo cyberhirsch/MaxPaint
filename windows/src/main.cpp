@@ -846,6 +846,20 @@ static const RdPreset RD_PRESETS[] = {
     {"Flower",        0.0250f, 0.0600f},
 };
 
+// Sizes worth reaching for by name. Anything else can be typed.
+struct SizePreset { const char *name; int w, h; };
+static const SizePreset SIZE_PRESETS[] = {
+    {"1280 x 720  -  HD",          1280,  720},
+    {"1920 x 1080  -  Full HD",    1920, 1080},
+    {"2560 x 1440  -  QHD",        2560, 1440},
+    {"3840 x 2160  -  4K UHD",     3840, 2160},
+    {"1024 x 1024  -  square",     1024, 1024},
+    {"2048 x 2048  -  square",     2048, 2048},
+    {"1080 x 1350  -  portrait",   1080, 1350},
+    {"1080 x 1920  -  vertical",   1080, 1920},
+    {"2480 x 3508  -  A4 at 300",  2480, 3508},
+};
+
 struct GlitchPreset { const char *name; float lo, hi; bool vertical; };
 static const GlitchPreset GLITCH_PRESETS[] = {
     {"Midtones",   0.25f, 0.85f, false},
@@ -944,11 +958,19 @@ struct App {
     int canvasW = 0, canvasH = 0;
     int winW = 0, winH = 0;              // framebuffer, in pixels
     float pixelScaleX = 1, pixelScaleY = 1;   // framebuffer px per window px
-    // A side limit from the driver, and an area limit from memory: the canvas
-    // carries four RGBA16F layers, 32 bytes a pixel, so 32 MP is about a
-    // gigabyte of it and far enough for anything a screen will show.
+    // A side limit from the driver, and an area limit from memory.
+    //
+    // Fifteen canvas-sized RGBA16F textures are alive at once -- the layer and
+    // its spare, the live particles, two reaction buffers, the property and
+    // structure maps, two for flattening, the gas's dye and age pairs, the
+    // nib's field pair -- which is 120 bytes a pixel before a single undo step
+    // or extra layer. At startup the card is asked how much memory it has
+    // going spare and the ceiling is set from that, so a big card gets a big
+    // canvas and a small one is told the truth early rather than failing to
+    // allocate halfway through.
+    static constexpr int bytesPerCanvasPixel = 120;
     int maxCanvas = 8192;                // GL_MAX_TEXTURE_SIZE, read at startup
-    static constexpr int maxCanvasPixels = 32 << 20;
+    int maxCanvasPixels = 16 << 20;      // revised once the driver answers
     int pendingCanvasW = 0, pendingCanvasH = 0;   // applied at the top of frame()
     int canvasInput[2] = {1280, 720};
     int windowInput[2] = {1280, 720};
@@ -1157,6 +1179,50 @@ struct App {
         nib.resize(w, h);
         rdClear();
         allocHistory(w, h);
+    }
+
+    // What the card will lend us. Half of the memory reported free, capped at
+    // three gigabytes, and a floor so a driver that answers strangely still
+    // leaves the app usable. Drivers without the extension say nothing, and
+    // the compiled-in default stands.
+    void measureBudget() {
+        GLint freeKb = 0;
+        while (glGetError() != GL_NO_ERROR) {}   // start from a clean slate
+        glGetIntegerv(GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX, &freeKb);
+        if (glGetError() != GL_NO_ERROR) freeKb = 0;
+        if (freeKb <= 0) {
+            glGetIntegerv(GL_TEXTURE_FREE_MEMORY_ATI, &freeKb);
+            if (glGetError() != GL_NO_ERROR) freeKb = 0;
+        }
+        if (freeKb <= 0) return;
+        double budget = std::min((double)freeKb * 1024.0 * 0.5, 3.0 * 1024 * 1024 * 1024);
+        double px = budget / (double)bytesPerCanvasPixel;
+        maxCanvasPixels = (int)std::min(std::max(px, 4.0 * (1 << 20)), 64.0 * (1 << 20));
+    }
+
+    // Start over: one empty layer at the size asked for, every medium's state
+    // dropped, the history begun again. allocate() does most of it, but the
+    // stack has to be cut back to one first or it would be rebuilt as it was.
+    void newPainting(int w, int h) {
+        for (int i = 0; i < (int)layers.size(); i++)
+            if (i != activeLayer && layers[i].tex) {
+                glDeleteTextures(1, &layers[i].tex);
+                layers[i].tex = 0;
+            }
+        CanvasLayer only;
+        only.tex = background;              // allocate() frees and remakes it
+        std::snprintf(only.name, sizeof only.name, "Layer 1");
+        layers.assign(1, only);
+        activeLayer = 0;
+        referenceLayer = -1;
+
+        allocate(std::max(64, w), std::max(64, h));
+        canvasInput[0] = canvasW; canvasInput[1] = canvasH;
+        flip.clearPool();
+        havePourLast = haveGlitchLast = haveRdLast = false;
+        haveGasLast = haveNibLast = haveScatterLast = false;
+        gasFreeze = gasThaw = false;
+        std::snprintf(status, sizeof status, "new painting, %d x %d", canvasW, canvasH);
     }
 
     void clearLayer(GLuint tex) {
@@ -2136,35 +2202,48 @@ struct App {
         if (!ImGui::Begin("Canvas & window", &showCanvasWin)) { ImGui::End(); return; }
 
         ImGui::Text("Canvas %d x %d", canvasW, canvasH);
-        struct Size { const char *name; int w, h; };
-        static const Size SIZES[] = {
-            {"1280 x 720", 1280, 720},   {"1920 x 1080", 1920, 1080},
-            {"2560 x 1440", 2560, 1440}, {"3840 x 2160", 3840, 2160},
-            {"1024 x 1024", 1024, 1024}, {"2048 x 2048", 2048, 2048},
-            {"1080 x 1350", 1080, 1350},
-        };
         if (ImGui::BeginCombo("Preset", "Choose a size")) {
-            for (const Size &s : SIZES)
-                if (ImGui::Selectable(s.name)) {
-                    canvasInput[0] = s.w; canvasInput[1] = s.h;
-                    pendingCanvasW = s.w; pendingCanvasH = s.h;
+            for (const SizePreset &sp : SIZE_PRESETS)
+                if (ImGui::Selectable(sp.name)) {
+                    canvasInput[0] = sp.w; canvasInput[1] = sp.h;
+                    pendingCanvasW = sp.w; pendingCanvasH = sp.h;
                 }
             ImGui::EndCombo();
         }
-        ImGui::DragInt2("Size", canvasInput, 8.0f, 64, maxCanvas);
+        // typed, not dragged: a resolution is a number you know, and hunting
+        // for 3508 with a mouse is not a thing anyone wants to do
+        ImGui::InputInt2("Size", canvasInput);
+        canvasInput[0] = std::min(maxCanvas, std::max(1, canvasInput[0]));
+        canvasInput[1] = std::min(maxCanvas, std::max(1, canvasInput[1]));
+
+        double mp = (double)canvasInput[0] * canvasInput[1] / (1 << 20);
+        double gb = (double)canvasInput[0] * canvasInput[1] *
+                    bytesPerCanvasPixel / (1024.0 * 1024.0 * 1024.0);
+        bool tooBig = (double)canvasInput[0] * canvasInput[1] > maxCanvasPixels;
+        if (tooBig) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+        ImGui::TextDisabled("%.1f megapixels, about %.2f GB of video memory%s",
+                            mp, gb, tooBig ? "  --  will be scaled back" : "");
+        if (tooBig) ImGui::PopStyleColor();
+
         if (ImGui::Button("Resize canvas")) {
             pendingCanvasW = canvasInput[0];
             pendingCanvasH = canvasInput[1];
         }
         ImGui::SameLine();
+        if (ImGui::Button("Swap")) std::swap(canvasInput[0], canvasInput[1]);
+        ImGui::SameLine();
         if (ImGui::Button("Match window")) {
+            canvasInput[0] = winW; canvasInput[1] = winH;
             pendingCanvasW = winW; pendingCanvasH = winH;
         }
-        ImGui::TextWrapped("Resizing rescales the set paint and empties the wet "
-                           "pool -- particles hold canvas coordinates and cannot "
-                           "follow. Up to %d px a side and %d megapixels; past "
-                           "that it is scaled back to fit.",
-                           maxCanvas, maxCanvasPixels >> 20);
+        ImGui::TextWrapped("Resizing rescales the paint on every layer and empties "
+                           "the wet pool -- particles hold canvas coordinates and "
+                           "cannot follow. Up to %d px a side, and %d megapixels "
+                           "on this card: fifteen canvas-sized float textures are "
+                           "alive at once, which is %d bytes a pixel before undo "
+                           "and extra layers, so the ceiling is read off the "
+                           "memory the driver says is free rather than guessed.",
+                           maxCanvas, maxCanvasPixels >> 20, bytesPerCanvasPixel);
 
         ImGui::Separator();
         ImGui::Text("Window %d x %d", winW, winH);
@@ -2211,6 +2290,14 @@ struct App {
         char path[MAX_PATH];
 #endif
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::BeginMenu("New")) {
+                if (ImGui::MenuItem("Same size")) newPainting(canvasW, canvasH);
+                ImGui::Separator();
+                for (const SizePreset &sp : SIZE_PRESETS)
+                    if (ImGui::MenuItem(sp.name)) newPainting(sp.w, sp.h);
+                ImGui::EndMenu();
+            }
+            ImGui::Separator();
             if (ImGui::MenuItem("Open image...")) openDialog();
 #ifdef _WIN32
             if (ImGui::MenuItem("Open painting...")) {
@@ -2249,7 +2336,15 @@ struct App {
             ImGui::MenuItem("Canvas & window", nullptr, &showCanvasWin);
             ImGui::EndMenu();
         }
-        // the canvas size, where it is easiest to read it
+        // undo and redo on the bar, where a hand reaches for them
+        ImGui::Separator();
+        ImGui::BeginDisabled(!canUndo());
+        if (ImGui::SmallButton("Undo")) undo();
+        ImGui::EndDisabled();
+        ImGui::BeginDisabled(!canRedo());
+        if (ImGui::SmallButton("Redo")) redo();
+        ImGui::EndDisabled();
+
         ImGui::Separator();
         ImGui::TextDisabled("%d x %d", canvasW, canvasH);
         if (status[0]) {
@@ -2872,6 +2967,7 @@ int main(int argc, char **argv) {
     app.winW = fw; app.winH = fh;
     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &app.maxCanvas);
     app.maxCanvas = std::min(app.maxCanvas, 16384);
+    app.measureBudget();
     app.allocate(fw, fh);
     app.canvasInput[0] = fw; app.canvasInput[1] = fh;
     {

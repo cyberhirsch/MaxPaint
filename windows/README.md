@@ -113,12 +113,24 @@ another.
 
 **Canvas & window** separates the two things that used to be one. The window is freely resizable, and the canvas keeps its
 own resolution inside it -- centred, scaled to fit, on a dark surround.
-Set the canvas from the preset list or type a size; **Match window**
-takes the window's current pixels, **Fit to canvas** does the reverse.
+Set the canvas from the preset list or type a size -- typed, not dragged,
+because a resolution is a number you already know and hunting for 3508 with a
+mouse is nobody's idea of an afternoon. **Swap** turns it on its side,
+**Match window** takes the window's current pixels, **Fit to canvas** does the
+reverse. The panel shows the megapixels and the video memory the size will
+ask for before you commit to it. **File > New** starts a fresh painting at any
+of the presets, or at the size you already have.
 Resizing rescales the set paint into the new canvas and empties the wet
 pool, since particles hold positions in canvas space and cannot follow.
-Up to 8192 px a side and 32 megapixels. **Save PNG** writes the canvas
-at its own resolution, not at the size of the window showing it.
+Up to 8192 px a side, and an area ceiling read off the card rather than
+guessed: fifteen canvas-sized float textures are alive at once -- the layer and
+its spare, the live particles, two reaction buffers, the property and structure
+maps, two for flattening, the gas's dye and age pairs, the nib's field pair --
+which is 120 bytes a pixel before undo steps and extra layers. At startup the
+driver is asked how much memory is free and the limit follows from that, so a
+big card gets a big canvas and a small one is told early instead of failing to
+allocate halfway through. **Save PNG** writes the canvas at its own
+resolution, not at the size of the window showing it.
 
 **Image relief** (under the Fluid tool): the app derives height, normals
 and ambient occlusion from the layer as if brightness were height --

@@ -68,6 +68,11 @@ typedef void GLvoid;
 #define GL_RGBA8 0x8058
 #define GL_PACK_ALIGNMENT 0x0D05
 #define GL_MAX_TEXTURE_SIZE 0x0D33
+// NVX_gpu_memory_info / ATI_meminfo: how much video memory is going spare,
+// in KB. Unsupported drivers leave the value alone and raise INVALID_ENUM.
+#define GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX 0x9049
+#define GL_TEXTURE_FREE_MEMORY_ATI 0x87FC
+#define GL_NO_ERROR 0
 #define GL_HALF_FLOAT 0x140B
 #define GL_UNPACK_ALIGNMENT 0x0CF5
 #define GL_PROGRAM_POINT_SIZE 0x8642
@@ -131,6 +136,7 @@ typedef void GLvoid;
     X(void, glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum)) \
     X(void, glPixelStorei, (GLenum, GLint)) \
     X(void, glGetIntegerv, (GLenum, GLint *)) \
+    X(GLenum, glGetError, (void)) \
     X(void, glGetTexImage, (GLenum, GLint, GLenum, GLenum, void *)) \
     X(void, glCopyImageSubData, (GLuint, GLenum, GLint, GLint, GLint, GLint, \
                                  GLuint, GLenum, GLint, GLint, GLint, GLint, \
