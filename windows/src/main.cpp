@@ -877,6 +877,23 @@ uniform int uView;   // 0 paint, 1 height, 2 normals, 3 occlusion, 4 reaction
 uniform float uRdInk;      // 0 hides the reaction
 uniform float uRdLo;
 uniform float uRdHi;
+
+// One premultiplied layer over what is beneath it.
+//
+// The media accumulate additively -- the bake is deliberately conservative,
+// so what leaves the dye field arrives in the layer and coverage passes 1
+// rather than saturating. That is right for the arithmetic and wrong for a
+// plain "over", which assumes the premultiplied colour never exceeds its own
+// alpha. Black ink survived it because zero times anything is zero; colour
+// did not, and blew out to white. Recovering the tint first costs a divide
+// and makes both behave: ink over an opaque photograph darkens it, and a
+// picked-up colour arrives as the colour it was picked up from.
+vec3 over(vec3 under, vec4 src) {
+    float a = clamp(src.a, 0.0, 1.0);
+    vec3 tint = src.a > 1e-4 ? src.rgb / src.a : vec3(0.0);
+    return tint * a + under * (1.0 - a);
+}
+
 void main() {
     if (uView == 4) {
         fragColor = vec4(vec3(texture(uRd, vUv).g * 2.5), 1.0);
@@ -890,17 +907,12 @@ void main() {
         fragColor = vec4(c, 1.0);
         return;
     }
-    // everything is premultiplied: the set layer over white paper, then the
-    // live particles (black ink, alpha only) over that
-    vec4 bg = texture(uBackground, vUv);
-    vec3 paper = bg.rgb + vec3(1.0 - clamp(bg.a, 0.0, 1.0));
-    // media still in play sit over the layer, under the particles
-    vec4 wet = texture(uNib, vUv);
-    paper = wet.rgb + paper * (1.0 - clamp(wet.a, 0.0, 1.0));
-    vec4 gas = texture(uDye, vUv);
-    paper = gas.rgb + paper * (1.0 - clamp(gas.a, 0.0, 1.0));
-    vec4 live = texture(uLive, vUv);
-    vec3 col = live.rgb + paper * (1.0 - clamp(live.a, 0.0, 1.0));
+    // white paper, the set layer on it, then the media still in play, then
+    // the live particles on top of all of it
+    vec3 col = over(vec3(1.0), texture(uBackground, vUv));
+    col = over(col, texture(uNib, vUv));
+    col = over(col, texture(uDye, vUv));
+    col = over(col, texture(uLive, vUv));
     // the reaction lies over the picture as ink rather than replacing it, so
     // the photograph stays legible under whatever grows on it
     if (uRdInk > 0.0) {
